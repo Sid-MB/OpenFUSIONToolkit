@@ -8,7 +8,7 @@ from pathlib import Path
 import json
 
 class ReplayBuffer(Dataset):
-    def __init__(self, state_dim: int, action_dim: int, max_size: int = 600):
+    def __init__(self, state_dim: int, action_dim: int, max_size: int = 600*12):
         self.states = np.zeros((max_size, state_dim))
         self.actions = np.zeros((max_size, action_dim))
         self.next_states = np.zeros((max_size, state_dim))
@@ -290,7 +290,7 @@ def train_modal():
     
     state_dim = 34
     action_dim = 2
-    dataset_size = 600
+    dataset_size = 600*12
     buffer = ReplayBuffer(state_dim, action_dim, dataset_size)
     load_d4rl_dataset('/data/rl_dataset_test', buffer)
 
