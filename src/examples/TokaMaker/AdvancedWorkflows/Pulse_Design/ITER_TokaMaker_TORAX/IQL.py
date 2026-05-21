@@ -6,6 +6,15 @@ import numpy as np
 from typing import Tuple, Optional
 from pathlib import Path
 import json
+import wandb
+
+import modal
+
+app = modal.App("iql-training")
+
+image = modal.Image.debian_slim().pip_install(
+    "torch", "numpy", "wandb"
+)
 
 class ReplayBuffer(Dataset):
     def __init__(self, state_dim: int, action_dim: int, max_size: int = 600*12):
@@ -76,6 +85,9 @@ class Actor(nn.Module):
         self.action_max = action_max
 
     def forward(self, state):
+        return self.net(state)
+
+    def act(self, state):
         return self.net(state) * self.action_max
 
 class IQL:
@@ -88,12 +100,6 @@ class IQL:
         self.q2_target = QNetwork(state_dim, action_dim)
         self.q1_target.load_state_dict(self.q1.state_dict())
         self.q2_target.load_state_dict(self.q2.state_dict())
-
-                # ADD: Scale down target network weights
-        for param in self.q1_target.parameters():
-            param.data.mul_(0.1)
-        for param in self.q2_target.parameters():
-            param.data.mul_(0.1)
         
         self.v = ValueNetwork(state_dim)
         self.actor = Actor(action_max, state_dim, action_dim)
@@ -252,7 +258,8 @@ def train_iql(iql, buffer, batch_size=128, num_steps=1000000):
             metrics = iql.update(batch)
             
             if step % 100 == 0:
-                print(f"Step {step}: {metrics}")
+                #print(f"Step {step}: {metrics}")
+                wandb.log(metrics, step=step)
 
 def normalize_buffer(buffer):
     # Calculate mean and std across all states
@@ -264,8 +271,8 @@ def normalize_buffer(buffer):
     buffer.next_states[:buffer.size] = (buffer.next_states[:buffer.size] - state_mean) / state_std
         # Add action normalization
 
-    action_max = np.abs(buffer.actions[:buffer.size]).max()  # Get absolute max
-    print(f"Normalized action max: {action_max}")
+    action_max = np.abs(buffer.actions[:buffer.size]).max(axis=0)  # Shape: (2,)
+    buffer.actions[:buffer.size] = buffer.actions[:buffer.size] / action_max  # Divide each dimension
     
     # Same for rewards
     buffer.rewards[:buffer.size] = (buffer.rewards[:buffer.size] - buffer.rewards[:buffer.size].mean()) / buffer.rewards[:buffer.size].std()
@@ -277,7 +284,7 @@ def normalize_buffer(buffer):
     image=image,
     secrets=[modal.Secret.from_name("wandb-secret")],
     volumes={"/data": modal.Volume.from_name("rl-dataset", create_if_missing=True)},
-    timeout=3600
+    timeout=86400
 )
 
 def train_modal():
@@ -285,7 +292,7 @@ def train_modal():
         "state_dim": 34,
         "action_dim": 2,
         "batch_size": 128,
-        "num_steps": 10000
+        "num_steps": 100000
     })
     
     state_dim = 34
@@ -298,9 +305,18 @@ def train_modal():
     IQL_agent = IQL(action_max, state_dim, action_dim)
 
     train_iql(IQL_agent, buffer, batch_size=128, num_steps=10000)
+
+    # In train_modal() - line 314
+    torch.save({
+        'actor': IQL_agent.actor.state_dict(),
+        'q1': IQL_agent.q1.state_dict(),
+        'q2': IQL_agent.q2.state_dict(),
+        'v': IQL_agent.v.state_dict(),
+        'action_max': action_max,  # Add this
+    }, '/data/iql_weights.pt')
     
     wandb.finish()
 
 @app.local_entrypoint()
 def main():
-    train_modal.remote()
+    train_modal.spawn()  # Changed from .remote()
