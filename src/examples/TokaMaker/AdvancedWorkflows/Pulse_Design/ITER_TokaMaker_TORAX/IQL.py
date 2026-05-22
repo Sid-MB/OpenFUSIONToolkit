@@ -249,17 +249,6 @@ def load_d4rl_dataset(directory, buffer):
 
                 buffer.add(datapoint["s"], datapoint["a"], datapoint["s_next"], datapoint["r"], datapoint["done"])
 
-# Option 3: Training loop
-def train_iql(iql, buffer, batch_size=128, num_steps=1000000):
-    dataloader = DataLoader(buffer, batch_size=batch_size, shuffle=True)
-    
-    for step in range(num_steps):
-        for batch in dataloader:
-            metrics = iql.update(batch)
-            
-            if step % 100 == 0:
-                #print(f"Step {step}: {metrics}")
-                wandb.log(metrics, step=step)
 
 def normalize_buffer(buffer):
     # Calculate mean and std across all states
@@ -279,6 +268,41 @@ def normalize_buffer(buffer):
 
     return action_max
 
+def train_iql(iql, buffer, batch_size=128, num_steps=1000000, checkpoint_dir='/data', resume_from=None):
+    dataloader = DataLoader(buffer, batch_size=batch_size, shuffle=True)
+    
+    start_step = 0
+    if resume_from and Path(resume_from).exists():
+        checkpoint = torch.load(resume_from, weights_only=False)
+        iql.actor.load_state_dict(checkpoint['actor'])
+        iql.q1.load_state_dict(checkpoint['q1'])
+        iql.q2.load_state_dict(checkpoint['q2'])
+        iql.v.load_state_dict(checkpoint['v'])
+        iql.q1_target.load_state_dict(checkpoint['q1_target'])
+        iql.q2_target.load_state_dict(checkpoint['q2_target'])
+        start_step = checkpoint['step']
+        print(f"Resumed from step {start_step}")
+    
+    for step in range(start_step, num_steps):
+        for batch in dataloader:
+            metrics = iql.update(batch)
+            
+            if step % 100 == 0:
+                wandb.log(metrics, step=step)
+            
+            # Save checkpoint every 5000 steps
+            if step % 5000 == 0 and step > 0:
+                torch.save({
+                    'actor': iql.actor.state_dict(),
+                    'q1': iql.q1.state_dict(),
+                    'q2': iql.q2.state_dict(),
+                    'v': iql.v.state_dict(),
+                    'q1_target': iql.q1_target.state_dict(),
+                    'q2_target': iql.q2_target.state_dict(),
+                    'step': step,
+                    'action_max': iql.actor.action_max,
+                }, f'{checkpoint_dir}/checkpoint_step_{step}.pt')
+                print(f"Saved checkpoint at step {step}")
 
 @app.function(
     image=image,
@@ -286,7 +310,6 @@ def normalize_buffer(buffer):
     volumes={"/data": modal.Volume.from_name("rl-dataset", create_if_missing=True)},
     timeout=86400
 )
-
 def train_modal():
     wandb.init(project="iql-training", config={
         "state_dim": 34,
@@ -304,19 +327,25 @@ def train_modal():
     action_max = normalize_buffer(buffer)
     IQL_agent = IQL(action_max, state_dim, action_dim)
 
-    train_iql(IQL_agent, buffer, batch_size=128, num_steps=10000)
+    # Find latest checkpoint
+    checkpoint_path = None
+    checkpoints = list(Path('/data').glob('checkpoint_step_*.pt'))
+    if checkpoints:
+        checkpoint_path = max(checkpoints, key=lambda p: int(p.stem.split('_')[-1]))
+    
+    train_iql(IQL_agent, buffer, batch_size=128, num_steps=100000, 
+              checkpoint_dir='/data', resume_from=checkpoint_path)
 
-    # In train_modal() - line 314
     torch.save({
         'actor': IQL_agent.actor.state_dict(),
         'q1': IQL_agent.q1.state_dict(),
         'q2': IQL_agent.q2.state_dict(),
         'v': IQL_agent.v.state_dict(),
-        'action_max': action_max,  # Add this
+        'action_max': action_max,
     }, '/data/iql_weights.pt')
     
     wandb.finish()
 
 @app.local_entrypoint()
 def main():
-    train_modal.spawn()  # Changed from .remote()
+    train_modal.remote()
