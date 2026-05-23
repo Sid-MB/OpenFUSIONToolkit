@@ -53,6 +53,61 @@ EQDSK_SAVE_NR_NZ_SEQUENCE = (100, 150, 200, 250, 300, 350, 400, 450, 500)
 # Default TORAX radial face count for loop 0 coarse runs (evenly spaced normalized rho).
 DEFAULT_LOOP0_TX_FACE_POINTS = 51
 
+# RL TORAX: agent decisions every 20 s from 80 s through 480 s (inclusive); cold-start reruns.
+# A decision at time t sets the schedule knot at t + RL_KNOT_TIME_OFFSET (80 -> 100).
+RL_DECISION_T_FIRST = 80
+RL_DECISION_T_LAST = 480
+RL_DECISION_INTERVAL = 20
+RL_KNOT_TIME_OFFSET = 20
+RL_DECISION_TIMES = list(
+    range(RL_DECISION_T_FIRST, RL_DECISION_T_LAST + 1, RL_DECISION_INTERVAL)
+)
+_BASE_RL_ECRH_POWERS_W = {
+    0: 0.0,
+    10: 0.0,
+    50: 20.0e6,
+    80: 20.0e6,
+    520: 10.0e6,
+    540: 5.0e6,
+    560: 0.0,
+    600: 0.0,
+}
+_BASE_RL_NBI_POWERS_W = {
+    0: 0.0,
+    79: 0.0,
+    80: 33.0e6,
+    520: 10.0e6,
+    540: 7.0e6,
+    560: 4.0e6,
+    580: 2.0e6,
+    600: 0.0,
+}
+
+# RL observation layout (must match collect_trajectories.extract_state).
+_RL_TORAX_SCALAR_VARS = (
+    'H98', 'tau_E', 'W_thermal_total', 'P_SOL_total', 'P_radiation_e', 'P_aux_total',
+    'f_non_inductive', 'n_e_line_avg', 'fgw_n_e_line_avg', 'T_e_volume_avg', 'T_i_volume_avg',
+    'n_e_volume_avg', 'beta_N', 'li3', 'dW_thermal_dt_smoothed', 'P_ohmic_e', 'q_min',
+    'rho_q_min', 'f_bootstrap', 'P_alpha_total', 'q95', 'v_loop_lcfs', 'Ip', 'Q_fusion',
+)
+_RL_PROFILE_VARS = ('T_e', 'T_i', 'n_e', 'q', 'magnetic_shear')
+_RL_RHO_POINTS = (0.2, 0.5, 0.8)
+
+
+def _rl_state_feature_keys():
+    keys = [f'tx_{name}' for name in _RL_TORAX_SCALAR_VARS]
+    keys.extend([
+        'ecrh', 'nbi', 'P_LH_margin', 'T_e_peaking', 'T_i_peaking', 'n_e_peaking',
+    ])
+    for var in _RL_PROFILE_VARS:
+        for rho in _RL_RHO_POINTS:
+            keys.append(f'{var}_rho{int(rho * 10)}')
+    return tuple(keys)
+
+
+RL_STATE_KEYS = _rl_state_feature_keys()
+RL_STATE_DIM = len(RL_STATE_KEYS)
+
 BASE_CONFIG = {
     'plasma_composition': {},
     'profile_conditions': {
@@ -618,6 +673,15 @@ class TokaMaker_TORAX:
         self._logging_configured = False
         self._log_file = None
 
+        # RL TORAX cold-start (configured in fly(use_rl_actor=..., actor_checkpoint=...))
+        self._use_rl_actor = False
+        self._rl_actor_checkpoint = None
+        self._rl_actor = None
+        self._rl_state_mean = None
+        self._rl_state_std = None
+        self._rl_action_max = None
+        self._rl_actions_history = []
+
     # ─── Static Utilities ───────────────────────────────────────────────────────
 
     @staticmethod
@@ -717,6 +781,148 @@ class TokaMaker_TORAX:
                             config[key] = ([first_t], rho_arr, [first_v])
                 except TypeError:
                     pass
+
+    @staticmethod
+    def _default_rl_heating_schedules():
+        r'''! Baseline ECRH and NBI power schedules (W) for RL TORAX runs.
+        
+                These dicts are the fixed heating outside the learned control band.
+                TORAX linearly interpolates power between knot times. The IQL actor
+                only adds or overrides knots at decision_time + RL_KNOT_TIME_OFFSET
+                (e.g. decision at 80 s writes the knot at 100 s).
+        
+                @return (ecrh_powers, nbi_powers) each mapping time (s) -> power (W).
+                        Fresh deep copies so callers can merge agent knots in place.
+                
+        '''
+        return (
+            copy.deepcopy(_BASE_RL_ECRH_POWERS_W),
+            copy.deepcopy(_BASE_RL_NBI_POWERS_W),
+        )
+    
+    @staticmethod
+    def _rl_knot_time_for_decision(decision_t):
+        r'''! Schedule knot time (s) for an agent decision at decision_t.
+        
+                TORAX linearly interpolates heating between knot times. A decision
+                at decision_t sets the power at the end of the next interval:
+                knot_time = decision_t + RL_KNOT_TIME_OFFSET (80 -> 100).
+        
+                @param decision_t Agent decision / observation time (s).
+                @return Knot time (s) to use as a key in _merge_rl_heating_schedules.
+                
+        '''
+        return float(decision_t) + RL_KNOT_TIME_OFFSET
+    
+    @staticmethod
+    def _merge_rl_heating_schedules(agent_knots):
+        r'''! Combine default heating with agent-specified power knots.
+        
+                Starts from _default_rl_heating_schedules(). For each agent entry,
+                sets ECRH and NBI power at the given knot time (seconds). Knot times
+                are typically decision_time + RL_KNOT_TIME_OFFSET (e.g. 80 -> 100).
+                Default knots (0, 50, 80, 520, ...) are kept unless the same time
+                appears in agent_knots, in which case the agent value wins.
+        
+                TORAX will linearly interpolate power between consecutive knot times.
+        
+                @param agent_knots Mapping knot time (s) -> (ecrh_W, nbi_W). May be
+                       empty (returns defaults only). Keys are coerced to float.
+                @return (ecrh_powers, nbi_powers) dicts in watts, ready for set_heating
+                        or segment TORAX config.
+                
+        '''
+        ecrh, nbi = TokaMaker_TORAX._default_rl_heating_schedules()
+        for t_knot, powers in agent_knots.items():
+            p_ecrh, p_nbi = powers
+            t_k = float(t_knot)
+            ecrh[t_k] = float(p_ecrh)
+            nbi[t_k] = float(p_nbi)
+        return ecrh, nbi
+
+    def _rl_interpolate_scalar(self, data_tree, var_name, rl_time):
+        r'''! Interpolate a TORAX scalar to rl_time (no fly() time-averaging).'''
+        try:
+            torax_times = data_tree.scalars.coords['time'].values
+            values = data_tree.scalars[var_name].values.astype(float)
+            return float(np.interp(float(rl_time), torax_times, values))
+        except Exception:
+            return float('nan')
+
+    def _rl_profile_at_rho(self, data_tree, var_name, rho_values, rl_time):
+        r'''! Profile values at rho_points; nearest TORAX save time to rl_time.'''
+        try:
+            ds = data_tree.profiles
+            torax_times = ds.coords['time'].values
+            t_idx = int(np.argmin(np.abs(torax_times - float(rl_time))))
+            profile_data = ds[var_name].values
+            var_dims = ds[var_name].dims
+            if 'rho_face_norm' in var_dims:
+                rho_coord = ds.coords['rho_face_norm'].values
+            elif 'rho_norm' in var_dims:
+                rho_coord = ds.coords['rho_norm'].values
+            elif 'rho_cell_norm' in var_dims:
+                rho_coord = ds.coords['rho_cell_norm'].values
+            else:
+                return [float('nan')] * len(rho_values)
+            profile_at_t = profile_data[t_idx, :]
+            return [float(np.interp(float(rho), rho_coord, profile_at_t)) for rho in rho_values]
+        except Exception:
+            return [float('nan')] * len(rho_values)
+
+    def _extract_rl_state(self, t_start, t_end, current_action, data_tree=None):
+        r'''! RL observation dict (collect_trajectories.extract_state).
+        
+                Scalars and profiles at t_start; current_action is [ecrh_MW, nbi_MW].
+                t_end is accepted for API compatibility (interval rewards use
+                compute_reward separately). Safety penalties are not in the state.
+        
+                @param t_start Observation time (s).
+                @param t_end End of control interval (s); unused for features.
+                @param current_action [ecrh_MW, nbi_MW] at t_start.
+                @param data_tree TORAX DataTree; defaults to self._data_tree.
+                
+        '''
+        if data_tree is None:
+            data_tree = self._data_tree
+        if data_tree is None:
+            raise RuntimeError('_extract_rl_state requires a TORAX DataTree (run TX first).')
+
+        t_start = float(t_start)
+        rho_points = list(_RL_RHO_POINTS)
+        state = {}
+
+        for var in _RL_TORAX_SCALAR_VARS:
+            state[f'tx_{var}'] = self._rl_interpolate_scalar(data_tree, var, t_start)
+
+        state['ecrh'] = float(current_action[0])
+        state['nbi'] = float(current_action[1])
+
+        p_heat = self._rl_interpolate_scalar(data_tree, 'P_heat_total', t_start)
+        p_lh = self._rl_interpolate_scalar(data_tree, 'P_LH', t_start)
+        state['P_LH_margin'] = p_heat / p_lh
+
+        t_e_core = self._rl_profile_at_rho(data_tree, 'T_e', [0.0], t_start)[0]
+        t_i_core = self._rl_profile_at_rho(data_tree, 'T_i', [0.0], t_start)[0]
+        n_e_core = self._rl_profile_at_rho(data_tree, 'n_e', [0.0], t_start)[0]
+        te_vol = state['tx_T_e_volume_avg']
+        ti_vol = state['tx_T_i_volume_avg']
+        ne_vol = state['tx_n_e_volume_avg']
+        state['T_e_peaking'] = t_e_core / te_vol if te_vol > 0 else float('nan')
+        state['T_i_peaking'] = t_i_core / ti_vol if ti_vol > 0 else float('nan')
+        state['n_e_peaking'] = n_e_core / ne_vol if ne_vol > 0 else float('nan')
+
+        for var in _RL_PROFILE_VARS:
+            vals = self._rl_profile_at_rho(data_tree, var, rho_points, t_start)
+            for rho, val in zip(rho_points, vals):
+                state[f'{var}_rho{int(rho * 10)}'] = val
+
+        return state
+
+    def _extract_rl_state_vector(self, t_start, t_end, current_action, data_tree=None):
+        r'''! RL observation as float vector of length RL_STATE_DIM (45).'''
+        state = self._extract_rl_state(t_start, t_end, current_action, data_tree=data_tree)
+        return np.array([state[k] for k in RL_STATE_KEYS], dtype=np.float64)
 
     @staticmethod
     def _relax_flat_profile_to_rho_y(profile_val):
@@ -1588,6 +1794,368 @@ class TokaMaker_TORAX:
         if self._Ve_max is not None:
             myconfig['transport']['V_e_max'] = self._Ve_max
 
+    def _merge_tx_geometry_into_config(self, myconfig):
+        r'''! Set geometry and geometry_configs on myconfig (coupling loop geometry).'''
+        myconfig['geometry'] = {
+            'geometry_type': 'eqdsk',
+            'geometry_directory': os.getcwd(),
+            'last_surface_factor': self._last_surface_factor,
+            'n_surfaces': 50,
+            'Ip_from_parameters': True,
+        }
+        if self._coupling_iteration_is_first():
+            eq_safe = []
+            t_safe = []
+            t_skipped = []
+            for i, t in enumerate(self._eqtimes):
+                eq = self._init_files[i]
+                if self._test_eqdsk_tx_config(eq):
+                    eq_safe.append(eq)
+                    t_safe.append(t)
+                else:
+                    if not self._skip_bad_init_eqdsks:
+                        raise ValueError(f'Bad initial gEQDSK at t={t}: {eq}')
+                    t_skipped.append(t)
+            self._log(f'\tTX: {len(eq_safe)}/{len(self._eqtimes)} initial EQDSKs valid'
+                      + (f', skipped {len(t_skipped)}' if t_skipped else ''))
+            myconfig['geometry']['geometry_configs'] = {
+                t: {'geometry_file': eq_safe[i], 'cocos': self._cocos} for i, t in enumerate(t_safe)
+            }
+        else:
+            full_eqdsk_map = {}
+            n_tm = 0
+            if self._steady_state_mode:
+                i_last = len(self._tm_times) - 1
+                eq_last = os.path.join(self._eqdsk_dir, f'{self._current_loop - 1:03d}.{i_last:03d}.eqdsk')
+                tm_last_ok = eq_last not in self._eqdsk_skip and os.path.isfile(eq_last)
+                if tm_last_ok:
+                    for t in self._tm_times:
+                        full_eqdsk_map[t] = eq_last
+                    n_tm = len(self._tm_times)
+                    self._log(
+                        f'Loop {self._current_loop}: steady_state_mode geometry — all TX times use '
+                        f'final TM EQDSK from loop {self._current_loop - 1}: {os.path.basename(eq_last)}.'
+                    )
+                else:
+                    self._log(
+                        f'Loop {self._current_loop}: steady_state_mode: final TM EQDSK missing or skipped '
+                        f'({os.path.basename(eq_last)}); falling back to per-time TM map.'
+                    )
+
+            if not self._steady_state_mode or n_tm == 0:
+                full_eqdsk_map = {}
+                n_tm = 0
+                for i, t in enumerate(self._tm_times):
+                    eqdsk = os.path.join(self._eqdsk_dir, f'{self._current_loop - 1:03d}.{i:03d}.eqdsk')
+                    tm_ok = eqdsk not in self._eqdsk_skip and os.path.isfile(eqdsk)
+                    if tm_ok:
+                        full_eqdsk_map[t] = eqdsk
+                        n_tm += 1
+            t0 = self._tm_times[0]
+            if t0 not in full_eqdsk_map:
+                seed_eqdsk = self._init_files[0]
+                if self._test_eqdsk_tx_config(seed_eqdsk):
+                    full_eqdsk_map[t0] = seed_eqdsk
+                    self._log(f'Loop {self._current_loop}: TM failed at t=0, falling back to seed EQDSK for t=0.')
+                else:
+                    self._log(f'Warning: Loop {self._current_loop}: TM failed at t=0 and seed EQDSK is also invalid.')
+
+            if (self._psi_init is not None and not self._relax
+                    and not self._steady_state_mode):
+                seed_eqdsk_tinit = self._init_files[0]
+                if self._test_eqdsk_tx_config(seed_eqdsk_tinit):
+                    full_eqdsk_map[self._t_init] = seed_eqdsk_tinit
+                    self._log(
+                        f'Loop {self._current_loop}: seed EQDSK at t_init={self._t_init} s for TORAX '
+                        f'(psi from initial relax on seed; inter-loop relax disabled).'
+                    )
+
+            if n_tm == 0:
+                self._log(
+                    f'Warning: Loop {self._current_loop}: no valid TM EQDSKs from loop '
+                    f'{self._current_loop - 1}, using all seed EQDSKs.'
+                )
+            else:
+                self._log(
+                    f'Loop {self._current_loop}: using {n_tm}/{len(self._tm_times)} TM-solved EQDSKs, '
+                    f'{len(self._tm_times) - n_tm} seed fallbacks.'
+                )
+
+            myconfig['geometry']['geometry_configs'] = {
+                t: {'geometry_file': eqdsk_f, 'cocos': self._cocos} for t, eqdsk_f in full_eqdsk_map.items()
+            }
+
+        if self._tx_grid_type == 'n_rho':
+            myconfig['geometry']['n_rho'] = self._tx_grid
+        elif self._tx_grid_type == 'face_centers':
+            myconfig['geometry']['face_centers'] = self._tx_grid
+
+    def _get_tx_config_segment(self, t_start, t_end, ecrh_powers, nbi_powers):
+        r'''! TORAX config for one RL cold-start run on [t_start, t_end].
+        
+                Uses the same geometry and set_*() inputs as the full pulse. Initial
+                profiles always come from _psi_init / geometry (pulse start), not from a
+                prior segment snapshot. RL calls use t_start=0 and rerun from the beginning
+                with the merged heating schedule accumulated so far.
+                Heating is taken from the merged RL schedule dicts (watts), not self._ecrh_heating.
+        
+                @param t_start Simulation start time (s); numerics.t_initial (0 for RL).
+                @param t_end Simulation end time (s); numerics.t_final.
+                @param ecrh_powers {time_s: power_W} ECRH schedule (merged defaults + agent).
+                @param nbi_powers {time_s: power_W} NBI / generic_heat schedule.
+                @return torax.ToraxConfig for this segment.
+                
+        '''
+        if self._ecrh_loc is None or self._generic_heat_loc is None:
+            raise ValueError(
+                'RL segment TORAX requires set_heating() with ecrh_loc and generic_heat_loc.'
+            )
+
+        t_start = float(t_start)
+        t_end = float(t_end)
+
+        myconfig = copy.deepcopy(BASE_CONFIG)
+        if self._loaded_config is not None:
+            self._tx_config_merge(myconfig, self._loaded_config)
+
+        self._merge_tx_geometry_into_config(myconfig)
+
+        myconfig.setdefault('numerics', {})
+        myconfig['numerics']['t_initial'] = t_start
+        myconfig['numerics']['t_final'] = t_end
+        myconfig['numerics']['fixed_dt'] = self._tx_dt
+
+        myconfig.setdefault('profile_conditions', {})
+        self._apply_tx_set_overrides(myconfig)
+
+        pc = myconfig['profile_conditions']
+        if self._psi_init is not None:
+            pc['psi'] = copy.deepcopy(self._psi_init)
+            pc['initial_psi_mode'] = 'profile_conditions'
+            pc['initial_psi_from_j'] = False
+        else:
+            pc['initial_psi_mode'] = 'geometry'
+            pc['initial_psi_from_j'] = False
+
+        myconfig.setdefault('sources', {})
+        myconfig['sources'].setdefault('ecrh', {})
+        myconfig['sources']['ecrh']['P_total'] = ecrh_powers
+        myconfig['sources']['ecrh']['gaussian_location'] = self._ecrh_loc
+        myconfig['sources']['ecrh']['gaussian_width'] = self._ecrh_width
+
+        nbi_items = sorted(((float(t), float(p)) for t, p in nbi_powers.items()), key=lambda x: x[0])
+        nbi_times, nbi_pow = zip(*nbi_items) if nbi_items else ([], [])
+        myconfig['sources'].setdefault('generic_heat', {})
+        myconfig['sources']['generic_heat']['P_total'] = (list(nbi_times), list(nbi_pow))
+        myconfig['sources']['generic_heat']['gaussian_location'] = self._generic_heat_loc
+        myconfig['sources']['generic_heat']['gaussian_width'] = self._generic_heat_width
+        if self._use_nbi_current and nbi_items:
+            myconfig['sources'].setdefault('generic_current', {})
+            myconfig['sources']['generic_current']['use_absolute_current'] = True
+            myconfig['sources']['generic_current']['I_generic'] = (
+                list(nbi_times), (_NBI_W_TO_MA * np.array(nbi_pow)).tolist()
+            )
+            myconfig['sources']['generic_current']['gaussian_location'] = self._generic_heat_loc
+
+        return torax.ToraxConfig.from_dict(myconfig)
+
+    def _run_tx_segment(self, t_start, t_end, ecrh_powers, nbi_powers):
+        r'''! Run one TORAX simulation window for RL pulse design (cold-start ICs).
+        
+                Integrates from t_start to t_end with pulse initial conditions (see
+                _get_tx_config_segment). RL orchestration uses t_start=0 and the full merged
+                heating schedule on each rerun.
+        
+                @param t_start numerics.t_initial (s).
+                @param t_end numerics.t_final (s).
+                @param ecrh_powers ECRH schedule (W).
+                @param nbi_powers NBI / generic_heat schedule (W).
+                @return (data_tree, hist) from torax.run_simulation.
+                
+        '''
+        t_start = float(t_start)
+        t_end = float(t_end)
+        with self._loop0_coarse_tx_main_scope():
+            tx_config = self._get_tx_config_segment(
+                t_start, t_end, ecrh_powers, nbi_powers,
+            )
+            self._print(f'  TORAX RL run: t=[{t_start:g}, {t_end:g}] s (cold-start) ...')
+            self._log(f'TORAX RL run: t=[{t_start:g}, {t_end:g}] s (cold-start)')
+            try:
+                data_tree, hist = torax.run_simulation(tx_config, log_timestep_info=False)
+            except Exception as e:
+                self._print(f'  TORAX RL run [{t_start:g}, {t_end:g}] FAILED — {e}')
+                raise
+
+            if hist.sim_error != torax.SimError.NO_ERROR:
+                self._print(
+                    f'  TORAX RL run [{t_start:g}, {t_end:g}] sim error: {hist.sim_error}'
+                )
+                raise ValueError(
+                    f'TORAX RL run [{t_start:g}, {t_end:g}] failed: {hist.sim_error}'
+                )
+
+            self._log(f'TORAX RL run [{t_start:g}, {t_end:g}] completed.')
+            return data_tree, hist
+
+    def _load_rl_actor(self, checkpoint_path):
+        r'''! Load IQL actor weights and state normalization from a .pt checkpoint.'''
+        import torch
+        import torch.nn as nn
+
+        class _RLActor(nn.Module):
+            def __init__(self, action_max, state_dim, action_dim, hidden_dim=256):
+                super().__init__()
+                self.net = nn.Sequential(
+                    nn.Linear(state_dim, hidden_dim),
+                    nn.ReLU(),
+                    nn.Linear(hidden_dim, hidden_dim),
+                    nn.ReLU(),
+                    nn.Linear(hidden_dim, action_dim),
+                    nn.Tanh(),
+                )
+                self.action_max = torch.as_tensor(action_max, dtype=torch.float32)
+
+            def act(self, state):
+                return self.net(state) * self.action_max
+
+        ckpt = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+        if 'state_mean' not in ckpt or 'state_std' not in ckpt:
+            raise ValueError(
+                f'RL checkpoint must contain state_mean and state_std: {checkpoint_path}'
+            )
+        action_max = np.asarray(ckpt['action_max'], dtype=np.float64).reshape(-1)
+        state_mean = np.asarray(ckpt['state_mean'], dtype=np.float64).reshape(-1)
+        state_std = np.asarray(ckpt['state_std'], dtype=np.float64).reshape(-1)
+        if state_mean.shape[0] != RL_STATE_DIM:
+            raise ValueError(
+                f'Checkpoint state_dim {state_mean.shape[0]} != RL_STATE_DIM {RL_STATE_DIM}'
+            )
+
+        actor = _RLActor(action_max, RL_STATE_DIM, 2)
+        actor.load_state_dict(ckpt['actor'])
+        actor.eval()
+
+        self._rl_actor = actor
+        self._rl_action_max = action_max
+        self._rl_state_mean = state_mean
+        self._rl_state_std = state_std
+        self._rl_actor_checkpoint = checkpoint_path
+        self._log(f'Loaded RL actor from {checkpoint_path}')
+
+    def _rl_select_action_mw(self, state_vector):
+        r'''! Normalized-state actor inference; returns [ecrh_MW, nbi_MW].'''
+        import torch
+
+        if self._rl_actor is None:
+            raise RuntimeError('RL actor not loaded; call _load_rl_actor first.')
+        state = np.asarray(state_vector, dtype=np.float64).reshape(-1)
+        s_norm = (state - self._rl_state_mean) / (self._rl_state_std + 1e-8)
+        with torch.no_grad():
+            action_mw = self._rl_actor.act(torch.FloatTensor(s_norm).unsqueeze(0))
+        return action_mw.cpu().numpy()[0]
+
+    @staticmethod
+    def _rl_default_action_mw_at_time(t):
+        r'''! Default schedule heating (MW) at absolute time t (nearest knot).'''
+        t = float(t)
+        ecrh_w = float(_BASE_RL_ECRH_POWERS_W.get(t, np.interp(
+            t, sorted(_BASE_RL_ECRH_POWERS_W.keys()), list(_BASE_RL_ECRH_POWERS_W.values())
+        )))
+        nbi_w = float(_BASE_RL_NBI_POWERS_W.get(t, np.interp(
+            t, sorted(_BASE_RL_NBI_POWERS_W.keys()), list(_BASE_RL_NBI_POWERS_W.values())
+        )))
+        return ecrh_w / 1e6, nbi_w / 1e6
+
+    def _run_tx_rl_segmented(self):
+        r'''! Full pulse TORAX with RL heating (80–480 s decisions, knot at t+20).
+        
+                Each decision observes state from the latest cold-start rerun 0→t_dec
+                (or 0→80 before the first decision). After choosing heating, intermediate
+                reruns go 0→t+20 with the merged schedule unless that is the last decision.
+                self._data_tree is set only from the final cold-start run 0→t_final with
+                all agent knots (no time-axis concatenation).
+                
+        '''
+        if self._rl_actor is None:
+            if self._rl_actor_checkpoint is None:
+                raise RuntimeError(
+                    'RL segmented TORAX requires _rl_actor_checkpoint or prior _load_rl_actor().'
+                )
+            self._load_rl_actor(self._rl_actor_checkpoint)
+
+        self._rl_actions_history = []
+        agent_knots = {}
+        t_final = float(self._t_final)
+
+        ecrh, nbi = self._merge_rl_heating_schedules(agent_knots)
+        t_prescribed_end = float(RL_DECISION_T_FIRST)
+        self._print(f'  TORAX RL: cold-start t=[0, {t_prescribed_end:g}] s (defaults)')
+        data_tree, _ = self._run_tx_segment(0.0, t_prescribed_end, ecrh, nbi)
+
+        last_action_mw = list(self._rl_default_action_mw_at_time(RL_DECISION_T_FIRST))
+
+        for t_dec in RL_DECISION_TIMES:
+            t_seg_end = self._rl_knot_time_for_decision(t_dec)
+            state = self._extract_rl_state_vector(
+                t_dec, t_seg_end, last_action_mw, data_tree=data_tree,
+            )
+            action_mw = self._rl_select_action_mw(state)
+            action_mw = np.maximum(action_mw, 0.0)
+
+            knot_t = t_seg_end
+            agent_knots[knot_t] = (float(action_mw[0]) * 1e6, float(action_mw[1]) * 1e6)
+            self._rl_actions_history.append({
+                'decision_t': float(t_dec),
+                'knot_t': float(knot_t),
+                'ecrh_MW': float(action_mw[0]),
+                'nbi_MW': float(action_mw[1]),
+            })
+            self._log(
+                f'RL decision t={t_dec:g} -> knot t={knot_t:g}: '
+                f'ECRH={action_mw[0]:.2f} MW, NBI={action_mw[1]:.2f} MW'
+            )
+            last_action_mw = action_mw.tolist()
+
+            if t_dec < RL_DECISION_T_LAST:
+                ecrh, nbi = self._merge_rl_heating_schedules(agent_knots)
+                self._print(
+                    f'  TORAX RL: cold-start t=[0, {t_seg_end:g}] s '
+                    f'(through next decision)'
+                )
+                data_tree, _ = self._run_tx_segment(0.0, t_seg_end, ecrh, nbi)
+
+        ecrh, nbi = self._merge_rl_heating_schedules(agent_knots)
+        self._print(f'  TORAX RL: final cold-start t=[0, {t_final:g}] s')
+        data_tree, _ = self._run_tx_segment(0.0, t_final, ecrh, nbi)
+        self._data_tree = data_tree
+
+        try:
+            self._capture_relax_tx_profiles_from_datatree(data_tree, self._t_init)
+        except Exception as _e:
+            self._log(f'Warning: could not snapshot TORAX profiles at t_init: {_e}')
+
+        v_loops = np.zeros(len(self._tm_times))
+        for i, t in enumerate(self._tm_times):
+            self._tx_update(i, data_tree)
+            v_loops[i] = data_tree.scalars.v_loop_lcfs.sel(time=t, method='nearest')
+
+        if self._save_outputs:
+            self._res_update(data_tree)
+
+        consumed_flux = -2.0 * np.pi * (
+            self._state['psi_lcfs_tx'][-1] - self._state['psi_lcfs_tx'][0]
+        )
+        consumed_flux_integral = np.trapezoid(v_loops[0:], self._tm_times[0:])
+        self._log(f'Loop {self._current_loop} TORAX RL cold-start: cflux={consumed_flux:.4f} Wb')
+        self._print(f'  TORAX RL cold-start done (cflux={consumed_flux:.4f} Wb)')
+        if self._steady_state_mode:
+            try:
+                self._capture_steady_state_tx_seed(data_tree)
+            except Exception as _e:
+                self._log(f'steady_state_mode: could not capture t_final profiles for next loop: {_e}')
+        return consumed_flux, consumed_flux_integral
+
     def _get_tx_config(self):
         r'''! Generate config object for Torax simulation.
         
@@ -1623,106 +2191,7 @@ class TokaMaker_TORAX:
             self._tx_config_merge(myconfig, self._loaded_config)
 
         # ── 3. Geometry (always set by TokaMaker_TORAX) ─────────────────────────────
-        myconfig['geometry'] = {
-            'geometry_type': 'eqdsk',
-            'geometry_directory': os.getcwd(),
-            'last_surface_factor': self._last_surface_factor,
-            'n_surfaces': 50,
-            'Ip_from_parameters': True, # True tells TX to pull from config, not from eqdsk, in case eqdsks fail TX retains correct Ip targets
-        }
-        if self._coupling_iteration_is_first():
-            eq_safe = []
-            t_safe = []
-            t_skipped = []
-            for i, t in enumerate(self._eqtimes):
-                eq = self._init_files[i]
-                if self._test_eqdsk_tx_config(eq):
-                    eq_safe.append(eq)
-                    t_safe.append(t)
-                else:
-                    if not self._skip_bad_init_eqdsks:
-                        raise ValueError(f'Bad initial gEQDSK at t={t}: {eq}')
-                    t_skipped.append(t)
-            self._log(f'\tTX: {len(eq_safe)}/{len(self._eqtimes)} initial EQDSKs valid'
-                      + (f', skipped {len(t_skipped)}' if t_skipped else ''))
-            myconfig['geometry']['geometry_configs'] = {
-                t: {'geometry_file': eq_safe[i], 'cocos': self._cocos} for i, t in enumerate(t_safe)
-            }
-        else:
-            # For times where TM succeeded last loop, use the TM-solved EQDSK.
-            # For times where TM failed, omit from the map (TORAX interpolates from neighbors),
-            # except t=0 which always gets a seed fallback (see below).
-            full_eqdsk_map = {}
-            n_tm = 0
-            if self._steady_state_mode:
-                i_last = len(self._tm_times) - 1
-                eq_last = os.path.join(self._eqdsk_dir, f'{self._current_loop - 1:03d}.{i_last:03d}.eqdsk')
-                tm_last_ok = eq_last not in self._eqdsk_skip and os.path.isfile(eq_last)
-                if tm_last_ok:
-                    for t in self._tm_times:
-                        full_eqdsk_map[t] = eq_last
-                    n_tm = len(self._tm_times)
-                    self._log(
-                        f'Loop {self._current_loop}: steady_state_mode geometry — all TX times use '
-                        f'final TM EQDSK from loop {self._current_loop - 1}: {os.path.basename(eq_last)}.'
-                    )
-                else:
-                    self._log(
-                        f'Loop {self._current_loop}: steady_state_mode: final TM EQDSK missing or skipped '
-                        f'({os.path.basename(eq_last)}); falling back to per-time TM map.'
-                    )
-
-            if not self._steady_state_mode or n_tm == 0:
-                full_eqdsk_map = {}
-                n_tm = 0
-                for i, t in enumerate(self._tm_times):
-                    eqdsk = os.path.join(self._eqdsk_dir, f'{self._current_loop - 1:03d}.{i:03d}.eqdsk')
-                    # TM stage already saved and validated each EQDSK with TORAX (_run_tm).
-                    tm_ok = eqdsk not in self._eqdsk_skip and os.path.isfile(eqdsk)
-                    if tm_ok:
-                        full_eqdsk_map[t] = eqdsk
-                        n_tm += 1
-            # If i=0 TM failed, always fall back to the seed EQDSK so TORAX
-            # has a valid initial geometry. Other failed timesteps are left out of the
-            # map and TORAX interpolates from neighboring solved entries.
-            t0 = self._tm_times[0]
-            if t0 not in full_eqdsk_map:
-                seed_eqdsk = self._init_files[0]
-                if self._test_eqdsk_tx_config(seed_eqdsk):
-                    full_eqdsk_map[t0] = seed_eqdsk
-                    self._log(f'Loop {self._current_loop}: TM failed at t=0, falling back to seed EQDSK for t=0.')
-                else:
-                    self._log(f'Warning: Loop {self._current_loop}: TM failed at t=0 and seed EQDSK is also invalid.')
-
-            # Injected psi from initial relax used the seed EQDSK.  If we used
-            # the TM EQDSK at t_init without a loop N re-relax, the metric changes
-            # and j becomes inconsistent.  When relax=False, force seed at t_init.
-            # When relax=True, loop N relax aligns psi with TM i=0 — keep TM.
-            # steady_state_mode uses the final TM EQDSK everywhere and seeds psi from the
-            # previous TORAX t_final; do not replace t_init with the seed file.
-            if (self._psi_init is not None and not self._relax
-                    and not self._steady_state_mode):
-                seed_eqdsk_tinit = self._init_files[0]
-                if self._test_eqdsk_tx_config(seed_eqdsk_tinit):
-                    full_eqdsk_map[self._t_init] = seed_eqdsk_tinit
-                    self._log(
-                        f'Loop {self._current_loop}: seed EQDSK at t_init={self._t_init} s for TORAX '
-                        f'(psi from initial relax on seed; inter-loop relax disabled).'
-                    )
-
-            if n_tm == 0:
-                self._log(f'Warning: Loop {self._current_loop}: no valid TM EQDSKs from loop {self._current_loop-1}, using all seed EQDSKs.')
-            else:
-                self._log(f'Loop {self._current_loop}: using {n_tm}/{len(self._tm_times)} TM-solved EQDSKs, {len(self._tm_times)-n_tm} seed fallbacks.')
-            
-            myconfig['geometry']['geometry_configs'] = {
-                t: {'geometry_file': eqdsk_f, 'cocos': self._cocos} for t, eqdsk_f in full_eqdsk_map.items()
-            }
-
-        if self._tx_grid_type == 'n_rho':
-            myconfig['geometry']['n_rho'] = self._tx_grid
-        elif self._tx_grid_type == 'face_centers':
-            myconfig['geometry']['face_centers'] = self._tx_grid
+        self._merge_tx_geometry_into_config(myconfig)
 
         # ── 4. Override t_initial / t_final / fixed_dt from __init__ ───────
         myconfig.setdefault('numerics', {})
@@ -2041,6 +2510,9 @@ class TokaMaker_TORAX:
             # In steady_state_mode with a captured seed: relax starts from previous loop t_final
             # profiles on the final-previous-loop EQDSK, then relaxed outputs seed main TORAX.
             self._run_tx_relax(stage='interloop', eqdsk_path=relax_eq, prescribed_profiles=prescribed_profiles)
+
+        if getattr(self, '_use_rl_actor', False):
+            return self._run_tx_rl_segmented()
 
         with self._loop0_coarse_tx_main_scope():
             myconfig = self._get_tx_config()
@@ -2823,7 +3295,8 @@ class TokaMaker_TORAX:
             output_mode=False, skip_bad_init_eqdsks=False,
             initial_relax=True, relax=False, relax_kinetics=False, relax_duration=0.1,
             t_ave_toggle='off', t_ave_window=0.5, t_ave_causal=True, t_ave_ignore_start=0.25,
-            loop0=False, steady_state_mode=False): # TODO: separate steady_state_mode?
+            loop0=False, steady_state_mode=False,
+            use_rl_actor=False, actor_checkpoint=None):
         r'''! Run TokaMaker_TORAX coupled pulse design loop.
         
                 @param convergence_threshold Max fractional change in consumed flux between loops for convergence.
@@ -2869,12 +3342,32 @@ class TokaMaker_TORAX:
                        previous loop for all TORAX geometry times (flat equilibrium shape in time), warm-starts
                        TokaMaker at i=0 from the previous loop's final psi grid, and runs inter-loop relax
                        on that final EQDSK when relax is True.
+                @param use_rl_actor If True, run TORAX with RL heating (decisions every 20 s from
+                       80–480 s; knots at t+20). Each decision cold-starts a rerun from t=0 with
+                       the merged schedule; self._data_tree is the final 0→t_final solve only.
+                @param actor_checkpoint Path to trained IQL .pt (actor, state_mean, state_std, action_max).
+                       Required when use_rl_actor=True unless already set on the instance.
+                       Call set_heating() with ecrh_loc and generic_heat_loc before fly().
                 
         '''
         import tempfile
 
         if relax:
             initial_relax = True
+
+        self._use_rl_actor = bool(use_rl_actor)
+        if self._use_rl_actor:
+            if actor_checkpoint is not None:
+                self._rl_actor_checkpoint = os.path.abspath(actor_checkpoint)
+            if self._rl_actor_checkpoint is None:
+                raise ValueError(
+                    'use_rl_actor=True requires actor_checkpoint pointing to a trained .pt file.'
+                )
+            if self._ecrh_loc is None or self._generic_heat_loc is None:
+                raise ValueError(
+                    'use_rl_actor=True requires set_heating() with ecrh_loc and generic_heat_loc.'
+                )
+            self._rl_actor = None
 
         self._steady_state_mode = bool(steady_state_mode)
         self._steady_state_tx_seed = None
@@ -2988,8 +3481,9 @@ class TokaMaker_TORAX:
             self._flattop = np.zeros(len(self._tm_times), dtype=bool)
 
         # ── Header ──
+        _rl_hdr = f' | RL actor ON ({self._rl_actor_checkpoint})' if self._use_rl_actor else ''
         self._print(f'\n{"="*60}\n TokaMaker_TORAX  \n run_name = {run_name} | t=[{self._t_init:.1f}, {self._t_final:.1f}] s '
-                      f'| {len(self._tm_times)} timepoints | dt={self._tx_dt} s | max_loop={max_loop}')
+                      f'| {len(self._tm_times)} timepoints | dt={self._tx_dt} s | max_loop={max_loop}{_rl_hdr}')
 
         err = convergence_threshold + 1.0
         cflux_tx_prev = 0.0
