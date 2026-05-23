@@ -2043,12 +2043,26 @@ class TokaMaker_TORAX:
         self._rl_actor_checkpoint = checkpoint_path
         self._log(f'Loaded RL actor from {checkpoint_path}')
 
-    def _rl_select_action_mw(self, state_vector):
-        r'''! Normalized-state actor inference; returns [ecrh_MW, nbi_MW].'''
+    def _rl_select_action_mw(self, state_vector, decision_t=None):
+        r'''! Actor inference; returns [ecrh_MW, nbi_MW].
+        
+                If no checkpoint was loaded (self._rl_actor is None), returns baseline
+                schedule power at the knot for decision_t (for closed-loop testing).
+        
+                @param state_vector 45-d observation (used only when actor is loaded).
+                @param decision_t Agent decision time (s); required when actor is not loaded.
+                
+        '''
+        if self._rl_actor is None:
+            if decision_t is None:
+                raise RuntimeError(
+                    'RL actor not loaded; pass decision_t for baseline fallback or load a checkpoint.'
+                )
+            knot_t = self._rl_knot_time_for_decision(decision_t)
+            return np.array(self._rl_default_action_mw_at_time(knot_t), dtype=np.float64)
+
         import torch
 
-        if self._rl_actor is None:
-            raise RuntimeError('RL actor not loaded; call _load_rl_actor first.')
         state = np.asarray(state_vector, dtype=np.float64).reshape(-1)
         s_norm = (state - self._rl_state_mean) / (self._rl_state_std + 1e-8)
         with torch.no_grad():
@@ -2077,12 +2091,19 @@ class TokaMaker_TORAX:
                 all agent knots (no time-axis concatenation).
                 
         '''
-        if self._rl_actor is None:
-            if self._rl_actor_checkpoint is None:
-                raise RuntimeError(
-                    'RL segmented TORAX requires _rl_actor_checkpoint or prior _load_rl_actor().'
+        if self._rl_actor is None and self._rl_actor_checkpoint is not None:
+            try:
+                self._load_rl_actor(self._rl_actor_checkpoint)
+            except Exception as e:
+                self._log(
+                    f'Warning: could not load RL actor ({self._rl_actor_checkpoint}): {e}; '
+                    'using baseline heating fallback.'
                 )
-            self._load_rl_actor(self._rl_actor_checkpoint)
+                self._print('  TORAX RL: actor load failed — baseline heating fallback')
+                self._rl_actor = None
+        if self._rl_actor is None:
+            self._log('TORAX RL: no actor loaded; baseline heating at each decision knot.')
+            self._print('  TORAX RL: baseline heating fallback (no trained actor)')
 
         self._rl_actions_history = []
         agent_knots = {}
@@ -2100,7 +2121,7 @@ class TokaMaker_TORAX:
             state = self._extract_rl_state_vector(
                 t_dec, t_seg_end, last_action_mw, data_tree=data_tree,
             )
-            action_mw = self._rl_select_action_mw(state)
+            action_mw = self._rl_select_action_mw(state, decision_t=t_dec)
             action_mw = np.maximum(action_mw, 0.0)
 
             knot_t = t_seg_end
@@ -3345,8 +3366,9 @@ class TokaMaker_TORAX:
                 @param use_rl_actor If True, run TORAX with RL heating (decisions every 20 s from
                        80–480 s; knots at t+20). Each decision cold-starts a rerun from t=0 with
                        the merged schedule; self._data_tree is the final 0→t_final solve only.
-                @param actor_checkpoint Path to trained IQL .pt (actor, state_mean, state_std, action_max).
-                       Required when use_rl_actor=True unless already set on the instance.
+                @param actor_checkpoint Optional path to trained IQL .pt (actor, state_mean,
+                       state_std, action_max). If omitted or unloadable, baseline heating at
+                       each decision knot is used instead (closed-loop test mode).
                        Call set_heating() with ecrh_loc and generic_heat_loc before fly().
                 
         '''
@@ -3359,10 +3381,6 @@ class TokaMaker_TORAX:
         if self._use_rl_actor:
             if actor_checkpoint is not None:
                 self._rl_actor_checkpoint = os.path.abspath(actor_checkpoint)
-            if self._rl_actor_checkpoint is None:
-                raise ValueError(
-                    'use_rl_actor=True requires actor_checkpoint pointing to a trained .pt file.'
-                )
             if self._ecrh_loc is None or self._generic_heat_loc is None:
                 raise ValueError(
                     'use_rl_actor=True requires set_heating() with ecrh_loc and generic_heat_loc.'
@@ -3481,7 +3499,13 @@ class TokaMaker_TORAX:
             self._flattop = np.zeros(len(self._tm_times), dtype=bool)
 
         # ── Header ──
-        _rl_hdr = f' | RL actor ON ({self._rl_actor_checkpoint})' if self._use_rl_actor else ''
+        if self._use_rl_actor:
+            if self._rl_actor_checkpoint:
+                _rl_hdr = f' | RL actor ({self._rl_actor_checkpoint})'
+            else:
+                _rl_hdr = ' | RL baseline fallback'
+        else:
+            _rl_hdr = ''
         self._print(f'\n{"="*60}\n TokaMaker_TORAX  \n run_name = {run_name} | t=[{self._t_init:.1f}, {self._t_final:.1f}] s '
                       f'| {len(self._tm_times)} timepoints | dt={self._tx_dt} s | max_loop={max_loop}{_rl_hdr}')
 
