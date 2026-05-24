@@ -41,6 +41,11 @@ from scipy.signal import savgol_filter
 
 from OpenFUSIONToolkit.TokaMaker.util import read_eqdsk, create_power_flux_fun
 
+from dataclasses import dataclass, field
+from typing import List
+import io
+from contextlib import redirect_stdout
+
 LCFS_WEIGHT = 100.0
 N_PSI = 1000
 _NBI_W_TO_MA = 1/16e6
@@ -195,6 +200,21 @@ BASE_CONFIG = {
     },
 }
 
+
+@dataclass
+class RLRewardConfig:
+    # Safety thresholds
+    q95_min:               float = 3.0
+    beta_n_max:            float = 2.8
+    fgw_max:               float = 0.85
+    # Reward weights
+    step_reward_weight:    float = 1.0      # ← missing
+    q95_penalty_weight:    float = 0.15
+    beta_n_penalty_weight: float = 1.67
+    fgw_penalty_weight:    float = 3.0
+    # Terminal bonus weights
+    q_flattop_weight:      float = 1.0      # ← missing
+    flux_weight:           float = 0.001
 
 # Setup output re-direct from TORAX to log file, suppressing frivolous warnings.
 # Errors will still be output in terminal.
@@ -923,6 +943,57 @@ class TokaMaker_TORAX:
         r'''! RL observation as float vector of length RL_STATE_DIM (45).'''
         state = self._extract_rl_state(t_start, t_end, current_action, data_tree=data_tree)
         return np.array([state[k] for k in RL_STATE_KEYS], dtype=np.float64)
+    
+
+    def compute_rewards(self, cfg: 'RLRewardConfig' = None) -> list:
+        """
+        Compute per-step RL rewards after fly() has completed.
+        Returns a list of length len(RL_DECISION_TIMES), one reward per 20s interval.
+        The final entry includes the terminal bonus (Q_flattop_avg - flux_weight * flux_Wb).
+        """
+        if cfg is None:
+            cfg = RLRewardConfig()
+
+        torax_times = self._data_tree['scalars'].coords['time'].values
+        rewards = []
+
+        for i, t_start in enumerate(RL_DECISION_TIMES):
+            t_end       = t_start + RL_DECISION_INTERVAL
+            is_terminal = (t_start == RL_DECISION_TIMES[-1])
+            mask        = (torax_times >= t_start) & (torax_times <= t_end)
+
+            # Step reward: log(mean Q_fusion + 1)
+            if not np.any(mask):
+                step_reward = 0.0
+            else:
+                Q_vals      = self._data_tree['scalars']['Q_fusion'].values[mask]
+                step_reward = np.log(float(np.nanmean(Q_vals)) + 1)
+
+            # Safety penalties
+            penalty = 0.0
+            if np.any(mask):
+                try:
+                    q95_vals   = self._data_tree['scalars']['q95'].values[mask]
+                    betaN_vals = self._data_tree['scalars']['beta_N'].values[mask]
+                    fgw_vals   = self._data_tree['scalars']['fgw_n_e_line_avg'].values[mask]
+
+                    penalty += cfg.q95_penalty_weight    * np.sum(np.maximum(cfg.q95_min    - q95_vals,   0))
+                    penalty += cfg.beta_n_penalty_weight * np.sum(np.maximum(betaN_vals - cfg.beta_n_max, 0))
+                    penalty += cfg.fgw_penalty_weight    * np.sum(np.maximum(fgw_vals   - cfg.fgw_max,   0))
+                except Exception:
+                    pass
+
+            r = cfg.step_reward_weight * step_reward - penalty
+
+            # Terminal bonus
+            if is_terminal:
+                with redirect_stdout(io.StringIO()):
+                    summary = self.summary()
+                r += cfg.q_flattop_weight * summary.get('Q_flattop_avg', 0.0) - cfg.flux_weight * summary.get('flux_consumed_Wb', 0.0)
+
+            rewards.append(r)
+
+        return rewards
 
     @staticmethod
     def _relax_flat_profile_to_rho_y(profile_val):
@@ -3838,6 +3909,20 @@ class TokaMaker_TORAX:
         r'''! Print/display a physics summary of the simulation.'''
         return summary(self, **kwargs)
 
+@dataclass
+class RLRewardConfig:
+    # Safety thresholds
+    q95_min:               float = 3.0
+    beta_n_max:            float = 2.8
+    fgw_max:               float = 0.85
+    # Reward weights
+    step_reward_weight:    float = 1.0
+    q95_penalty_weight:    float = 0.15
+    beta_n_penalty_weight: float = 1.67
+    fgw_penalty_weight:    float = 3.0
+    # Terminal bonus weights
+    q_flattop_weight:      float = 1.0
+    flux_weight:           float = 0.001
 
 # =============================================================================
 #  Visualization
