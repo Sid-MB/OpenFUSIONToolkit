@@ -12,6 +12,7 @@ REBUILD_SCRIPT="${OFT_ROOT}/rebuild.sh"
 OFT_PYTHONPATH="${OFT_ROOT}/install_release/python"
 REQUIREMENTS_FILE="${VENV_DIR}/pyproject-requirements.txt"
 PIP_CACHE_DIR="${VENV_DIR}/pip-cache"
+JAX_CUDA_EXTRA="${JAX_CUDA_EXTRA:-}"
 
 if [ ! -x "${REBUILD_SCRIPT}" ]; then
     fail_message "OpenFUSIONToolkit rebuild script not found or not executable at ${REBUILD_SCRIPT}"
@@ -81,8 +82,26 @@ if ! PIP_CACHE_DIR="${PIP_CACHE_DIR}" "${VENV_DIR}/bin/python" -m pip install -r
     return 1 2>/dev/null || exit 1
 fi
 
+case "${JAX_CUDA_EXTRA}" in
+    "")
+        ;;
+    cuda13)
+        if ! PIP_CACHE_DIR="${PIP_CACHE_DIR}" "${VENV_DIR}/bin/python" -m pip install "jax[${JAX_CUDA_EXTRA}]>=0.9.2,<1.0.0"; then
+            fail_message "Failed to install CUDA-enabled JAX extra: ${JAX_CUDA_EXTRA}"
+            return 1 2>/dev/null || exit 1
+        fi
+        ;;
+    *)
+        fail_message "Unsupported JAX_CUDA_EXTRA=${JAX_CUDA_EXTRA}; expected cuda13"
+        return 1 2>/dev/null || exit 1
+        ;;
+esac
+
 export PYTHONPATH="${OFT_PYTHONPATH}${PYTHONPATH:+:${PYTHONPATH}}"
 . "${VENV_DIR}/bin/activate"
 
 echo "Environment ready. Python: $(python --version 2>&1)"
 echo "PYTHONPATH includes: ${OFT_PYTHONPATH}"
+if [ -n "${JAX_CUDA_EXTRA}" ]; then
+    echo "Installed JAX CUDA extra: ${JAX_CUDA_EXTRA}"
+fi

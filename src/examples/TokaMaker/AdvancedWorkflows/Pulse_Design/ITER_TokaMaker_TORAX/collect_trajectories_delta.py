@@ -22,11 +22,15 @@ import sys
 import json
 import time
 import argparse
+import multiprocessing as mp
 import numpy as np
 from scipy.stats import qmc
 from datetime import datetime
 import io
 from contextlib import redirect_stdout
+from functools import partial
+import shutil
+import subprocess
 
 
 # ── RL / simulation config ────────────────────────────────────────────────────
@@ -61,6 +65,77 @@ FGW_PENALTY_WEIGHT = 3
 
 # Pellet schedule (fixed to baseline)
 PELLET_S_TOTAL = {0: 0, 90: 5e21, 450: 5e21, 451: 0}
+
+
+# ── Per-worker global state ───────────────────────────────────────────────────
+
+_mygs = None
+
+
+def nvidia_gpu_visible():
+    """Return True when this process appears to have an NVIDIA GPU available."""
+    if os.environ.get('CUDA_VISIBLE_DEVICES') in ('', '-1'):
+        return False
+
+    nvidia_smi = shutil.which('nvidia-smi')
+    if not nvidia_smi:
+        return False
+
+    try:
+        result = subprocess.run(
+            [nvidia_smi, '-L'],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+    except Exception:
+        return False
+
+    return result.returncode == 0 and 'GPU ' in result.stdout
+
+
+def validate_jax_backend(require_cuda_on_gpu=True):
+    """
+    Fail fast on GPU nodes if JAX only initialized a CPU backend.
+
+    TORAX uses JAX. Without a CUDA-enabled jaxlib/plugin installation, a Slurm
+    GPU allocation can silently run TORAX on CPU unless we stop here.
+    """
+    if os.environ.get('CUDA_VISIBLE_DEVICES') == '-1':
+        print('JAX backend check skipped: CUDA_VISIBLE_DEVICES=-1')
+        return 'cpu-forced', []
+
+    try:
+        import jax
+    except Exception as e:
+        raise RuntimeError(f'JAX import failed: {e}') from e
+
+    backend = jax.default_backend()
+    devices = jax.devices()
+    gpu_devices = [device for device in devices if device.platform == 'gpu']
+    gpu_visible = nvidia_gpu_visible()
+
+    print(f'JAX backend: {backend}; devices: {devices}')
+
+    if require_cuda_on_gpu and gpu_visible and not gpu_devices:
+        raise RuntimeError(
+            'An NVIDIA GPU is visible, but JAX did not initialize any GPU '
+            'devices. Install/run with CUDA-enabled JAX, e.g. '
+            '`uv run --extra cuda13 ...`, '
+            'or pass --allow_cpu_jax_on_gpu to override.'
+        )
+
+    return backend, devices
+
+
+def worker_init(cwd, require_cuda_on_gpu):
+    """Initialize one OFT/TokaMaker object per worker process."""
+    global _mygs
+    os.chdir(cwd)
+    validate_jax_backend(require_cuda_on_gpu=require_cuda_on_gpu)
+    _mygs, _, _, _ = setup_tokamaker(cwd)
 
 
 # ── Latin Hypercube Sampling ──────────────────────────────────────────────────
@@ -405,7 +480,8 @@ def setup_tokamaker(cwd):
 
     R0, B0, Z0 = 6.3, 5.2, 0.5
 
-    myOFT = OFT_env(nthreads=1)
+    oft_nthreads = int(os.environ.get('OFT_NUM_THREADS', '1'))
+    myOFT = OFT_env(nthreads=oft_nthreads)
     mygs  = TokaMaker(myOFT)
 
     mesh_pts, mesh_lc, mesh_reg, coil_dict, cond_dict = load_gs_mesh('ITER_mesh.h5')
@@ -487,7 +563,7 @@ def run_single_trajectory(mygs, action_row, run_id, cwd, eqdsk_list, eqtimes,
         tmtx.fly(
             output_mode=False,
             max_loop=2,
-            run_name='tmp',
+            run_name=f'tmp_{run_id}',
             t_ave_toggle='flattop',
             t_ave_window=25,
             relax=True,
@@ -522,6 +598,32 @@ def save_trajectory(transitions, summary, action_row, run_id, output_dir):
     return path
 
 
+def worker_fn(run_id, all_actions, eqdsk_list, eqtimes, coil_bounds,
+              x_points, diverted_isoflux_pts, Ip_targets, ne_init, Te_init,
+              psi_sample, output_dir):
+    """Run and save one trajectory using this worker's initialized TokaMaker."""
+    global _mygs
+
+    try:
+        action_row = all_actions[run_id]
+        cwd = os.getcwd()
+
+        transitions, summary = run_single_trajectory(
+            _mygs, action_row, run_id, cwd, eqdsk_list, eqtimes,
+            coil_bounds, x_points, diverted_isoflux_pts,
+            Ip_targets, ne_init, Te_init, psi_sample,
+        )
+
+        if transitions is not None:
+            path = save_trajectory(transitions, summary, action_row, run_id, output_dir)
+            return run_id, True, path
+
+        return run_id, False, 'simulation returned None'
+
+    except Exception as e:
+        return run_id, False, str(e)
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == '__main__':
@@ -529,21 +631,37 @@ if __name__ == '__main__':
     parser.add_argument('--n_trajectories', type=int, default=500)
     parser.add_argument('--output_dir',     type=str, default='./rl_dataset')
     parser.add_argument('--seed',           type=int, default=42)
+    parser.add_argument('--n_workers',      type=int, default=1,
+                        help='Number of parallel worker processes')
     parser.add_argument('--start_idx',      type=int, default=0,
                         help='Resume from this trajectory index')
+    parser.add_argument('--end_idx',        type=int, default=None,
+                        help='Exclusive end trajectory index; defaults to n_trajectories')
+    parser.add_argument('--allow_cpu_jax_on_gpu', action='store_true',
+                        help='Do not fail when an NVIDIA GPU is visible but JAX only sees CPU')
     args = parser.parse_args()
 
-    os.makedirs(args.output_dir, exist_ok=True)
+    if args.n_workers < 1:
+        raise ValueError('--n_workers must be >= 1')
+
     cwd = os.getcwd()
+    require_cuda_on_gpu = not args.allow_cpu_jax_on_gpu
+    validate_jax_backend(require_cuda_on_gpu=require_cuda_on_gpu)
+
+    os.makedirs(args.output_dir, exist_ok=True)
 
     print(f'Sampling {args.n_trajectories} trajectories with LHS (seed={args.seed})')
     all_actions = sample_actions_lhs(args.n_trajectories, seed=args.seed)
     np.save(os.path.join(args.output_dir, 'all_actions.npy'), all_actions)
     print(f'Action matrix saved: shape {all_actions.shape}')
 
-    # ── One-time setup ────────────────────────────────────────────────────────
-    print('Setting up TokaMaker...')
-    mygs, R0, B0, Z0 = setup_tokamaker(cwd)
+    if args.n_workers == 1:
+        # ── One-time setup ────────────────────────────────────────────────────
+        print('Setting up TokaMaker...')
+        mygs, R0, B0, Z0 = setup_tokamaker(cwd)
+    else:
+        print(f'Setting up TokaMaker inside {args.n_workers} worker processes...')
+        mygs = None
 
     # ── Fixed simulation parameters ───────────────────────────────────────────
     coil_bounds = {key: [-50.e6, 50.e6] for key in [
@@ -570,43 +688,93 @@ if __name__ == '__main__':
                         0.57, 0.50, 0.45, 0.40, 0.36, 0.32, 0.28, 0.25,
                         0.23, 0.20, 0.18, 0.16, 0.15, 0.13, 0.12, 0.11, 0.10])
 
-    run_ids = list(range(args.start_idx, args.n_trajectories))
-    print(f'Launching {len(run_ids)} trajectories serially...\n')
+    end_idx = args.n_trajectories if args.end_idx is None else args.end_idx
+    if not (0 <= args.start_idx <= end_idx <= args.n_trajectories):
+        raise ValueError(
+            f'Invalid range: require 0 <= start_idx <= end_idx <= n_trajectories, '
+            f'got start_idx={args.start_idx}, end_idx={end_idx}, '
+            f'n_trajectories={args.n_trajectories}'
+        )
+
+    run_ids = list(range(args.start_idx, end_idx))
+    mode = 'serially' if args.n_workers == 1 else f'across {args.n_workers} workers'
+    print(f'Launching {len(run_ids)} trajectories {mode}...\n')
 
     t_start_total = time.time()
     success_count, fail_count = 0, 0
 
-    # ── Serial run loop ───────────────────────────────────────────────────────
-    for run_id in run_ids:
-        action_row = all_actions[run_id]
+    if args.n_workers == 1:
+        # ── Serial run loop ───────────────────────────────────────────────────
+        for run_id in run_ids:
+            action_row = all_actions[run_id]
 
-        print(f'\n[{run_id + 1}/{args.n_trajectories}] Running trajectory {run_id}...')
-        t0 = time.time()
+            print(f'\n[{run_id + 1}/{args.n_trajectories}] Running trajectory {run_id}...')
+            t0 = time.time()
 
-        transitions, summary = run_single_trajectory(
-            mygs, action_row, run_id, cwd, eqdsk_list, eqtimes,
-            coil_bounds, x_points, diverted_isoflux_pts,
-            Ip_targets, ne_init, Te_init, psi_sample,
+            transitions, summary = run_single_trajectory(
+                mygs, action_row, run_id, cwd, eqdsk_list, eqtimes,
+                coil_bounds, x_points, diverted_isoflux_pts,
+                Ip_targets, ne_init, Te_init, psi_sample,
+            )
+
+            elapsed = time.time() - t0
+
+            if transitions is not None:
+                path = save_trajectory(transitions, summary, action_row, run_id, args.output_dir)
+                success_count += 1
+                print(f'  Saved to {path} ({elapsed:.1f}s)')
+            else:
+                fail_count += 1
+                fail_log = os.path.join(args.output_dir, 'failed_runs.txt')
+                with open(fail_log, 'a') as f:
+                    f.write(f'{run_id}\n')
+                print(f'  Failed run logged ({elapsed:.1f}s)')
+
+            elapsed_total = time.time() - t_start_total
+            done = success_count + fail_count
+            eta = (elapsed_total / done) * (len(run_ids) - done) / 60 if done else 0.0
+            print(f'  Progress: {success_count} ok, {fail_count} failed | '
+                  f'Elapsed: {elapsed_total/60:.1f} min | ETA: {eta:.1f} min')
+    else:
+        worker = partial(
+            worker_fn,
+            all_actions=all_actions,
+            eqdsk_list=eqdsk_list,
+            eqtimes=eqtimes,
+            coil_bounds=coil_bounds,
+            x_points=x_points,
+            diverted_isoflux_pts=diverted_isoflux_pts,
+            Ip_targets=Ip_targets,
+            ne_init=ne_init,
+            Te_init=Te_init,
+            psi_sample=psi_sample,
+            output_dir=args.output_dir,
         )
 
-        elapsed = time.time() - t0
+        mp_context = os.environ.get('MP_CONTEXT', 'fork')
+        ctx = mp.get_context(mp_context)
+        with ctx.Pool(
+            processes=args.n_workers,
+            initializer=worker_init,
+            initargs=(cwd, require_cuda_on_gpu),
+        ) as pool:
+            for run_id, ok, result in pool.imap_unordered(worker, run_ids):
+                elapsed_total = time.time() - t_start_total
+                done = success_count + fail_count + 1
 
-        if transitions is not None:
-            path = save_trajectory(transitions, summary, action_row, run_id, args.output_dir)
-            success_count += 1
-            print(f'  Saved to {path} ({elapsed:.1f}s)')
-        else:
-            fail_count += 1
-            fail_log = os.path.join(args.output_dir, 'failed_runs.txt')
-            with open(fail_log, 'a') as f:
-                f.write(f'{run_id}\n')
-            print(f'  Failed run logged ({elapsed:.1f}s)')
+                if ok:
+                    success_count += 1
+                    print(f'  [{run_id}] OK -> {result}')
+                else:
+                    fail_count += 1
+                    fail_log = os.path.join(args.output_dir, 'failed_runs.txt')
+                    with open(fail_log, 'a') as f:
+                        f.write(f'{run_id}\n')
+                    print(f'  [{run_id}] FAILED: {result}')
 
-        elapsed_total = time.time() - t_start_total
-        done = success_count + fail_count
-        eta = (elapsed_total / done) * (len(run_ids) - done) / 60 if done else 0.0
-        print(f'  Progress: {success_count} ok, {fail_count} failed | '
-              f'Elapsed: {elapsed_total/60:.1f} min | ETA: {eta:.1f} min')
+                eta = (elapsed_total / done) * (len(run_ids) - done) / 60 if done else 0.0
+                print(f'  Progress: {success_count} ok, {fail_count} failed | '
+                      f'Elapsed: {elapsed_total/60:.1f} min | ETA: {eta:.1f} min')
 
     total = time.time() - t_start_total
     print(f'\nDone. {success_count}/{args.n_trajectories} saved to {args.output_dir} '

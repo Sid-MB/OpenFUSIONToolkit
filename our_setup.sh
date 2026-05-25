@@ -3,9 +3,10 @@
 set -euxo pipefail
 
 cd "$(dirname "$0")"
-if [ "${CONDA_SHLVL:-0}" -gt 0 ]; then # Deactivate conda if enabled so Anaconda tools do not shadow the macOS build toolchain.
+if [ "${CONDA_SHLVL:-0}" -gt 0 ]; then # Deactivate conda if enabled so Anaconda tools do not shadow the macOS build toolchain?
     [ -f "$(conda info --base)/etc/profile.d/conda.sh" ] && source "$(conda info --base)/etc/profile.d/conda.sh"
-    conda deactivate
+    # conda deactivate
+    echo "You may want to consider deactivating conda."
 fi
 
 # Siddharth needs the following line on his machine, probably not necessary for anyone else
