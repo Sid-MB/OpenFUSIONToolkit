@@ -13,7 +13,8 @@ Dataset structure (per trajectory, 12 transitions):
     done    : True at last transition
 
 Usage:
-    python collect_trajectories.py --n_trajectories 500 --output_dir ./rl_dataset
+    python collect_trajectories_delta.py --n_trajectories 500 --output_dir ./rl_dataset
+    python collect_trajectories_delta.py --n_trajectories 1000 --start_idx 600 --output_dir ./rl_dataset_delta_sampling_maxloop=2_grid_51
 """
 
 import os
