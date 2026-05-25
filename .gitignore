@@ -22,6 +22,17 @@ __pycache__
 
 # Build/environment artifacts
 /builds/
+/build/
 /oft_venv/
 /compiler_id.txt
 /setup_env.sh
+/config_cmake.sh
+
+/UMFPACK-*
+/OpenBLAS-*
+/metis-*
+/libxml2-*
+/hdf5-*
+/arpack-ng-*
+/build_release
+/install_release
