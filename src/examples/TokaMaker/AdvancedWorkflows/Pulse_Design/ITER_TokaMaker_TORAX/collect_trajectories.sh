@@ -11,4 +11,4 @@
 # Optional setup
 # sh ./setup-env.sh
 
-uv run python collect_trajectories_delta.py --n_trajectories 1000 --start_idx 600 --output_dir ./rl_dataset_delta_sampling_maxloop=2_grid_51_run1
+uv run python collect_trajectories_delta.py --n_trajectories 1000 --start_idx 600 --output_dir ./rl_dataset_delta_sampling_maxloop=2_grid_51_run1 "$@"
