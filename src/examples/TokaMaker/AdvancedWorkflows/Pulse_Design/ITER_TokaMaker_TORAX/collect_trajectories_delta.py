@@ -71,6 +71,16 @@ PELLET_S_TOTAL = {0: 0, 90: 5e21, 450: 5e21, 451: 0}
 
 _mygs = None
 
+FATAL_EXCEPTIONS = (
+    FileNotFoundError,
+    PermissionError,
+    IsADirectoryError,
+    NotADirectoryError,
+    ModuleNotFoundError,
+    ImportError,
+    OSError,
+)
+
 
 def nvidia_gpu_visible():
     """Return True when this process appears to have an NVIDIA GPU available."""
@@ -617,6 +627,9 @@ def run_single_trajectory(mygs, action_row, run_id, cwd, eqdsk_list, eqtimes,
 
         return transitions, summary
 
+    except FATAL_EXCEPTIONS as e:
+        print(f'  [run {run_id}] FATAL: {type(e).__name__}: {e}')
+        raise
     except Exception as e:
         print(f'  [run {run_id}] FAILED: {e}')
         return None, None
@@ -663,6 +676,8 @@ def worker_fn(run_id, all_actions, eqdsk_list, eqtimes, coil_bounds,
 
         return run_id, False, 'simulation returned None'
 
+    except FATAL_EXCEPTIONS:
+        raise
     except Exception as e:
         return run_id, False, str(e)
 
