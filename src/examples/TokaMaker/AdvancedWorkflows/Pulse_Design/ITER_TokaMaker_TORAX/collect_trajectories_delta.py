@@ -520,7 +520,6 @@ def save_trajectory(transitions, summary, action_row, run_id, output_dir):
         json.dump(payload, f, indent=2, default=str)
     return path
 
-
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == '__main__':
@@ -530,6 +529,8 @@ if __name__ == '__main__':
     parser.add_argument('--seed',           type=int, default=42)
     parser.add_argument('--start_idx',      type=int, default=0,
                         help='Resume from this trajectory index')
+    parser.add_argument('--end_idx',        type=int, default=None,
+                        help='Stop before this trajectory index (exclusive)')
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -569,8 +570,10 @@ if __name__ == '__main__':
                         0.57, 0.50, 0.45, 0.40, 0.36, 0.32, 0.28, 0.25,
                         0.23, 0.20, 0.18, 0.16, 0.15, 0.13, 0.12, 0.11, 0.10])
 
-    run_ids = list(range(args.start_idx, args.n_trajectories))
-    print(f'Launching {len(run_ids)} trajectories serially...\n')
+    # ── Determine run range ───────────────────────────────────────────────────
+    end_idx = args.end_idx if args.end_idx is not None else args.n_trajectories
+    run_ids = list(range(args.start_idx, end_idx))
+    print(f'Launching {len(run_ids)} trajectories serially (indices {args.start_idx} to {end_idx-1})...\n')
 
     t_start_total = time.time()
     success_count, fail_count = 0, 0
