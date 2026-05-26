@@ -228,6 +228,9 @@ def setup_build_env(build_dir="build", build_cmake_ver=None):
     # Get build location
     config_dict['base_dir'] = os.getcwd()
     config_dict['build_dir'] = os.path.join(config_dict['base_dir'], build_dir)
+    lib_flavor = os.environ.get('OFT_LIBS_FLAVOR')
+    if lib_flavor:
+        config_dict['OFT_LIBS_FLAVOR'] = lib_flavor
     if (not os.path.isdir(config_dict['build_dir'])):
         os.mkdir(config_dict['build_dir'])
     # Check for "patch" command
@@ -344,8 +347,15 @@ def build_cmake_script(mydict,build_debug=False,use_openmp=False,build_python=Fa
     tmp_dict['machine'] = os.uname()[1]
     tmp_dict['script_args'] = ' '.join(sys.argv[1:])
     tmp_dict['LD'] = mydict['FC']
-    tmp_dict['cmake_install_dir'] = os.path.join("$ROOT_PATH","install_debug" if build_debug else "install_release")
-    tmp_dict['cmake_build_dir'] = os.path.join("$ROOT_PATH","build_debug" if build_debug else "build_release")
+    flavor_suffix = ''
+    if mydict.get('OFT_LIBS_FLAVOR'):
+        flavor_suffix = '_' + mydict['OFT_LIBS_FLAVOR']
+    tmp_dict['cmake_install_dir'] = os.path.join(
+        "$ROOT_PATH", ("install_debug" if build_debug else "install_release") + flavor_suffix
+    )
+    tmp_dict['cmake_build_dir'] = os.path.join(
+        "$ROOT_PATH", ("build_debug" if build_debug else "build_release") + flavor_suffix
+    )
     env_lines = []
     cmake_lines = [
         "{CMAKE}",
@@ -519,6 +529,9 @@ class package:
             #
             if self.install_dir is None:
                 self.install_dir = re.sub(r"[\.]", "_", self.build_dir)
+            lib_flavor = config_dict.get('OFT_LIBS_FLAVOR')
+            if lib_flavor and not self.install_dir.endswith('_' + lib_flavor):
+                self.install_dir = self.install_dir + '_' + lib_flavor
             self.root_path = config_dict['base_dir']
             self.root_build_path = config_dict['build_dir']
         config_dict = self.setup(config_dict)

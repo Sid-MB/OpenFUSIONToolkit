@@ -6,7 +6,17 @@ install(DIRECTORY CUTE DESTINATION examples/TokaMaker COMPONENT examples)
 install(DIRECTORY LTX DESTINATION examples/TokaMaker COMPONENT examples)
 install(DIRECTORY MANTA DESTINATION examples/TokaMaker COMPONENT examples)
 install(DIRECTORY Dipole DESTINATION examples/TokaMaker COMPONENT examples)
-install(DIRECTORY AdvancedWorkflows DESTINATION examples/TokaMaker COMPONENT examples)
+install(
+  DIRECTORY AdvancedWorkflows
+  DESTINATION examples/TokaMaker
+  COMPONENT examples
+  PATTERN ".venv" EXCLUDE
+  PATTERN "__pycache__" EXCLUDE
+  PATTERN "logs" EXCLUDE
+  PATTERN "rl_dataset*" EXCLUDE
+  PATTERN "TokaMaker_TORAX_log_tmp.log" EXCLUDE
+  PATTERN "tokamaker_eta.prof" EXCLUDE
+)
 
 if( OFT_BUILD_TESTS )
   file(COPY fixed_boundary DESTINATION ${CMAKE_CURRENT_BINARY_DIR})

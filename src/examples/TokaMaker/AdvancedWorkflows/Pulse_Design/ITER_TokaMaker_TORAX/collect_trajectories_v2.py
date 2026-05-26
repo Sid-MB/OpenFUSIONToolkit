@@ -594,7 +594,10 @@ if __name__ == '__main__':
     ]}
 
     Ip_targets = [1.5e6, 5e6, 15e6, 15e6, 1.5e6]
-    eqdsk_list = [os.path.join(cwd, f'i={i}.eqdsk') for i in range(5)]
+    seed_eqdsk_dir = os.path.join(cwd, 'seed_eqdsks')
+    if not all(os.path.exists(os.path.join(seed_eqdsk_dir, f'i={i}.eqdsk')) for i in range(5)):
+        seed_eqdsk_dir = cwd
+    eqdsk_list = [os.path.join(seed_eqdsk_dir, f'i={i}.eqdsk') for i in range(5)]
     eqtimes    = [0, 30, 80, 500, 600]
     x_points   = np.array([[5.125, -3.4]])
     diverted_isoflux_pts = np.array([

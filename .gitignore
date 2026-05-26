@@ -23,6 +23,7 @@ __pycache__
 # Build/environment artifacts
 /builds/
 /build/
+/build_logs/
 /oft_venv/
 /compiler_id.txt
 /setup_env.sh
@@ -35,4 +36,6 @@ __pycache__
 /hdf5-*
 /arpack-ng-*
 /build_release
+/build_release_*
 /install_release
+/install_release_*

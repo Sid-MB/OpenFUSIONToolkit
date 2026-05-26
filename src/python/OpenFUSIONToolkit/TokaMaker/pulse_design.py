@@ -2562,6 +2562,52 @@ class TokaMaker_TORAX:
                 except Exception as _e:
                     self._log(f'TORAX relax profile figure failed ({stage}): {_e}')
 
+    def save_initial_relax_state(self, filename):
+        r'''! Save the latest initial TORAX relax state for reuse.
+
+                The saved state contains only the profile-condition tuples that
+                seed later TORAX runs. It is intended for workflows where all
+                trajectories share the same seed EQDSK and initial profiles.
+
+        '''
+        if self._psi_init is None:
+            raise ValueError('No initial TORAX relax state is available to save.')
+
+        payload = {
+            'format': 'TokaMaker_TORAX_initial_relax_state_v1',
+            't_init': float(self._t_init),
+            'relax_kinetics': bool(getattr(self, '_relax_kinetics', False)),
+            'psi': copy.deepcopy(self._psi_init),
+            'n_e': copy.deepcopy(self._n_e_init),
+            'T_e': copy.deepcopy(self._T_e_init),
+            'T_i': copy.deepcopy(self._T_i_init),
+        }
+        with open(filename, 'w') as f:
+            json.dump(payload, f, indent=2)
+
+    def load_initial_relax_state(self, filename):
+        r'''! Load an initial TORAX relax state produced by save_initial_relax_state().'''
+        with open(filename, 'r') as f:
+            payload = json.load(f)
+
+        if payload.get('format') != 'TokaMaker_TORAX_initial_relax_state_v1':
+            raise ValueError(f'Unsupported initial relax state file: {filename}')
+
+        state_t_init = float(payload.get('t_init'))
+        if not np.isclose(state_t_init, float(self._t_init)):
+            raise ValueError(
+                f'Initial relax cache t_init={state_t_init:g} does not match '
+                f'this run t_init={float(self._t_init):g}.'
+            )
+
+        self._psi_init = copy.deepcopy(payload.get('psi'))
+        self._n_e_init = copy.deepcopy(payload.get('n_e'))
+        self._T_e_init = copy.deepcopy(payload.get('T_e'))
+        self._T_i_init = copy.deepcopy(payload.get('T_i'))
+        if self._psi_init is None:
+            raise ValueError(f'Initial relax cache is missing psi: {filename}')
+        self._relax_profiles_snapshot = None
+
 
     def _run_tx(self):
         r'''! Run the TORAX transport simulation.
@@ -3386,6 +3432,8 @@ class TokaMaker_TORAX:
     def fly(self, run_name='tmp', convergence_threshold=-1.0, max_loop=3,
             output_mode=False, skip_bad_init_eqdsks=False,
             initial_relax=True, relax=False, relax_kinetics=False, relax_duration=0.1,
+            initial_relax_state=None, save_initial_relax_state=None,
+            log_dir=None,
             t_ave_toggle='off', t_ave_window=0.5, t_ave_causal=True, t_ave_ignore_start=0.25,
             loop0=False, steady_state_mode=False,
             use_rl_actor=False, actor_checkpoint=None):
@@ -3415,6 +3463,13 @@ class TokaMaker_TORAX:
                        relax uses the same evolve_* flags as set_evolve() / loaded config. When True,
                        relaxed n_e, T_e, T_i are injected into main TORAX after set_*() like psi.
                 @param relax_duration Duration (s) of each relax simulation; timestep is fixed at 0.01 s.
+                @param initial_relax_state Optional JSON file from save_initial_relax_state(). When set,
+                       load this state and skip the initial relax run. This can be used together with
+                       relax=True; inter-loop relaxes are still run.
+                @param save_initial_relax_state Optional JSON file path. When the initial relax is run,
+                       save its resulting profile-condition state for reuse by later runs.
+                @param log_dir Optional directory for the per-run TokaMaker_TORAX log file.
+                       Defaults to the current working directory.
                 @param t_ave_toggle Time-averaging mode: 'off' (no averaging), 'flattop' (average only
                        during flat-top), or 'pulse' (average over the whole pulse).
                 @param t_ave_window Averaging window size in seconds. Default 0.5 s.
@@ -3445,7 +3500,9 @@ class TokaMaker_TORAX:
         '''
         import tempfile
 
-        if relax:
+        if initial_relax_state is not None:
+            initial_relax = False
+        elif relax:
             initial_relax = True
 
         self._use_rl_actor = bool(use_rl_actor)
@@ -3507,11 +3564,17 @@ class TokaMaker_TORAX:
         self._run_timestamp = None if run_name == 'tmp' else dt_str
         self._output_file_tag = None if run_name == 'tmp' else f'{run_name}_{dt_str}'
 
-        # ── Log file: same directory as TokaMaker_TORAX_outputs (i.e. cwd / './') ──
-        if run_name == 'tmp':
-            self._log_file = os.path.abspath('TokaMaker_TORAX_log_tmp.log')
+        # ── Log file ──
+        if log_dir is None:
+            log_dir = os.getcwd()
         else:
-            self._log_file = os.path.abspath(f'TokaMaker_TORAX_log_{run_name}_{dt_str}.log')
+            log_dir = os.path.abspath(log_dir)
+            os.makedirs(log_dir, exist_ok=True)
+        if run_name == 'tmp':
+            log_name = 'TokaMaker_TORAX_log_tmp.log'
+        else:
+            log_name = f'TokaMaker_TORAX_log_{run_name}_{dt_str}.log'
+        self._log_file = os.path.abspath(os.path.join(log_dir, log_name))
         with open(self._log_file, 'w'):
             pass
         print(f'  Log file: {self._log_file}', flush=True)
@@ -3591,7 +3654,11 @@ class TokaMaker_TORAX:
             self._relax_mainrun_profile_history = []
 
             # ── Initial TORAX relax (optional) ──
-            if initial_relax:
+            if initial_relax_state is not None:
+                self._print(f'\n{"="*60}\n  Initial TORAX relax: loading cached state\n{"="*60}')
+                self.load_initial_relax_state(initial_relax_state)
+                self._log(f'Initial TORAX relax state loaded from {os.path.abspath(initial_relax_state)}')
+            elif initial_relax:
                 self._print(f'\n{"="*60}\n  Initial TORAX relax\n{"="*60}')
                 if self._relax_kinetics:
                     self._print('  Initial relax: relax_kinetics ON (evolve_* from set_evolve / config)')
@@ -3599,6 +3666,9 @@ class TokaMaker_TORAX:
                 if not self._test_eqdsk_tx_config(init_seed):
                     raise ValueError(f'Initial TORAX relax: first seed EQDSK not valid for TORAX: {init_seed}')
                 self._run_tx_relax(stage='initial', eqdsk_path=init_seed, prescribed_profiles=None)
+                if save_initial_relax_state is not None:
+                    self.save_initial_relax_state(save_initial_relax_state)
+                    self._log(f'Initial TORAX relax state saved to {os.path.abspath(save_initial_relax_state)}')
             else:
                 self._psi_init = None
                 self._n_e_init = None

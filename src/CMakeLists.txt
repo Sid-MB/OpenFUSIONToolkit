@@ -487,6 +487,14 @@ endif()
 # Binary directories
 add_subdirectory( bin )
 
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../scripts/oft_arch")
+  install(
+    DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../scripts/oft_arch"
+    DESTINATION scripts
+    COMPONENT app
+  )
+endif()
+
 ########################
 # Packaging
 ########################

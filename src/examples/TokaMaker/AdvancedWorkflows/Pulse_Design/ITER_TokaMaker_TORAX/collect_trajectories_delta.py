@@ -494,71 +494,110 @@ def setup_tokamaker(cwd):
     return mygs, R0, B0, Z0
 
 
-def run_single_trajectory(mygs, action_row, run_id, cwd, eqdsk_list, eqtimes,
-                           coil_bounds, x_points, diverted_isoflux_pts,
-                           Ip_targets, ne_init, Te_init, psi_sample):
-    """
-    Configure and run one TokaMaker_TORAX simulation with the given action_row.
-    Returns the transitions list and summary dict, or None if simulation failed.
-    """
+def configure_tmtx(mygs, action_row, eqdsk_list, eqtimes, coil_bounds, x_points,
+                   Ip_targets, ne_init, Te_init, psi_sample):
+    """Configure one TokaMaker_TORAX object for a trajectory."""
     from OpenFUSIONToolkit.TokaMaker.pulse_design import TokaMaker_TORAX
     import numpy as np
 
     ecrh_schedule = build_ecrh_schedule(action_row)
     nbi_schedule  = build_nbi_schedule(action_row)
 
+    tmtx = TokaMaker_TORAX(
+        t_init=0,
+        t_final=600,
+        tx_dt=5,
+        eqtimes=eqtimes,
+        g_eqdsk_arr=eqdsk_list,
+        last_surface_factor=0.99,
+        tm_times=TM_TIMES,
+        tokamaker_obj=mygs,
+    )
+
+    tmtx.set_TORAX_grid(grid_type='n_rho', grid=51)
+
+    tmtx.set_heating(
+        generic_heat=nbi_schedule,
+        generic_heat_loc=0.25,
+        nbi_current=True,
+        ecrh=ecrh_schedule,
+        ecrh_loc=0.35,
+    )
+
+    tmtx.set_fueling(
+        gas_puff_S_total=1e22,
+        gas_puff_decay_length=0.05,
+        pellet_deposition_location=0.8,
+        pellet_width=0.1,
+        pellet_S_total=PELLET_S_TOTAL,
+    )
+
+    def array_to_profile_dict(arr, grid):
+        return {float(p): float(v) for p, v in zip(grid, arr)}
+
+    ne = {0.0: array_to_profile_dict(ne_init, psi_sample)}
+    Te = {0.0: array_to_profile_dict(Te_init, psi_sample)}
+
+    tmtx.set_ne(ne, right_bc={0: ne_init[-1], 80: 2e19, 500: 2e19, 600: 0.5e19})
+    tmtx.set_Te(Te, right_bc=0.1)
+    tmtx.set_Ti(Te, right_bc=0.1)
+
+    ne_ped_val, Te_ped_val = 0.9e20, 3.0
+    ped_toggle = {0: False, 79: False, 80: True, 500: True, 501: False, 600: False}
+    T_ped  = {80: 1.0, 82: 2.0, 90: Te_ped_val, 500: Te_ped_val, 540: 1.0, 580: 1.0, 600: 1.0}
+    n_e_ped = {80: 3e19, 82: ne_ped_val / 2, 90: ne_ped_val, 500: ne_ped_val}
+    tmtx.set_pedestal(set_pedestal=ped_toggle, T_i_ped=T_ped, T_e_ped=T_ped,
+                      n_e_ped=n_e_ped, ped_top=0.9)
+
+    tmtx.set_Ip({0: Ip_targets[0], 100: Ip_targets[2], 500: Ip_targets[2], 600: Ip_targets[0]})
+    tmtx.set_plasma_composition(main_ion={'D': 0.5, 'T': 0.5}, impurity='Ne', Zeff=1.6)
+    tmtx.set_evolve(density=True, Ti=True, Te=True, current=True)
+    tmtx.set_x_points(diverted_times=(80, 500), x_point_targets=x_points, x_point_weight=100)
+    tmtx.set_TokaMaker_coil_reg(coil_bounds=coil_bounds, updownsym=False)
+
+    return tmtx
+
+
+def build_initial_relax_cache(mygs, action_row, cache_path, eqdsk_list, eqtimes,
+                              coil_bounds, x_points, Ip_targets, ne_init,
+                              Te_init, psi_sample, log_dir=None):
+    """Run the shared initial TORAX relax once and save it for all trajectories."""
+    if os.path.exists(cache_path):
+        print(f'Using existing initial relax cache: {cache_path}')
+        return cache_path
+
+    os.makedirs(os.path.dirname(os.path.abspath(cache_path)), exist_ok=True)
+    print(f'Building shared initial relax cache: {cache_path}')
+    tmtx = configure_tmtx(
+        mygs, action_row, eqdsk_list, eqtimes, coil_bounds, x_points,
+        Ip_targets, ne_init, Te_init, psi_sample,
+    )
+    tmtx.fly(
+        output_mode=False,
+        max_loop=0,
+        run_name='initial_relax_cache',
+        initial_relax=True,
+        relax=False,
+        relax_duration=5,
+        save_initial_relax_state=cache_path,
+        log_dir=log_dir,
+    )
+    return cache_path
+
+
+def run_single_trajectory(mygs, action_row, run_id, cwd, eqdsk_list, eqtimes,
+                           coil_bounds, x_points, diverted_isoflux_pts,
+                           Ip_targets, ne_init, Te_init, psi_sample,
+                           initial_relax_cache=None, log_dir=None):
+    """
+    Configure and run one TokaMaker_TORAX simulation with the given action_row.
+    Returns the transitions list and summary dict, or None if simulation failed.
+    """
     try:
-        tmtx = TokaMaker_TORAX(
-            t_init=0,
-            t_final=600,
-            tx_dt=5,
-            eqtimes=eqtimes,
-            g_eqdsk_arr=eqdsk_list,
-            last_surface_factor=0.99,
-            tm_times=TM_TIMES,
-            tokamaker_obj=mygs,
+        tmtx = configure_tmtx(
+            mygs, action_row, eqdsk_list, eqtimes, coil_bounds, x_points,
+            Ip_targets, ne_init, Te_init, psi_sample,
         )
-
-        tmtx.set_TORAX_grid(grid_type='n_rho', grid=51)
-
-        tmtx.set_heating(
-            generic_heat=nbi_schedule,
-            generic_heat_loc=0.25,
-            nbi_current=True,
-            ecrh=ecrh_schedule,
-            ecrh_loc=0.35,
-        )
-
-        tmtx.set_fueling(
-            gas_puff_S_total=1e22,
-            gas_puff_decay_length=0.05,
-            pellet_deposition_location=0.8,
-            pellet_width=0.1,
-            pellet_S_total=PELLET_S_TOTAL,
-        )
-
-        def array_to_profile_dict(arr, grid):
-            return {float(p): float(v) for p, v in zip(grid, arr)}
-
-        ne = {0.0: array_to_profile_dict(ne_init, psi_sample)}
-        Te = {0.0: array_to_profile_dict(Te_init, psi_sample)}
-
-        tmtx.set_ne(ne, right_bc={0: ne_init[-1], 80: 2e19, 500: 2e19, 600: 0.5e19})
-        tmtx.set_Te(Te, right_bc=0.1)
-        tmtx.set_Ti(Te, right_bc=0.1)
-
-        ne_ped_val, Te_ped_val = 0.9e20, 3.0
-        ped_toggle = {0: False, 79: False, 80: True, 500: True, 501: False, 600: False}
-        T_ped  = {80: 1.0, 82: 2.0, 90: Te_ped_val, 500: Te_ped_val, 540: 1.0, 580: 1.0, 600: 1.0}
-        n_e_ped = {80: 3e19, 82: ne_ped_val / 2, 90: ne_ped_val, 500: ne_ped_val}
-        tmtx.set_pedestal(set_pedestal=ped_toggle, T_i_ped=T_ped, T_e_ped=T_ped,
-                          n_e_ped=n_e_ped, ped_top=0.9)
-
-        tmtx.set_Ip({0: Ip_targets[0], 100: Ip_targets[2], 500: Ip_targets[2], 600: Ip_targets[0]})
-        tmtx.set_plasma_composition(main_ion={'D': 0.5, 'T': 0.5}, impurity='Ne', Zeff=1.6)
-        tmtx.set_evolve(density=True, Ti=True, Te=True, current=True)
-        tmtx.set_x_points(diverted_times=(80, 500), x_point_targets=x_points, x_point_weight=100)
-        tmtx.set_TokaMaker_coil_reg(coil_bounds=coil_bounds, updownsym=False)
 
         tmtx.fly(
             output_mode=False,
@@ -568,6 +607,8 @@ def run_single_trajectory(mygs, action_row, run_id, cwd, eqdsk_list, eqtimes,
             t_ave_window=25,
             relax=True,
             relax_duration=5,
+            initial_relax_state=initial_relax_cache,
+            log_dir=log_dir,
         )
 
         transitions = build_trajectory(tmtx, action_row)
@@ -600,7 +641,7 @@ def save_trajectory(transitions, summary, action_row, run_id, output_dir):
 
 def worker_fn(run_id, all_actions, eqdsk_list, eqtimes, coil_bounds,
               x_points, diverted_isoflux_pts, Ip_targets, ne_init, Te_init,
-              psi_sample, output_dir):
+              psi_sample, output_dir, initial_relax_cache, log_dir):
     """Run and save one trajectory using this worker's initialized TokaMaker."""
     global _mygs
 
@@ -612,6 +653,8 @@ def worker_fn(run_id, all_actions, eqdsk_list, eqtimes, coil_bounds,
             _mygs, action_row, run_id, cwd, eqdsk_list, eqtimes,
             coil_bounds, x_points, diverted_isoflux_pts,
             Ip_targets, ne_init, Te_init, psi_sample,
+            initial_relax_cache=initial_relax_cache,
+            log_dir=log_dir,
         )
 
         if transitions is not None:
@@ -637,6 +680,12 @@ if __name__ == '__main__':
                         help='Resume from this trajectory index')
     parser.add_argument('--end_idx',        type=int, default=None,
                         help='Exclusive end trajectory index; defaults to n_trajectories')
+    parser.add_argument('--initial_relax_cache', type=str, default=None,
+                        help='Path for shared initial TORAX relax cache; defaults inside output_dir')
+    parser.add_argument('--no_initial_relax_cache', action='store_true',
+                        help='Disable shared initial relax cache and run initial relax per trajectory')
+    parser.add_argument('--build_initial_relax_cache_only', action='store_true',
+                        help='Build the shared initial relax cache and exit without running trajectories')
     parser.add_argument('--allow_cpu_jax_on_gpu', action='store_true',
                         help='Do not fail when an NVIDIA GPU is visible but JAX only sees CPU')
     args = parser.parse_args()
@@ -649,13 +698,27 @@ if __name__ == '__main__':
     validate_jax_backend(require_cuda_on_gpu=require_cuda_on_gpu)
 
     os.makedirs(args.output_dir, exist_ok=True)
+    log_dir = os.path.abspath(os.path.join(args.output_dir, 'tokamaker_torax_logs'))
+    os.makedirs(log_dir, exist_ok=True)
 
     print(f'Sampling {args.n_trajectories} trajectories with LHS (seed={args.seed})')
     all_actions = sample_actions_lhs(args.n_trajectories, seed=args.seed)
     np.save(os.path.join(args.output_dir, 'all_actions.npy'), all_actions)
     print(f'Action matrix saved: shape {all_actions.shape}')
 
-    if args.n_workers == 1:
+    initial_relax_cache = None
+    if not args.no_initial_relax_cache:
+        initial_relax_cache = args.initial_relax_cache
+        if initial_relax_cache is None:
+            initial_relax_cache = os.path.join(args.output_dir, 'initial_relax_state.json')
+        initial_relax_cache = os.path.abspath(initial_relax_cache)
+
+    needs_relax_cache_build = (
+        initial_relax_cache is not None
+        and (args.build_initial_relax_cache_only or not os.path.exists(initial_relax_cache))
+    )
+    needs_main_tokamaker = args.n_workers == 1 or needs_relax_cache_build
+    if needs_main_tokamaker:
         # ── One-time setup ────────────────────────────────────────────────────
         print('Setting up TokaMaker...')
         mygs, R0, B0, Z0 = setup_tokamaker(cwd)
@@ -670,7 +733,10 @@ if __name__ == '__main__':
     ]}
 
     Ip_targets = [1.5e6, 5e6, 15e6, 15e6, 1.5e6]
-    eqdsk_list = [os.path.join(cwd, f'i={i}.eqdsk') for i in range(5)]
+    seed_eqdsk_dir = os.path.join(cwd, 'seed_eqdsks')
+    if not all(os.path.exists(os.path.join(seed_eqdsk_dir, f'i={i}.eqdsk')) for i in range(5)):
+        seed_eqdsk_dir = cwd
+    eqdsk_list = [os.path.join(seed_eqdsk_dir, f'i={i}.eqdsk') for i in range(5)]
     eqtimes    = [0, 30, 80, 500, 600]
     x_points   = np.array([[5.125, -3.4]])
     diverted_isoflux_pts = np.array([
@@ -697,6 +763,20 @@ if __name__ == '__main__':
         )
 
     run_ids = list(range(args.start_idx, end_idx))
+
+    if initial_relax_cache is not None and (run_ids or args.build_initial_relax_cache_only):
+        cache_action_idx = args.start_idx if args.start_idx < args.n_trajectories else 0
+        build_initial_relax_cache(
+            mygs, all_actions[cache_action_idx], initial_relax_cache,
+            eqdsk_list, eqtimes, coil_bounds, x_points,
+            Ip_targets, ne_init, Te_init, psi_sample,
+            log_dir=log_dir,
+        )
+
+    if args.build_initial_relax_cache_only:
+        print(f'Initial relax cache ready: {initial_relax_cache}')
+        sys.exit(0)
+
     mode = 'serially' if args.n_workers == 1 else f'across {args.n_workers} workers'
     print(f'Launching {len(run_ids)} trajectories {mode}...\n')
 
@@ -715,6 +795,8 @@ if __name__ == '__main__':
                 mygs, action_row, run_id, cwd, eqdsk_list, eqtimes,
                 coil_bounds, x_points, diverted_isoflux_pts,
                 Ip_targets, ne_init, Te_init, psi_sample,
+                initial_relax_cache=initial_relax_cache,
+                log_dir=log_dir,
             )
 
             elapsed = time.time() - t0
@@ -749,6 +831,8 @@ if __name__ == '__main__':
             Te_init=Te_init,
             psi_sample=psi_sample,
             output_dir=args.output_dir,
+            initial_relax_cache=initial_relax_cache,
+            log_dir=log_dir,
         )
 
         mp_context = os.environ.get('MP_CONTEXT', 'fork')

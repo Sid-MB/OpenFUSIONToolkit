@@ -12,6 +12,8 @@
 import copy
 import collections
 import ctypes
+import os
+import tempfile
 from warnings import warn
 import numpy
 from ._interface import *
@@ -2404,9 +2406,17 @@ class TokaMaker_equilibrium():
         '''
         eta_file = 'none'
         if eta_prof is not None:
-            eta_file = 'tokamaker_eta.prof'
+            fd, eta_file = tempfile.mkstemp(prefix='tokamaker_eta_', suffix='.prof')
+            os.close(fd)
             create_prof_file(self, eta_file, eta_prof, "eta")
-        self.load_profiles(eta_file=eta_file)
+        try:
+            self.load_profiles(eta_file=eta_file)
+        finally:
+            if eta_file != 'none':
+                try:
+                    os.remove(eta_file)
+                except:
+                    print('Warning: unable to delete temporary file "{0}"'.format(eta_file))
 
     def abspsi_to_normalized(self,psi_in):
         r'''! Convert unnormalized \f$ \psi \f$ values to normalized \f$ \hat{\psi} \f$ values

@@ -12,8 +12,15 @@ set -euo pipefail
 # Optional setup
 # sh ./setup-env.sh
 
-PROJECT_DIR="$(cd "${SLURM_SUBMIT_DIR:-$(pwd -P)}" && pwd -P)"
-OFT_PYTHONPATH="$(cd "${PROJECT_DIR}/../../../../../../" && pwd -P)/install_release/python"
+if [ -n "${SLURM_SUBMIT_DIR:-}" ] && [ -f "${SLURM_SUBMIT_DIR}/collect_trajectories_delta.py" ]; then
+  PROJECT_DIR="$(cd "${SLURM_SUBMIT_DIR}" && pwd -P)"
+else
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+  PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd -P)"
+fi
+cd "${PROJECT_DIR}"
+OFT_ROOT="$(cd "${PROJECT_DIR}/../../../../../../" && pwd -P)"
+source "${OFT_ROOT}/scripts/oft_arch/select_oft_install.sh"
 
 TOTAL_CPUS="${SLURM_CPUS_PER_TASK:-20}"
 N_WORKERS="${N_WORKERS:-${TOTAL_CPUS}}"
@@ -27,7 +34,6 @@ OUTPUT_DIR="${OUTPUT_DIR:-./rl_dataset_delta_sampling_maxloop=2_grid_51_cpu_${RU
 # Force the CPU path even if this script is run from a GPU-capable login node.
 export CUDA_VISIBLE_DEVICES=-1
 export PYTHONUNBUFFERED=1
-export PYTHONPATH="${OFT_PYTHONPATH}${PYTHONPATH:+:${PYTHONPATH}}"
 
 # Keep native math/OpenMP libraries from oversubscribing cores across workers.
 export OMP_NUM_THREADS="${THREADS_PER_WORKER}"
@@ -44,9 +50,9 @@ echo "THREADS_PER_WORKER=${THREADS_PER_WORKER}"
 echo "OFT_NUM_THREADS=${OFT_NUM_THREADS}"
 echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
 echo "PYTHONUNBUFFERED=${PYTHONUNBUFFERED}"
-echo "PYTHONPATH includes: ${OFT_PYTHONPATH}"
+echo "OFT_SELECTED_FLAVOR=${OFT_SELECTED_FLAVOR}"
+echo "OFT_SELECTED_INSTALL=${OFT_SELECTED_INSTALL}"
 echo "OUTPUT_DIR=${OUTPUT_DIR}"
-test -d "${OFT_PYTHONPATH}/OpenFUSIONToolkit"
 
 uv run python collect_trajectories_delta.py \
   --n_trajectories 1000 \
