@@ -90,9 +90,9 @@ _BASE_RL_NBI_POWERS_W = {
 
 # RL observation layout (must match collect_trajectories.extract_state).
 _RL_TORAX_SCALAR_VARS = (
-    'H98', 'tau_E', 'W_thermal_total', 'P_SOL_total', 'P_radiation_e', 'P_aux_total',
+    'H98', 'tau_E', 'W_thermal_total', 'P_SOL_total', 'P_aux_total',
     'f_non_inductive', 'n_e_line_avg', 'fgw_n_e_line_avg', 'T_e_volume_avg', 'T_i_volume_avg',
-    'n_e_volume_avg', 'beta_N', 'li3', 'dW_thermal_dt_smoothed', 'P_ohmic_e', 'q_min',
+    'n_e_volume_avg', 'beta_N', 'li3', 'dW_thermal_dt_smoothed', 'q_min',
     'rho_q_min', 'f_bootstrap', 'P_alpha_total', 'q95', 'v_loop_lcfs', 'Ip', 'Q_fusion',
 )
 _RL_PROFILE_VARS = ('T_e', 'T_i', 'n_e', 'q', 'magnetic_shear')

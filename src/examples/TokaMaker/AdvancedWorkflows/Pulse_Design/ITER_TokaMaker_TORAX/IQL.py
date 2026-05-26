@@ -266,7 +266,7 @@ def normalize_buffer(buffer):
     # Same for rewards
     buffer.rewards[:buffer.size] = (buffer.rewards[:buffer.size] - buffer.rewards[:buffer.size].mean()) / buffer.rewards[:buffer.size].std()
 
-    return action_max
+    return state_mean, state_std, action_max
 
 def train_iql(iql, buffer, batch_size=128, num_steps=1000000, checkpoint_dir='/data', resume_from=None):
     dataloader = DataLoader(buffer, batch_size=batch_size, shuffle=True)
@@ -324,7 +324,8 @@ def train_modal():
     buffer = ReplayBuffer(state_dim, action_dim, dataset_size)
     load_d4rl_dataset('/data/rl_dataset_test', buffer)
 
-    action_max = normalize_buffer(buffer)
+    state_mean, state_std, action_max = normalize_buffer(buffer)
+    print(state_mean, state_std)
     IQL_agent = IQL(action_max, state_dim, action_dim)
 
     # Find latest checkpoint
@@ -342,6 +343,8 @@ def train_modal():
         'q2': IQL_agent.q2.state_dict(),
         'v': IQL_agent.v.state_dict(),
         'action_max': action_max,
+        'state_mean': state_mean,
+        'state_mean': state_std,
     }, '/data/iql_weights.pt')
     
     wandb.finish()
