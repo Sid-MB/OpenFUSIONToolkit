@@ -17,7 +17,7 @@ image = modal.Image.debian_slim().pip_install(
 )
 
 class ReplayBuffer(Dataset):
-    def __init__(self, state_dim: int, action_dim: int, max_size: int = 600*12):
+    def __init__(self, state_dim: int, action_dim: int, max_size: int =300000):
         self.states = np.zeros((max_size, state_dim))
         self.actions = np.zeros((max_size, action_dim))
         self.next_states = np.zeros((max_size, state_dim))
@@ -92,7 +92,7 @@ class Actor(nn.Module):
 
 class IQL:
     def __init__(self, action_max, state_dim: int, action_dim: int, 
-                 tau: float = 0.7, beta: float = 3.0, 
+                 tau: float = 0.8, beta: float = 3.0, 
                  gamma: float = 0.99, lr: float = 1e-4):
         self.q1 = QNetwork(state_dim, action_dim)
         self.q2 = QNetwork(state_dim, action_dim)
@@ -121,7 +121,7 @@ class IQL:
         for param, target_param in zip(self.q2.parameters(), self.q2_target.parameters()):
             target_param.data.copy_(polyak * target_param.data + (1 - polyak) * param.data)
 
-    def expectile_loss(self, diff, expectile=0.9):
+    def expectile_loss(self, diff, expectile=0.8):
         weight = torch.where(diff > 0, expectile, 1 - expectile)
         return weight * (diff ** 2)
 
@@ -283,14 +283,14 @@ def train_iql(iql, buffer, batch_size=128, num_steps=1000000, checkpoint_dir='/d
         start_step = checkpoint['step']
         print(f"Resumed from step {start_step}")
     
-    for step in range(start_step, num_steps):
+    step = start_step
+    while step < num_steps:
         for batch in dataloader:
             metrics = iql.update(batch)
             
             if step % 100 == 0:
                 wandb.log(metrics, step=step)
             
-            # Save checkpoint every 5000 steps
             if step % 5000 == 0 and step > 0:
                 torch.save({
                     'actor': iql.actor.state_dict(),
@@ -303,6 +303,10 @@ def train_iql(iql, buffer, batch_size=128, num_steps=1000000, checkpoint_dir='/d
                     'action_max': iql.actor.action_max,
                 }, f'{checkpoint_dir}/checkpoint_step_{step}.pt')
                 print(f"Saved checkpoint at step {step}")
+            
+            step += 1
+            if step >= num_steps:
+                break
 
 @app.function(
     image=image,
@@ -320,7 +324,7 @@ def train_modal():
     
     state_dim = 34
     action_dim = 2
-    dataset_size = 600*12
+    dataset_size = 300000
     buffer = ReplayBuffer(state_dim, action_dim, dataset_size)
     load_d4rl_dataset('/data/rl_dataset_test', buffer)
 
@@ -344,7 +348,7 @@ def train_modal():
         'v': IQL_agent.v.state_dict(),
         'action_max': action_max,
         'state_mean': state_mean,
-        'state_mean': state_std,
+        'state_std': state_std,
     }, '/data/iql_weights.pt')
     
     wandb.finish()
