@@ -1,23 +1,29 @@
 #!/usr/bin/env bash
 
 #SBATCH --account=nlp
-#SBATCH --cpus-per-task=20
+#SBATCH --cpus-per-task=2
 #SBATCH --mem=128G
 #SBATCH --partition=john
-#SBATCH --array=0-49%4
+#SBATCH --array=0-199%8
 #SBATCH --output=logs/%x-%A_%a.out
 #SBATCH --error=logs/%x-%A_%a.err
 
 # Example dependency workflow:
 #   export OUTPUT_BASE_DIR=./rl_dataset_delta_sampling_maxloop=2_grid_51_cpu_array_$(date +%Y%m%d_%H%M%S)
 #   cache_jid=$(START_IDX=600 END_IDX=1000 sbatch --parsable run_scripts/collect_initial_relax_cache_cpu.sh)
-#   START_IDX=600 END_IDX=1000 OUTPUT_BASE_DIR="${OUTPUT_BASE_DIR}" \
-#     sbatch --dependency=afterok:${cache_jid} --array=0-19%4 run_scripts/collect_trajectories_cpu_array.sh
+#   START_IDX=600 END_IDX=1000 OUTPUT_BASE_DIR="${OUTPUT_BASE_DIR}" N_WORKERS=2 CHUNK_SIZE=2 \
+#     sbatch --dependency=afterok:${cache_jid} --cpus-per-task=2 --mem=128G --array=0-199%8 \
+#       run_scripts/collect_trajectories_cpu_array.sh
 #
 # Slurm array syntax:
-#   --array=0-19%4 creates task IDs 0..19, with at most 4 tasks running at once.
-#   With CHUNK_SIZE=20 and START_IDX=600, task 0 runs [600, 620), task 1 runs
-#   [620, 640), and task 19 runs [980, 1000).
+#   --array=0-199%8 creates task IDs 0..199, with at most 8 tasks running at once.
+#   With CHUNK_SIZE=2 and START_IDX=600, task 0 runs [600, 602), task 1 runs
+#   [602, 604), and task 199 runs [998, 1000).
+#
+# RAM can be the real limiter here: observed TokaMaker/TORAX trajectory solves
+# used roughly 60 GiB RSS per active worker. Increasing N_WORKERS increases RAM
+# pressure linearly and can leave most workers idle or force memory thrashing.
+# Prefer small N_WORKERS per Slurm task and scale out with more array tasks.
 #
 # This script expects the shared initial relax cache to already exist. Build it
 # first with collect_initial_relax_cache_cpu.sh and use --dependency=afterok.
@@ -35,7 +41,7 @@ OFT_ROOT="$(cd "${PROJECT_DIR}/../../../../../../" && pwd -P)"
 source "${OFT_ROOT}/scripts/oft_arch/select_oft_install.sh"
 
 TOTAL_CPUS="${SLURM_CPUS_PER_TASK:-20}"
-N_WORKERS="${N_WORKERS:-${TOTAL_CPUS}}"
+N_WORKERS="${N_WORKERS:-2}"
 THREADS_PER_WORKER="${THREADS_PER_WORKER:-$(( TOTAL_CPUS / N_WORKERS ))}"
 if [ "${THREADS_PER_WORKER}" -lt 1 ]; then
   THREADS_PER_WORKER=1
@@ -44,7 +50,7 @@ fi
 N_TRAJECTORIES="${N_TRAJECTORIES:-1000}"
 START_IDX="${START_IDX:-0}"
 END_IDX="${END_IDX:-${N_TRAJECTORIES}}"
-CHUNK_SIZE="${CHUNK_SIZE:-20}"
+CHUNK_SIZE="${CHUNK_SIZE:-2}"
 SEED="${SEED:-42}"
 
 ARRAY_TASK_ID="${SLURM_ARRAY_TASK_ID:-0}"

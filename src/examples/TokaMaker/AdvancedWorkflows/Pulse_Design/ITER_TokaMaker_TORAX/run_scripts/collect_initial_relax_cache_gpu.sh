@@ -1,18 +1,13 @@
 #!/usr/bin/env bash
 
 #SBATCH --account=nlp
-#SBATCH --cpus-per-task=20
+#SBATCH --gres=gpu:1
+#SBATCH --constraint=48G
 #SBATCH --mem=128G
-#SBATCH --partition=john
+#SBATCH --cpus-per-task=4
+#SBATCH --partition=jag-standard
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
-
-# Example dependency workflow:
-#   export OUTPUT_BASE_DIR=./rl_dataset_delta_sampling_maxloop=2_grid_51_cpu_array_$(date +%Y%m%d_%H%M%S)
-#   cache_jid=$(START_IDX=600 END_IDX=1000 sbatch --parsable run_scripts/collect_initial_relax_cache_cpu.sh)
-#   START_IDX=600 END_IDX=1000 OUTPUT_BASE_DIR="${OUTPUT_BASE_DIR}" N_WORKERS=2 CHUNK_SIZE=2 \
-#     sbatch --dependency=afterok:${cache_jid} --cpus-per-task=2 --mem=128G --array=0-199%8 \
-#       run_scripts/collect_trajectories_cpu_array.sh
 
 set -euo pipefail
 
@@ -26,35 +21,24 @@ cd "${PROJECT_DIR}"
 OFT_ROOT="$(cd "${PROJECT_DIR}/../../../../../../" && pwd -P)"
 source "${OFT_ROOT}/scripts/oft_arch/select_oft_install.sh"
 
-TOTAL_CPUS="${SLURM_CPUS_PER_TASK:-20}"
-THREADS_PER_WORKER="${THREADS_PER_WORKER:-${TOTAL_CPUS}}"
-
 N_TRAJECTORIES="${N_TRAJECTORIES:-1000}"
 START_IDX="${START_IDX:-0}"
 END_IDX="${END_IDX:-${N_TRAJECTORIES}}"
 SEED="${SEED:-42}"
 RUN_ID="${SLURM_JOB_ID:-$(date +%Y%m%d_%H%M%S)}"
-OUTPUT_BASE_DIR="${OUTPUT_BASE_DIR:-./rl_dataset_delta_sampling_maxloop=2_grid_51_cpu_array_${RUN_ID}}"
+OUTPUT_BASE_DIR="${OUTPUT_BASE_DIR:-./rl_dataset_delta_sampling_maxloop=2_grid_51_gpu_cache_cpu_array_${RUN_ID}}"
 INITIAL_RELAX_CACHE="${INITIAL_RELAX_CACHE:-${OUTPUT_BASE_DIR}/initial_relax_state.json}"
 
-# Force the CPU path even if this script is run from a GPU-capable login node.
-export CUDA_VISIBLE_DEVICES=-1
 export PYTHONUNBUFFERED=1
-
-export OMP_NUM_THREADS="${THREADS_PER_WORKER}"
-export OFT_NUM_THREADS="${THREADS_PER_WORKER}"
-export OPENBLAS_NUM_THREADS="${THREADS_PER_WORKER}"
-export MKL_NUM_THREADS="${THREADS_PER_WORKER}"
-export NUMEXPR_NUM_THREADS="${THREADS_PER_WORKER}"
-export VECLIB_MAXIMUM_THREADS="${THREADS_PER_WORKER}"
+export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-4}"
+export OFT_NUM_THREADS="${SLURM_CPUS_PER_TASK:-4}"
 
 echo "Running on host: $(hostname)"
-echo "TOTAL_CPUS=${TOTAL_CPUS}"
-echo "THREADS_PER_WORKER=${THREADS_PER_WORKER}"
 echo "N_TRAJECTORIES=${N_TRAJECTORIES}"
 echo "START_IDX=${START_IDX}"
 echo "END_IDX=${END_IDX}"
 echo "SEED=${SEED}"
+echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}"
 echo "OFT_SELECTED_FLAVOR=${OFT_SELECTED_FLAVOR}"
 echo "OFT_SELECTED_INSTALL=${OFT_SELECTED_INSTALL}"
 echo "OUTPUT_BASE_DIR=${OUTPUT_BASE_DIR}"
@@ -62,7 +46,7 @@ echo "INITIAL_RELAX_CACHE=${INITIAL_RELAX_CACHE}"
 
 mkdir -p "${OUTPUT_BASE_DIR}"
 
-uv run python collect_trajectories_delta.py \
+uv run --extra cuda13 python collect_trajectories_delta.py \
   --n_trajectories "${N_TRAJECTORIES}" \
   --seed "${SEED}" \
   --start_idx "${START_IDX}" \
