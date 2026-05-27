@@ -1,32 +1,43 @@
 #!/usr/bin/env bash
 
 #SBATCH --account=nlp
-#SBATCH --cpus-per-task=2
-#SBATCH --mem=128G
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=16G
 #SBATCH --partition=john
-#SBATCH --array=0-199%8
+#SBATCH --array=0-399%16
 #SBATCH --output=logs/%x-%A_%a.out
 #SBATCH --error=logs/%x-%A_%a.err
 
-# Example dependency workflow:
-#   export OUTPUT_BASE_DIR=./rl_dataset_delta_sampling_maxloop=2_grid_51_cpu_array_$(date +%Y%m%d_%H%M%S)
-#   cache_jid=$(START_IDX=600 END_IDX=1000 sbatch --parsable run_scripts/collect_initial_relax_cache_cpu.sh)
-#   START_IDX=600 END_IDX=1000 OUTPUT_BASE_DIR="${OUTPUT_BASE_DIR}" N_WORKERS=2 CHUNK_SIZE=2 \
-#     sbatch --dependency=afterok:${cache_jid} --cpus-per-task=2 --mem=128G --array=0-199%8 \
+# Purpose:
+#   Slurm array worker for CPU trajectory generation on john. Each array task
+#   maps its SLURM_ARRAY_TASK_ID to a trajectory chunk and runs
+#   collect_trajectories_delta.py for that chunk.
+#
+# Should you call this directly?
+#   Usually no. Call ./run_scripts/submit_collect_trajectories_cpu_array.sh for
+#   the standard full run; it sets the output directory and submits this script
+#   with the right array shape.
+#
+# Direct-use example, only when you intentionally want manual sbatch control:
+#   OUTPUT_BASE_DIR=./rl_dataset_delta_sampling_manual_$(date +%Y%m%d_%H%M%S) \
+#     START_IDX=600 END_IDX=1000 USE_INITIAL_RELAX_CACHE=0 N_WORKERS=1 CHUNK_SIZE=1 \
+#     sbatch --cpus-per-task=4 --mem=16G --array=0-399%16 \
 #       run_scripts/collect_trajectories_cpu_array.sh
 #
 # Slurm array syntax:
-#   --array=0-199%8 creates task IDs 0..199, with at most 8 tasks running at once.
-#   With CHUNK_SIZE=2 and START_IDX=600, task 0 runs [600, 602), task 1 runs
-#   [602, 604), and task 199 runs [998, 1000).
+#   --array=0-399%16 creates task IDs 0..399, with at most 16 tasks running.
+#   With CHUNK_SIZE=1 and START_IDX=600, task 0 runs [600, 601), task 1 runs
+#   [601, 602), and task 399 runs [999, 1000).
 #
-# RAM can be the real limiter here: observed TokaMaker/TORAX trajectory solves
-# used roughly 60 GiB RSS per active worker. Increasing N_WORKERS increases RAM
-# pressure linearly and can leave most workers idle or force memory thrashing.
-# Prefer small N_WORKERS per Slurm task and scale out with more array tasks.
+# Resource scaling note:
+#   The current best-supported shape is one trajectory worker per Slurm task,
+#   with about four CPUs allocated to that worker. Scale by increasing the
+#   array concurrency after a small run looks healthy. `%32` is a reasonable
+#   future-run target on john when enough CPUs are idle. N_WORKERS>1 can
+#   increase RAM pressure and makes it harder to tell which trajectory is slow.
 #
-# This script expects the shared initial relax cache to already exist. Build it
-# first with collect_initial_relax_cache_cpu.sh and use --dependency=afterok.
+# Shared initial relax cache is optional. Set USE_INITIAL_RELAX_CACHE=0 to run
+# without it, or build it first and submit this script with --dependency=afterok.
 
 set -euo pipefail
 
@@ -40,8 +51,8 @@ cd "${PROJECT_DIR}"
 OFT_ROOT="$(cd "${PROJECT_DIR}/../../../../../../" && pwd -P)"
 source "${OFT_ROOT}/scripts/oft_arch/select_oft_install.sh"
 
-TOTAL_CPUS="${SLURM_CPUS_PER_TASK:-20}"
-N_WORKERS="${N_WORKERS:-2}"
+TOTAL_CPUS="${SLURM_CPUS_PER_TASK:-4}"
+N_WORKERS="${N_WORKERS:-1}"
 THREADS_PER_WORKER="${THREADS_PER_WORKER:-$(( TOTAL_CPUS / N_WORKERS ))}"
 if [ "${THREADS_PER_WORKER}" -lt 1 ]; then
   THREADS_PER_WORKER=1
@@ -50,8 +61,11 @@ fi
 N_TRAJECTORIES="${N_TRAJECTORIES:-1000}"
 START_IDX="${START_IDX:-0}"
 END_IDX="${END_IDX:-${N_TRAJECTORIES}}"
-CHUNK_SIZE="${CHUNK_SIZE:-2}"
+CHUNK_SIZE="${CHUNK_SIZE:-1}"
 SEED="${SEED:-42}"
+MAX_LOOP="${MAX_LOOP:-2}"
+GRID_SIZE="${GRID_SIZE:-51}"
+TRAJECTORY_TIMEOUT_SECONDS="${TRAJECTORY_TIMEOUT_SECONDS:-7200}"
 
 ARRAY_TASK_ID="${SLURM_ARRAY_TASK_ID:-0}"
 ARRAY_JOB_ID="${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-$(date +%Y%m%d_%H%M%S)}}"
@@ -67,6 +81,8 @@ INITIAL_RELAX_CACHE="${INITIAL_RELAX_CACHE:-${OUTPUT_BASE_DIR}/initial_relax_sta
 
 # Force the CPU path even if this script is run from a GPU-capable login node.
 export CUDA_VISIBLE_DEVICES=-1
+export JAX_PLATFORMS=cpu
+export JAX_PLATFORM_NAME=cpu
 export PYTHONUNBUFFERED=1
 
 # Keep native math/OpenMP libraries from oversubscribing cores across workers.
@@ -87,10 +103,15 @@ echo "N_TRAJECTORIES=${N_TRAJECTORIES}"
 echo "START_IDX=${START_IDX}"
 echo "END_IDX=${END_IDX}"
 echo "CHUNK_SIZE=${CHUNK_SIZE}"
+echo "SEED=${SEED}"
+echo "MAX_LOOP=${MAX_LOOP}"
+echo "GRID_SIZE=${GRID_SIZE}"
+echo "TRAJECTORY_TIMEOUT_SECONDS=${TRAJECTORY_TIMEOUT_SECONDS}"
 echo "CHUNK_START=${CHUNK_START}"
 echo "CHUNK_END=${CHUNK_END}"
 echo "OFT_NUM_THREADS=${OFT_NUM_THREADS}"
 echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
+echo "JAX_PLATFORMS=${JAX_PLATFORMS}"
 echo "OFT_SELECTED_FLAVOR=${OFT_SELECTED_FLAVOR}"
 echo "OFT_SELECTED_INSTALL=${OFT_SELECTED_INSTALL}"
 echo "OUTPUT_BASE_DIR=${OUTPUT_BASE_DIR}"
@@ -123,5 +144,8 @@ uv run python collect_trajectories_delta.py \
   --end_idx "${CHUNK_END}" \
   --n_workers "${N_WORKERS}" \
   --output_dir "${OUTPUT_DIR}" \
+  --max_loop "${MAX_LOOP}" \
+  --grid_size "${GRID_SIZE}" \
+  --trajectory_timeout_seconds "${TRAJECTORY_TIMEOUT_SECONDS}" \
   "${CACHE_ARGS[@]}" \
   "$@"

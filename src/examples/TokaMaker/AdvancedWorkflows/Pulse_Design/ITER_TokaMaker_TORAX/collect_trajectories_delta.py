@@ -23,11 +23,12 @@ import json
 import time
 import argparse
 import multiprocessing as mp
+import signal
 import numpy as np
 from scipy.stats import qmc
 from datetime import datetime
 import io
-from contextlib import redirect_stdout
+from contextlib import contextmanager, redirect_stdout
 from functools import partial
 import shutil
 import subprocess
@@ -80,6 +81,31 @@ FATAL_EXCEPTIONS = (
     ImportError,
     OSError,
 )
+
+
+class TrajectoryTimeoutError(RuntimeError):
+    """Raised when a single trajectory exceeds its configured wall-time budget."""
+
+
+@contextmanager
+def trajectory_timeout(seconds):
+    if seconds is None or seconds <= 0:
+        yield
+        return
+
+    def _handle_timeout(signum, frame):
+        raise TrajectoryTimeoutError(
+            f'trajectory exceeded timeout of {seconds} seconds'
+        )
+
+    old_handler = signal.getsignal(signal.SIGALRM)
+    signal.signal(signal.SIGALRM, _handle_timeout)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, old_handler)
 
 
 def nvidia_gpu_visible():
@@ -505,7 +531,7 @@ def setup_tokamaker(cwd):
 
 
 def configure_tmtx(mygs, action_row, eqdsk_list, eqtimes, coil_bounds, x_points,
-                   Ip_targets, ne_init, Te_init, psi_sample):
+                   Ip_targets, ne_init, Te_init, psi_sample, grid_size=51):
     """Configure one TokaMaker_TORAX object for a trajectory."""
     from OpenFUSIONToolkit.TokaMaker.pulse_design import TokaMaker_TORAX
     import numpy as np
@@ -524,7 +550,7 @@ def configure_tmtx(mygs, action_row, eqdsk_list, eqtimes, coil_bounds, x_points,
         tokamaker_obj=mygs,
     )
 
-    tmtx.set_TORAX_grid(grid_type='n_rho', grid=51)
+    tmtx.set_TORAX_grid(grid_type='n_rho', grid=grid_size)
 
     tmtx.set_heating(
         generic_heat=nbi_schedule,
@@ -570,7 +596,7 @@ def configure_tmtx(mygs, action_row, eqdsk_list, eqtimes, coil_bounds, x_points,
 
 def build_initial_relax_cache(mygs, action_row, cache_path, eqdsk_list, eqtimes,
                               coil_bounds, x_points, Ip_targets, ne_init,
-                              Te_init, psi_sample, log_dir=None):
+                              Te_init, psi_sample, log_dir=None, grid_size=51):
     """Run the shared initial TORAX relax once and save it for all trajectories."""
     if os.path.exists(cache_path):
         print(f'Using existing initial relax cache: {cache_path}')
@@ -580,7 +606,7 @@ def build_initial_relax_cache(mygs, action_row, cache_path, eqdsk_list, eqtimes,
     print(f'Building shared initial relax cache: {cache_path}')
     tmtx = configure_tmtx(
         mygs, action_row, eqdsk_list, eqtimes, coil_bounds, x_points,
-        Ip_targets, ne_init, Te_init, psi_sample,
+        Ip_targets, ne_init, Te_init, psi_sample, grid_size=grid_size,
     )
     tmtx.fly(
         output_mode=False,
@@ -598,28 +624,31 @@ def build_initial_relax_cache(mygs, action_row, cache_path, eqdsk_list, eqtimes,
 def run_single_trajectory(mygs, action_row, run_id, cwd, eqdsk_list, eqtimes,
                            coil_bounds, x_points, diverted_isoflux_pts,
                            Ip_targets, ne_init, Te_init, psi_sample,
-                           initial_relax_cache=None, log_dir=None):
+                           initial_relax_cache=None, log_dir=None,
+                           max_loop=2, grid_size=51,
+                           trajectory_timeout_seconds=0):
     """
     Configure and run one TokaMaker_TORAX simulation with the given action_row.
     Returns the transitions list and summary dict, or None if simulation failed.
     """
     try:
-        tmtx = configure_tmtx(
-            mygs, action_row, eqdsk_list, eqtimes, coil_bounds, x_points,
-            Ip_targets, ne_init, Te_init, psi_sample,
-        )
+        with trajectory_timeout(trajectory_timeout_seconds):
+            tmtx = configure_tmtx(
+                mygs, action_row, eqdsk_list, eqtimes, coil_bounds, x_points,
+                Ip_targets, ne_init, Te_init, psi_sample, grid_size=grid_size,
+            )
 
-        tmtx.fly(
-            output_mode=False,
-            max_loop=2,
-            run_name=f'tmp_{run_id}',
-            t_ave_toggle='flattop',
-            t_ave_window=25,
-            relax=True,
-            relax_duration=5,
-            initial_relax_state=initial_relax_cache,
-            log_dir=log_dir,
-        )
+            tmtx.fly(
+                output_mode=False,
+                max_loop=max_loop,
+                run_name=f'tmp_{run_id}',
+                t_ave_toggle='flattop',
+                t_ave_window=25,
+                relax=True,
+                relax_duration=5,
+                initial_relax_state=initial_relax_cache,
+                log_dir=log_dir,
+            )
 
         transitions = build_trajectory(tmtx, action_row)
         with redirect_stdout(io.StringIO()):
@@ -654,7 +683,8 @@ def save_trajectory(transitions, summary, action_row, run_id, output_dir):
 
 def worker_fn(run_id, all_actions, eqdsk_list, eqtimes, coil_bounds,
               x_points, diverted_isoflux_pts, Ip_targets, ne_init, Te_init,
-              psi_sample, output_dir, initial_relax_cache, log_dir):
+              psi_sample, output_dir, initial_relax_cache, log_dir,
+              max_loop, grid_size, trajectory_timeout_seconds):
     """Run and save one trajectory using this worker's initialized TokaMaker."""
     global _mygs
 
@@ -668,6 +698,9 @@ def worker_fn(run_id, all_actions, eqdsk_list, eqtimes, coil_bounds,
             Ip_targets, ne_init, Te_init, psi_sample,
             initial_relax_cache=initial_relax_cache,
             log_dir=log_dir,
+            max_loop=max_loop,
+            grid_size=grid_size,
+            trajectory_timeout_seconds=trajectory_timeout_seconds,
         )
 
         if transitions is not None:
@@ -703,6 +736,12 @@ if __name__ == '__main__':
                         help='Build the shared initial relax cache and exit without running trajectories')
     parser.add_argument('--allow_cpu_jax_on_gpu', action='store_true',
                         help='Do not fail when an NVIDIA GPU is visible but JAX only sees CPU')
+    parser.add_argument('--max_loop', type=int, default=2,
+                        help='Maximum TokaMaker/TORAX coupling loop count per trajectory')
+    parser.add_argument('--grid_size', type=int, default=51,
+                        help='TORAX radial grid size passed to set_TORAX_grid')
+    parser.add_argument('--trajectory_timeout_seconds', type=int, default=0,
+                        help='Abort a single trajectory after this many seconds; 0 disables timeout')
     args = parser.parse_args()
 
     if args.n_workers < 1:
@@ -786,6 +825,7 @@ if __name__ == '__main__':
             eqdsk_list, eqtimes, coil_bounds, x_points,
             Ip_targets, ne_init, Te_init, psi_sample,
             log_dir=log_dir,
+            grid_size=args.grid_size,
         )
 
     if args.build_initial_relax_cache_only:
@@ -812,6 +852,9 @@ if __name__ == '__main__':
                 Ip_targets, ne_init, Te_init, psi_sample,
                 initial_relax_cache=initial_relax_cache,
                 log_dir=log_dir,
+                max_loop=args.max_loop,
+                grid_size=args.grid_size,
+                trajectory_timeout_seconds=args.trajectory_timeout_seconds,
             )
 
             elapsed = time.time() - t0
@@ -848,6 +891,9 @@ if __name__ == '__main__':
             output_dir=args.output_dir,
             initial_relax_cache=initial_relax_cache,
             log_dir=log_dir,
+            max_loop=args.max_loop,
+            grid_size=args.grid_size,
+            trajectory_timeout_seconds=args.trajectory_timeout_seconds,
         )
 
         mp_context = os.environ.get('MP_CONTEXT', 'fork')
@@ -876,5 +922,12 @@ if __name__ == '__main__':
                       f'Elapsed: {elapsed_total/60:.1f} min | ETA: {eta:.1f} min')
 
     total = time.time() - t_start_total
-    print(f'\nDone. {success_count}/{args.n_trajectories} saved to {args.output_dir} '
-          f'in {total/60:.1f} min')
+    expected_count = len(run_ids)
+    print(f'\nDone. {success_count}/{expected_count} requested trajectories saved '
+          f'to {args.output_dir} in {total/60:.1f} min')
+
+    sys.stdout.flush()
+    sys.stderr.flush()
+    # Some JAX/TORAX cleanup paths can alter the process status after useful
+    # work has completed. Return the dataset status explicitly for Slurm.
+    os._exit(0 if fail_count == 0 else 1)

@@ -9,6 +9,20 @@
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
 
+# Purpose:
+#   Build one shared initial TORAX relax cache on a jag-standard GPU node and
+#   exit. It uses `uv run --extra cuda13` and the Python entrypoint checks that
+#   JAX can see the GPU.
+#
+# Should you call this directly?
+#   Usually no. The recommended production path is the CPU array submit helper.
+#   Call this only when you are deliberately benchmarking or producing a GPU-built
+#   shared relax cache for a dependent CPU array.
+#
+# Direct-use example, only when you intentionally want just the GPU-built cache:
+#   OUTPUT_BASE_DIR=./rl_dataset_delta_cache_gpu_$(date +%Y%m%d_%H%M%S) \
+#     START_IDX=600 END_IDX=1000 sbatch run_scripts/collect_initial_relax_cache_gpu.sh
+
 set -euo pipefail
 
 if [ -n "${SLURM_SUBMIT_DIR:-}" ] && [ -f "${SLURM_SUBMIT_DIR}/collect_trajectories_delta.py" ]; then
@@ -25,6 +39,8 @@ N_TRAJECTORIES="${N_TRAJECTORIES:-1000}"
 START_IDX="${START_IDX:-0}"
 END_IDX="${END_IDX:-${N_TRAJECTORIES}}"
 SEED="${SEED:-42}"
+MAX_LOOP="${MAX_LOOP:-2}"
+GRID_SIZE="${GRID_SIZE:-51}"
 RUN_ID="${SLURM_JOB_ID:-$(date +%Y%m%d_%H%M%S)}"
 OUTPUT_BASE_DIR="${OUTPUT_BASE_DIR:-./rl_dataset_delta_sampling_maxloop=2_grid_51_gpu_cache_cpu_array_${RUN_ID}}"
 INITIAL_RELAX_CACHE="${INITIAL_RELAX_CACHE:-${OUTPUT_BASE_DIR}/initial_relax_state.json}"
@@ -38,6 +54,8 @@ echo "N_TRAJECTORIES=${N_TRAJECTORIES}"
 echo "START_IDX=${START_IDX}"
 echo "END_IDX=${END_IDX}"
 echo "SEED=${SEED}"
+echo "MAX_LOOP=${MAX_LOOP}"
+echo "GRID_SIZE=${GRID_SIZE}"
 echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}"
 echo "OFT_SELECTED_FLAVOR=${OFT_SELECTED_FLAVOR}"
 echo "OFT_SELECTED_INSTALL=${OFT_SELECTED_INSTALL}"
@@ -53,6 +71,8 @@ uv run --extra cuda13 python collect_trajectories_delta.py \
   --end_idx "${START_IDX}" \
   --n_workers 1 \
   --output_dir "${OUTPUT_BASE_DIR}" \
+  --max_loop "${MAX_LOOP}" \
+  --grid_size "${GRID_SIZE}" \
   --initial_relax_cache "${INITIAL_RELAX_CACHE}" \
   --build_initial_relax_cache_only \
   "$@"

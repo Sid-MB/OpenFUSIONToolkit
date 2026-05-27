@@ -9,6 +9,20 @@
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
 
+# Purpose:
+#   Run trajectories in a single GPU Slurm job on jag-standard. It uses
+#   `uv run --extra cuda13`, and collect_trajectories_delta.py exits early if a
+#   GPU is visible but JAX cannot initialize a GPU backend.
+#
+# Should you call this directly?
+#   Use this for GPU diagnostics or a small GPU comparison run. The current
+#   recommended full production run is the CPU array submit helper, because the
+#   bottleneck has been TORAX/TokaMaker simulation time rather than RAM.
+#
+# Direct-use example, for a small GPU diagnostic slice:
+#   OUTPUT_DIR=./rl_dataset_delta_gpu_diag_$(date +%Y%m%d_%H%M%S) \
+#     START_IDX=600 END_IDX=601 N_WORKERS=1 sbatch run_scripts/collect_trajectories_gpu.sh
+
 set -euo pipefail
 
 # Optional setup
@@ -25,6 +39,13 @@ OFT_ROOT="$(cd "${PROJECT_DIR}/../../../../../../" && pwd -P)"
 source "${OFT_ROOT}/scripts/oft_arch/select_oft_install.sh"
 
 N_WORKERS="${N_WORKERS:-${SLURM_CPUS_PER_TASK:-1}}"
+N_TRAJECTORIES="${N_TRAJECTORIES:-1000}"
+START_IDX="${START_IDX:-600}"
+END_IDX="${END_IDX:-${N_TRAJECTORIES}}"
+SEED="${SEED:-42}"
+MAX_LOOP="${MAX_LOOP:-2}"
+GRID_SIZE="${GRID_SIZE:-51}"
+TRAJECTORY_TIMEOUT_SECONDS="${TRAJECTORY_TIMEOUT_SECONDS:-7200}"
 RUN_ID="${SLURM_JOB_ID:-$(date +%Y%m%d_%H%M%S)}"
 OUTPUT_DIR="${OUTPUT_DIR:-./rl_dataset_delta_sampling_maxloop=2_grid_51_${OFT_SELECTED_FLAVOR}_${RUN_ID}}"
 
@@ -33,11 +54,23 @@ export PYTHONUNBUFFERED=1
 echo "OFT_SELECTED_FLAVOR=${OFT_SELECTED_FLAVOR}"
 echo "OFT_SELECTED_INSTALL=${OFT_SELECTED_INSTALL}"
 echo "N_WORKERS=${N_WORKERS}"
+echo "N_TRAJECTORIES=${N_TRAJECTORIES}"
+echo "START_IDX=${START_IDX}"
+echo "END_IDX=${END_IDX}"
+echo "SEED=${SEED}"
+echo "MAX_LOOP=${MAX_LOOP}"
+echo "GRID_SIZE=${GRID_SIZE}"
+echo "TRAJECTORY_TIMEOUT_SECONDS=${TRAJECTORY_TIMEOUT_SECONDS}"
 echo "OUTPUT_DIR=${OUTPUT_DIR}"
 
 uv run --extra cuda13 python collect_trajectories_delta.py \
-  --n_trajectories 1000 \
-  --start_idx 600 \
+  --n_trajectories "${N_TRAJECTORIES}" \
+  --seed "${SEED}" \
+  --start_idx "${START_IDX}" \
+  --end_idx "${END_IDX}" \
   --n_workers "${N_WORKERS}" \
   --output_dir "${OUTPUT_DIR}" \
+  --max_loop "${MAX_LOOP}" \
+  --grid_size "${GRID_SIZE}" \
+  --trajectory_timeout_seconds "${TRAJECTORY_TIMEOUT_SECONDS}" \
   "$@"

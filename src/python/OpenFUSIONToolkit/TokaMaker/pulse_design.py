@@ -2600,10 +2600,17 @@ class TokaMaker_TORAX:
                 f'this run t_init={float(self._t_init):g}.'
             )
 
-        self._psi_init = copy.deepcopy(payload.get('psi'))
-        self._n_e_init = copy.deepcopy(payload.get('n_e'))
-        self._T_e_init = copy.deepcopy(payload.get('T_e'))
-        self._T_i_init = copy.deepcopy(payload.get('T_i'))
+        def _profile_state_from_json(value):
+            if value is None:
+                return None
+            if isinstance(value, list) and len(value) == 3:
+                return (value[0], value[1], value[2])
+            return copy.deepcopy(value)
+
+        self._psi_init = _profile_state_from_json(payload.get('psi'))
+        self._n_e_init = _profile_state_from_json(payload.get('n_e'))
+        self._T_e_init = _profile_state_from_json(payload.get('T_e'))
+        self._T_i_init = _profile_state_from_json(payload.get('T_i'))
         if self._psi_init is None:
             raise ValueError(f'Initial relax cache is missing psi: {filename}')
         self._relax_profiles_snapshot = None

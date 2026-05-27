@@ -7,12 +7,18 @@
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
 
-# Example dependency workflow:
-#   export OUTPUT_BASE_DIR=./rl_dataset_delta_sampling_maxloop=2_grid_51_cpu_array_$(date +%Y%m%d_%H%M%S)
-#   cache_jid=$(START_IDX=600 END_IDX=1000 sbatch --parsable run_scripts/collect_initial_relax_cache_cpu.sh)
-#   START_IDX=600 END_IDX=1000 OUTPUT_BASE_DIR="${OUTPUT_BASE_DIR}" N_WORKERS=2 CHUNK_SIZE=2 \
-#     sbatch --dependency=afterok:${cache_jid} --cpus-per-task=2 --mem=128G --array=0-199%8 \
-#       run_scripts/collect_trajectories_cpu_array.sh
+# Purpose:
+#   Build one shared initial TORAX relax cache on the john CPU partition and
+#   exit. It runs collect_trajectories_delta.py with --build_initial_relax_cache_only.
+#
+# Should you call this directly?
+#   Usually no. For the standard full run, call
+#   ./run_scripts/submit_collect_trajectories_cpu_array.sh instead. That helper
+#   calls this script automatically only when USE_INITIAL_RELAX_CACHE=1.
+#
+# Direct-use example, only when you intentionally want just the cache:
+#   OUTPUT_BASE_DIR=./rl_dataset_delta_cache_cpu_$(date +%Y%m%d_%H%M%S) \
+#     START_IDX=600 END_IDX=1000 sbatch run_scripts/collect_initial_relax_cache_cpu.sh
 
 set -euo pipefail
 
@@ -33,12 +39,16 @@ N_TRAJECTORIES="${N_TRAJECTORIES:-1000}"
 START_IDX="${START_IDX:-0}"
 END_IDX="${END_IDX:-${N_TRAJECTORIES}}"
 SEED="${SEED:-42}"
+MAX_LOOP="${MAX_LOOP:-2}"
+GRID_SIZE="${GRID_SIZE:-51}"
 RUN_ID="${SLURM_JOB_ID:-$(date +%Y%m%d_%H%M%S)}"
 OUTPUT_BASE_DIR="${OUTPUT_BASE_DIR:-./rl_dataset_delta_sampling_maxloop=2_grid_51_cpu_array_${RUN_ID}}"
 INITIAL_RELAX_CACHE="${INITIAL_RELAX_CACHE:-${OUTPUT_BASE_DIR}/initial_relax_state.json}"
 
 # Force the CPU path even if this script is run from a GPU-capable login node.
 export CUDA_VISIBLE_DEVICES=-1
+export JAX_PLATFORMS=cpu
+export JAX_PLATFORM_NAME=cpu
 export PYTHONUNBUFFERED=1
 
 export OMP_NUM_THREADS="${THREADS_PER_WORKER}"
@@ -55,6 +65,10 @@ echo "N_TRAJECTORIES=${N_TRAJECTORIES}"
 echo "START_IDX=${START_IDX}"
 echo "END_IDX=${END_IDX}"
 echo "SEED=${SEED}"
+echo "MAX_LOOP=${MAX_LOOP}"
+echo "GRID_SIZE=${GRID_SIZE}"
+echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
+echo "JAX_PLATFORMS=${JAX_PLATFORMS}"
 echo "OFT_SELECTED_FLAVOR=${OFT_SELECTED_FLAVOR}"
 echo "OFT_SELECTED_INSTALL=${OFT_SELECTED_INSTALL}"
 echo "OUTPUT_BASE_DIR=${OUTPUT_BASE_DIR}"
@@ -69,6 +83,8 @@ uv run python collect_trajectories_delta.py \
   --end_idx "${START_IDX}" \
   --n_workers 1 \
   --output_dir "${OUTPUT_BASE_DIR}" \
+  --max_loop "${MAX_LOOP}" \
+  --grid_size "${GRID_SIZE}" \
   --initial_relax_cache "${INITIAL_RELAX_CACHE}" \
   --build_initial_relax_cache_only \
   "$@"
