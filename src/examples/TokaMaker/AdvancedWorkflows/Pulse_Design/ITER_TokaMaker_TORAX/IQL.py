@@ -290,6 +290,68 @@ def buffer_stats(buffer):
         "dataset/done_fraction": float(dones.mean()),
     }
 
+def make_eval_batch(buffer, eval_batch_size, seed=0):
+    if eval_batch_size <= 0 or buffer.size == 0:
+        return None
+    rng = np.random.default_rng(seed)
+    size = min(eval_batch_size, buffer.size)
+    indices = rng.choice(buffer.size, size=size, replace=False)
+    return tuple(
+        torch.as_tensor(array[indices], dtype=torch.float32)
+        for array in (buffer.states, buffer.actions, buffer.next_states, buffer.rewards, buffer.dones)
+    )
+
+def tensor_stats(prefix, value):
+    flat = value.detach().cpu().flatten()
+    return {
+        f"{prefix}/mean": flat.mean().item(),
+        f"{prefix}/std": flat.std(unbiased=False).item(),
+        f"{prefix}/min": flat.min().item(),
+        f"{prefix}/max": flat.max().item(),
+    }
+
+def evaluate_iql(iql, batch, include_histograms=False):
+    if batch is None:
+        return {}
+    states, actions, next_states, rewards, dones = batch
+    with torch.no_grad():
+        q1_data = iql.q1(states, actions)
+        q2_data = iql.q2(states, actions)
+        q_data = torch.min(q1_data, q2_data)
+        v_data = iql.v(states)
+        policy_actions = iql.actor(states)
+        q1_policy = iql.q1(states, policy_actions)
+        q2_policy = iql.q2(states, policy_actions)
+        q_policy = torch.min(q1_policy, q2_policy)
+        v_next = iql.v(next_states)
+        td_target = rewards + iql.gamma * (1 - dones) * v_next
+        advantage_data = q_data - v_data
+        advantage_policy = q_policy - v_data
+        action_error = policy_actions - actions
+        action_mse = (action_error ** 2).mean(dim=-1, keepdim=True)
+
+    metrics = {
+        **tensor_stats("eval/q_data", q_data),
+        **tensor_stats("eval/q_policy", q_policy),
+        **tensor_stats("eval/v", v_data),
+        **tensor_stats("eval/td_target", td_target),
+        **tensor_stats("eval/advantage_data", advantage_data),
+        **tensor_stats("eval/advantage_policy", advantage_policy),
+        **tensor_stats("eval/action_mse", action_mse),
+        "eval/q_policy_minus_q_data_mean": (q_policy - q_data).mean().item(),
+        "eval/action_abs_mean": policy_actions.abs().mean().item(),
+        "eval/action_error_abs_mean": action_error.abs().mean().item(),
+    }
+    if include_histograms:
+        metrics.update({
+            "eval_hist/q_data": wandb.Histogram(q_data.detach().cpu().numpy()),
+            "eval_hist/q_policy": wandb.Histogram(q_policy.detach().cpu().numpy()),
+            "eval_hist/v": wandb.Histogram(v_data.detach().cpu().numpy()),
+            "eval_hist/advantage_data": wandb.Histogram(advantage_data.detach().cpu().numpy()),
+            "eval_hist/action_mse": wandb.Histogram(action_mse.detach().cpu().numpy()),
+        })
+    return metrics
+
 def train_iql(
     iql,
     buffer,
@@ -299,6 +361,9 @@ def train_iql(
     resume_from=None,
     checkpoint_interval=5000,
     log_interval=100,
+    eval_batch=None,
+    eval_interval=1000,
+    eval_histogram_interval=5000,
 ):
     dataloader = DataLoader(buffer, batch_size=batch_size, shuffle=True)
     
@@ -324,6 +389,15 @@ def train_iql(
         
         if log_interval > 0 and step % log_interval == 0:
             wandb.log(metrics, step=step)
+
+        if eval_interval > 0 and step % eval_interval == 0:
+            eval_metrics = evaluate_iql(
+                iql,
+                eval_batch,
+                include_histograms=eval_histogram_interval > 0 and step % eval_histogram_interval == 0,
+            )
+            if eval_metrics:
+                wandb.log(eval_metrics, step=step)
         
         if checkpoint_interval > 0 and step % checkpoint_interval == 0 and step > 0:
             torch.save({
@@ -363,6 +437,10 @@ def train_from_config(
     lr=1e-4,
     hidden_dim=256,
     use_wandb_run_subdir=False,
+    eval_interval=1000,
+    eval_batch_size=2048,
+    eval_histogram_interval=5000,
+    eval_seed=0,
 ):
     base_config = {
         "dataset_dir": str(dataset_dir),
@@ -378,6 +456,10 @@ def train_from_config(
         "gamma": gamma,
         "lr": lr,
         "hidden_dim": hidden_dim,
+        "eval_interval": eval_interval,
+        "eval_batch_size": eval_batch_size,
+        "eval_histogram_interval": eval_histogram_interval,
+        "eval_seed": eval_seed,
     }
     wandb_init_kwargs = {"project": project, "config": base_config}
     if run_name:
@@ -425,6 +507,11 @@ def train_from_config(
     normalized_stats = buffer_stats(buffer)
     run.log({**raw_stats, **normalized_stats}, step=0)
     run.summary.update({**raw_stats, **normalized_stats})
+    eval_batch = make_eval_batch(
+        buffer,
+        eval_batch_size=int(config["eval_batch_size"]),
+        seed=int(config["eval_seed"]),
+    )
     iql_agent = IQL(
         action_max,
         state_dim,
@@ -451,6 +538,9 @@ def train_from_config(
         resume_from=checkpoint_path,
         checkpoint_interval=int(config["checkpoint_interval"]),
         log_interval=int(config["log_interval"]),
+        eval_batch=eval_batch,
+        eval_interval=int(config["eval_interval"]),
+        eval_histogram_interval=int(config["eval_histogram_interval"]),
     )
 
     weights_path = output_dir / 'iql_weights.pt'
@@ -506,6 +596,10 @@ def parse_args():
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--hidden_dim", type=int, default=256)
     parser.add_argument("--use_wandb_run_subdir", action="store_true")
+    parser.add_argument("--eval_interval", type=int, default=1000)
+    parser.add_argument("--eval_batch_size", type=int, default=2048)
+    parser.add_argument("--eval_histogram_interval", type=int, default=5000)
+    parser.add_argument("--eval_seed", type=int, default=0)
     return parser.parse_args()
 
 def main():
@@ -527,6 +621,10 @@ def main():
         lr=args.lr,
         hidden_dim=args.hidden_dim,
         use_wandb_run_subdir=args.use_wandb_run_subdir,
+        eval_interval=args.eval_interval,
+        eval_batch_size=args.eval_batch_size,
+        eval_histogram_interval=args.eval_histogram_interval,
+        eval_seed=args.eval_seed,
     )
 
 if __name__ == "__main__":
