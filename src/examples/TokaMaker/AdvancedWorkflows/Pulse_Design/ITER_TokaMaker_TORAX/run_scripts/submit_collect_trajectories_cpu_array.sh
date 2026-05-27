@@ -5,8 +5,9 @@ set -euo pipefail
 # Purpose:
 #   Recommended production entrypoint for CPU trajectory generation. This script
 #   changes to the example directory, chooses a timestamped output folder,
-#   optionally submits the initial relax cache job, and submits the john Slurm
-#   array that runs collect_trajectories_cpu_array.sh.
+#   initializes the shared dataset manifest/action table, optionally submits the
+#   initial relax cache job, and submits the john Slurm array that runs
+#   collect_trajectories_cpu_array.sh.
 #
 # Should you call this directly?
 #   Yes. For the standard full run, paste the example below into your shell.
@@ -30,6 +31,7 @@ START_IDX="${START_IDX:-0}"
 END_IDX="${END_IDX:-${N_TRAJECTORIES}}"
 N_WORKERS="${N_WORKERS:-1}"
 CHUNK_SIZE="${CHUNK_SIZE:-1}"
+SEED="${SEED:-42}"
 ARRAY_SPEC="${ARRAY_SPEC:-0-399%16}"
 CPUS_PER_TASK="${CPUS_PER_TASK:-${SLURM_CPUS_PER_TASK:-4}}"
 MEM_PER_NODE="${MEM_PER_NODE:-${SLURM_MEM_PER_NODE:-16G}}"
@@ -40,7 +42,7 @@ TRAJECTORY_TIMEOUT_SECONDS="${TRAJECTORY_TIMEOUT_SECONDS:-7200}"
 OUTPUT_BASE_DIR="${OUTPUT_BASE_DIR:-./rl_dataset_delta_sampling_maxloop=2_grid_51_cpu_array_$(date +%Y%m%d_%H%M%S)}"
 INITIAL_RELAX_CACHE="${INITIAL_RELAX_CACHE:-${OUTPUT_BASE_DIR}/initial_relax_state.json}"
 
-export N_TRAJECTORIES START_IDX END_IDX N_WORKERS CHUNK_SIZE
+export N_TRAJECTORIES START_IDX END_IDX N_WORKERS CHUNK_SIZE SEED
 export MAX_LOOP GRID_SIZE TRAJECTORY_TIMEOUT_SECONDS
 export OUTPUT_BASE_DIR INITIAL_RELAX_CACHE USE_INITIAL_RELAX_CACHE
 
@@ -48,6 +50,7 @@ echo "OUTPUT_BASE_DIR=${OUTPUT_BASE_DIR}"
 echo "INITIAL_RELAX_CACHE=${INITIAL_RELAX_CACHE}"
 echo "N_WORKERS=${N_WORKERS}"
 echo "CHUNK_SIZE=${CHUNK_SIZE}"
+echo "SEED=${SEED}"
 echo "ARRAY_SPEC=${ARRAY_SPEC}"
 echo "CPUS_PER_TASK=${CPUS_PER_TASK}"
 echo "MEM_PER_NODE=${MEM_PER_NODE}"
@@ -55,6 +58,21 @@ echo "USE_INITIAL_RELAX_CACHE=${USE_INITIAL_RELAX_CACHE}"
 echo "MAX_LOOP=${MAX_LOOP}"
 echo "GRID_SIZE=${GRID_SIZE}"
 echo "TRAJECTORY_TIMEOUT_SECONDS=${TRAJECTORY_TIMEOUT_SECONDS}"
+
+mkdir -p "${OUTPUT_BASE_DIR}"
+
+echo "Initializing shared dataset manifest/action table..."
+uv run python collect_trajectories_delta.py \
+  --n_trajectories "${N_TRAJECTORIES}" \
+  --seed "${SEED}" \
+  --start_idx "${START_IDX}" \
+  --end_idx "${END_IDX}" \
+  --n_workers 1 \
+  --output_dir "${OUTPUT_BASE_DIR}" \
+  --max_loop "${MAX_LOOP}" \
+  --grid_size "${GRID_SIZE}" \
+  --no_initial_relax_cache \
+  --init_dataset_only
 
 dependency_args=()
 if [ "${USE_INITIAL_RELAX_CACHE}" != "0" ]; then

@@ -1,5 +1,4 @@
 import itertools
-import json
 from pathlib import Path
 
 import modal
@@ -9,6 +8,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import wandb
 from torch.utils.data import Dataset, DataLoader
+
+from dataloader import infer_dataset_specs, load_d4rl_dataset
 
 app = modal.App("iql-training")
 
@@ -218,65 +219,6 @@ def load_trajectories_to_buffer(buffer, trajectories):
                 reward=rewards[t],
                 done=dones[t]
             )
-def load_state(state, state_keys=None):
-    keys = state_keys if state_keys is not None else state.keys()
-    return np.array([state[key] for key in keys], dtype=np.float32)
-
-
-def infer_dataset_specs(directory):
-    trajectory_files = sorted(Path(directory).glob('trajectory_*.json'))
-    if not trajectory_files:
-        raise FileNotFoundError(f"No trajectory_*.json files found in {directory}")
-
-    total_transitions = 0
-    state_keys = None
-    action_dim = None
-    for filepath in trajectory_files:
-        with open(filepath, 'r') as f:
-            traj = json.load(f)
-
-        transitions = traj.get('transitions', [])
-        if not transitions:
-            continue
-
-        if state_keys is None:
-            state_keys = list(transitions[0]['s'].keys())
-            action_dim = len(transitions[0]['a'])
-
-        total_transitions += len(transitions)
-
-    if state_keys is None or action_dim is None:
-        raise ValueError(f"No non-empty trajectories found in {directory}")
-
-    return {
-        "num_trajectories": len(trajectory_files),
-        "num_transitions": total_transitions,
-        "state_dim": len(state_keys),
-        "action_dim": action_dim,
-        "state_keys": state_keys,
-    }
-
-# Option 2: Load from D4RL-style dataset
-def load_d4rl_dataset(directory, buffer, state_keys=None):
-    for filepath in sorted(Path(directory).glob('trajectory_*.json')):
-        with open(filepath, 'r') as f:
-            traj = json.load(f)
-            for i in range(len(traj['transitions'])):
-                datapoint = {}
-                datapoint["s"] = load_state(traj['transitions'][i]['s'], state_keys)
-                datapoint["a"] = traj['transitions'][i]['a']
-                if 's_next' in traj['transitions'][i]:
-                    datapoint["s_next"] = load_state(traj['transitions'][i]['s_next'], state_keys)
-                elif i < len(traj['transitions']) - 1:
-                    datapoint["s_next"] = load_state(traj['transitions'][i+1]['s'], state_keys)
-                else:
-                    datapoint["s_next"] = np.zeros(buffer.states.shape[1], dtype=np.float32)
-
-                datapoint["r"] = traj['transitions'][i]['r']
-                datapoint["done"] = int(i == len(traj['transitions']) - 1)
-
-                buffer.add(datapoint["s"], datapoint["a"], datapoint["s_next"], datapoint["r"], datapoint["done"])
-
 
 def normalize_buffer(buffer):
     # Calculate mean and std across all states

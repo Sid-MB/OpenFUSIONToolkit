@@ -15,12 +15,17 @@
 #
 # Should you call this directly?
 #   Usually no. Call ./run_scripts/submit_collect_trajectories_cpu_array.sh for
-#   the standard full run; it sets the output directory and submits this script
-#   with the right array shape.
+#   the standard full run; it initializes the shared dataset manifest/actions,
+#   sets the output directory, and submits this script with the right array shape.
 #
 # Direct-use example, only when you intentionally want manual sbatch control:
-#   OUTPUT_BASE_DIR=./rl_dataset_delta_sampling_manual_$(date +%Y%m%d_%H%M%S) \
-#     START_IDX=600 END_IDX=1000 USE_INITIAL_RELAX_CACHE=0 N_WORKERS=1 CHUNK_SIZE=1 \
+#   export OUTPUT_BASE_DIR=./rl_dataset_delta_sampling_manual_$(date +%Y%m%d_%H%M%S)
+#   export N_TRAJECTORIES=1000 SEED=42 MAX_LOOP=2 GRID_SIZE=51
+#   uv run python collect_trajectories_delta.py \
+#     --n_trajectories "${N_TRAJECTORIES}" --seed "${SEED}" \
+#     --output_dir "${OUTPUT_BASE_DIR}" --max_loop "${MAX_LOOP}" \
+#     --grid_size "${GRID_SIZE}" --init_dataset_only
+#   START_IDX=600 END_IDX=1000 USE_INITIAL_RELAX_CACHE=0 N_WORKERS=1 CHUNK_SIZE=1 \
 #     sbatch --cpus-per-task=4 --mem=16G --array=0-399%16 \
 #       run_scripts/collect_trajectories_cpu_array.sh
 #
@@ -75,7 +80,7 @@ if [ "${CHUNK_END}" -gt "${END_IDX}" ]; then
 fi
 
 OUTPUT_BASE_DIR="${OUTPUT_BASE_DIR:-./rl_dataset_delta_sampling_maxloop=2_grid_51_cpu_array_${ARRAY_JOB_ID}}"
-OUTPUT_DIR="${OUTPUT_DIR:-${OUTPUT_BASE_DIR}/chunk_${ARRAY_TASK_ID}_${CHUNK_START}_${CHUNK_END}}"
+CHUNK_DIR="${CHUNK_DIR:-${OUTPUT_BASE_DIR}/chunks/chunk_${ARRAY_TASK_ID}_${CHUNK_START}_${CHUNK_END}}"
 INITIAL_RELAX_CACHE="${INITIAL_RELAX_CACHE:-${OUTPUT_BASE_DIR}/initial_relax_state.json}"
 
 # Force the CPU path even if this script is run from a GPU-capable login node.
@@ -114,7 +119,7 @@ echo "JAX_PLATFORMS=${JAX_PLATFORMS}"
 echo "OFT_SELECTED_FLAVOR=${OFT_SELECTED_FLAVOR}"
 echo "OFT_SELECTED_INSTALL=${OFT_SELECTED_INSTALL}"
 echo "OUTPUT_BASE_DIR=${OUTPUT_BASE_DIR}"
-echo "OUTPUT_DIR=${OUTPUT_DIR}"
+echo "CHUNK_DIR=${CHUNK_DIR}"
 echo "INITIAL_RELAX_CACHE=${INITIAL_RELAX_CACHE}"
 
 if [ "${CHUNK_START}" -ge "${CHUNK_END}" ]; then
@@ -122,7 +127,7 @@ if [ "${CHUNK_START}" -ge "${CHUNK_END}" ]; then
   exit 0
 fi
 
-mkdir -p "${OUTPUT_BASE_DIR}" "${OUTPUT_DIR}"
+mkdir -p "${OUTPUT_BASE_DIR}" "${CHUNK_DIR}"
 
 if [ "${USE_INITIAL_RELAX_CACHE:-1}" != "0" ]; then
   if [ ! -s "${INITIAL_RELAX_CACHE}" ]; then
@@ -142,7 +147,9 @@ uv run python collect_trajectories_delta.py \
   --start_idx "${CHUNK_START}" \
   --end_idx "${CHUNK_END}" \
   --n_workers "${N_WORKERS}" \
-  --output_dir "${OUTPUT_DIR}" \
+  --output_dir "${OUTPUT_BASE_DIR}" \
+  --chunk_dir "${CHUNK_DIR}" \
+  --require_existing_dataset \
   --max_loop "${MAX_LOOP}" \
   --grid_size "${GRID_SIZE}" \
   --trajectory_timeout_seconds "${TRAJECTORY_TIMEOUT_SECONDS}" \

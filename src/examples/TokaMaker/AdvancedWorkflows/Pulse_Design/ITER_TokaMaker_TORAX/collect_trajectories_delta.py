@@ -15,11 +15,17 @@ Dataset structure (per trajectory, 21 transitions):
 Usage:
     python collect_trajectories_delta.py --n_trajectories 500 --output_dir ./rl_dataset
     python collect_trajectories_delta.py --n_trajectories 1000 --start_idx 600 --output_dir ./rl_dataset_delta_sampling_maxloop=2_grid_51
+
+Output layout:
+    output_dir/run_manifest.json
+    output_dir/all_actions.npy
+    output_dir/trajectories/trajectory_<run_id>.json
+    output_dir/failures/failed_run_<run_id>.json
+    output_dir/chunks/<chunk>/task_status.json
 """
 
 import os
 import sys
-import json
 import time
 import argparse
 import multiprocessing as mp
@@ -33,6 +39,18 @@ from contextlib import contextmanager, redirect_stdout
 from functools import partial
 import shutil
 import subprocess
+
+from dataloader import (
+    create_run_manifest,
+    dataset_paths,
+    ensure_dataset_dirs,
+    initialize_dataset,
+    record_task_status,
+    require_dataset,
+    save_failure_atomic,
+    save_trajectory_atomic,
+    trajectory_path,
+)
 
 
 # ── RL / simulation config ────────────────────────────────────────────────────
@@ -723,8 +741,27 @@ def run_single_trajectory(mygs, action_row, run_id, cwd, eqdsk_list, eqtimes,
 
 # ── Dataset saving ────────────────────────────────────────────────────────────
 
-def save_trajectory(transitions, summary, action_row, run_id, output_dir):
-    """Save one trajectory as a JSON file."""
+def action_manifest_fields():
+    return {
+        'ecrh_W': [ECRH_MIN, ECRH_MAX],
+        'nbi_W': [NBI_MIN, NBI_MAX],
+        'nbi_zero_before_s': NBI_ZERO_BEFORE,
+    }
+
+
+def sampler_manifest_fields():
+    return {
+        'name': 'latin_hypercube_delta',
+        'ecrh_default_W': 20.0e6,
+        'nbi_default_W': 33.0e6,
+        'ecrh_delta_max_W_per_step': 2.0e6,
+        'nbi_delta_max_W_per_step': 2.0e6,
+        'n_decision': len(DECISION_TIMES),
+    }
+
+
+def save_trajectory(transitions, summary, action_row, run_id, dataset_dir):
+    """Save one trajectory as an atomically published JSON file."""
     payload = {
         'run_id':      run_id,
         'timestamp':   datetime.now().isoformat(),
@@ -732,20 +769,23 @@ def save_trajectory(transitions, summary, action_row, run_id, output_dir):
         'transitions': transitions,            # list of 21 dicts
         'summary':     summary,
     }
-    path = os.path.join(output_dir, f'trajectory_{run_id:04d}.json')
-    with open(path, 'w') as f:
-        json.dump(payload, f, indent=2, default=str)
-    return path
+    return save_trajectory_atomic(dataset_dir, payload)
 
 
 def worker_fn(run_id, all_actions, eqdsk_list, eqtimes, coil_bounds,
               x_points, diverted_isoflux_pts, Ip_targets, ne_init, Te_init,
-              psi_sample, output_dir, initial_relax_cache, log_dir,
+              psi_sample, dataset_dir, initial_relax_cache, log_dir,
               max_loop, grid_size, trajectory_timeout_seconds):
     """Run and save one trajectory using this worker's initialized TokaMaker."""
     global _mygs
 
     try:
+        existing_path = trajectory_path(dataset_dir, run_id)
+        if existing_path.exists():
+            raise FileExistsError(
+                f'trajectory output already exists before run starts: {existing_path}'
+            )
+
         action_row = all_actions[run_id]
         cwd = os.getcwd()
 
@@ -761,7 +801,7 @@ def worker_fn(run_id, all_actions, eqdsk_list, eqtimes, coil_bounds,
         )
 
         if transitions is not None:
-            path = save_trajectory(transitions, summary, action_row, run_id, output_dir)
+            path = save_trajectory(transitions, summary, action_row, run_id, dataset_dir)
             return run_id, True, path
 
         return run_id, False, 'simulation returned None'
@@ -791,6 +831,12 @@ if __name__ == '__main__':
                         help='Disable shared initial relax cache and run initial relax per trajectory')
     parser.add_argument('--build_initial_relax_cache_only', action='store_true',
                         help='Build the shared initial relax cache and exit without running trajectories')
+    parser.add_argument('--init_dataset_only', action='store_true',
+                        help='Initialize run_manifest.json/all_actions.npy and exit')
+    parser.add_argument('--require_existing_dataset', action='store_true',
+                        help='Require run_manifest.json/all_actions.npy to already exist and match')
+    parser.add_argument('--chunk_dir', type=str, default=None,
+                        help='Per-task directory for logs/status; output_dir remains the shared dataset root')
     parser.add_argument('--allow_cpu_jax_on_gpu', action='store_true',
                         help='Do not fail when an NVIDIA GPU is visible but JAX only sees CPU')
     parser.add_argument('--max_loop', type=int, default=2,
@@ -806,16 +852,50 @@ if __name__ == '__main__':
 
     cwd = os.getcwd()
     require_cuda_on_gpu = not args.allow_cpu_jax_on_gpu
-    validate_jax_backend(require_cuda_on_gpu=require_cuda_on_gpu)
 
-    os.makedirs(args.output_dir, exist_ok=True)
-    log_dir = os.path.abspath(os.path.join(args.output_dir, 'tokamaker_torax_logs'))
+    paths = ensure_dataset_dirs(args.output_dir)
+    chunk_dir = None
+    if args.chunk_dir is not None:
+        chunk_dir = os.path.abspath(args.chunk_dir)
+        os.makedirs(chunk_dir, exist_ok=True)
+
+    if chunk_dir is not None:
+        log_dir = os.path.abspath(os.path.join(chunk_dir, 'tokamaker_torax_logs'))
+    else:
+        log_dir = os.path.abspath(os.path.join(args.output_dir, 'tokamaker_torax_logs'))
     os.makedirs(log_dir, exist_ok=True)
 
     print(f'Sampling {args.n_trajectories} trajectories with LHS (seed={args.seed})')
-    all_actions = sample_actions_lhs(args.n_trajectories, seed=args.seed)
-    np.save(os.path.join(args.output_dir, 'all_actions.npy'), all_actions)
-    print(f'Action matrix saved: shape {all_actions.shape}')
+    expected_actions = sample_actions_lhs(args.n_trajectories, seed=args.seed)
+    expected_manifest = create_run_manifest(
+        n_trajectories=args.n_trajectories,
+        seed=args.seed,
+        max_loop=args.max_loop,
+        grid_size=args.grid_size,
+        decision_times=DECISION_TIMES,
+        rl_times=RL_TIMES,
+        action_bounds=action_manifest_fields(),
+        sampler=sampler_manifest_fields(),
+        start_idx=args.start_idx,
+        end_idx=args.end_idx,
+    )
+
+    if args.require_existing_dataset:
+        _, all_actions = require_dataset(
+            args.output_dir,
+            expected_manifest,
+            expected_actions=expected_actions,
+        )
+    else:
+        initialize_dataset(args.output_dir, expected_manifest, expected_actions)
+        all_actions = expected_actions
+    print(f'Action matrix ready: {paths["actions"]}; shape {all_actions.shape}')
+
+    if args.init_dataset_only:
+        print(f'Dataset initialized: {os.path.abspath(args.output_dir)}')
+        sys.exit(0)
+
+    validate_jax_backend(require_cuda_on_gpu=require_cuda_on_gpu)
 
     initial_relax_cache = None
     if not args.no_initial_relax_cache:
@@ -875,6 +955,18 @@ if __name__ == '__main__':
 
     run_ids = list(range(args.start_idx, end_idx))
 
+    record_task_status(
+        chunk_dir,
+        {
+            'status': 'running',
+            'start_idx': args.start_idx,
+            'end_idx': end_idx,
+            'n_workers': args.n_workers,
+            'output_dir': os.path.abspath(args.output_dir),
+            'trajectories_dir': str(dataset_paths(args.output_dir)['trajectories']),
+        },
+    )
+
     if initial_relax_cache is not None and (run_ids or args.build_initial_relax_cache_only):
         cache_action_idx = args.start_idx if args.start_idx < args.n_trajectories else 0
         build_initial_relax_cache(
@@ -898,6 +990,12 @@ if __name__ == '__main__':
     if args.n_workers == 1:
         # ── Serial run loop ───────────────────────────────────────────────────
         for run_id in run_ids:
+            existing_path = trajectory_path(args.output_dir, run_id)
+            if existing_path.exists():
+                raise FileExistsError(
+                    f'trajectory output already exists before run starts: {existing_path}'
+                )
+
             action_row = all_actions[run_id]
 
             print(f'\n[{run_id + 1}/{args.n_trajectories}] Running trajectory {run_id}...')
@@ -922,10 +1020,13 @@ if __name__ == '__main__':
                 print(f'  Saved to {path} ({elapsed:.1f}s)')
             else:
                 fail_count += 1
-                fail_log = os.path.join(args.output_dir, 'failed_runs.txt')
-                with open(fail_log, 'a') as f:
-                    f.write(f'{run_id}\n')
-                print(f'  Failed run logged ({elapsed:.1f}s)')
+                fail_path = save_failure_atomic(
+                    args.output_dir,
+                    run_id,
+                    'simulation returned None',
+                    chunk_dir=chunk_dir,
+                )
+                print(f'  Failed run logged to {fail_path} ({elapsed:.1f}s)')
 
             elapsed_total = time.time() - t_start_total
             done = success_count + fail_count
@@ -945,7 +1046,7 @@ if __name__ == '__main__':
             ne_init=ne_init,
             Te_init=Te_init,
             psi_sample=psi_sample,
-            output_dir=args.output_dir,
+            dataset_dir=args.output_dir,
             initial_relax_cache=initial_relax_cache,
             log_dir=log_dir,
             max_loop=args.max_loop,
@@ -969,10 +1070,13 @@ if __name__ == '__main__':
                     print(f'  [{run_id}] OK -> {result}')
                 else:
                     fail_count += 1
-                    fail_log = os.path.join(args.output_dir, 'failed_runs.txt')
-                    with open(fail_log, 'a') as f:
-                        f.write(f'{run_id}\n')
-                    print(f'  [{run_id}] FAILED: {result}')
+                    fail_path = save_failure_atomic(
+                        args.output_dir,
+                        run_id,
+                        result,
+                        chunk_dir=chunk_dir,
+                    )
+                    print(f'  [{run_id}] FAILED: {result}; logged to {fail_path}')
 
                 eta = (elapsed_total / done) * (len(run_ids) - done) / 60 if done else 0.0
                 print(f'  Progress: {success_count} ok, {fail_count} failed | '
@@ -982,6 +1086,20 @@ if __name__ == '__main__':
     expected_count = len(run_ids)
     print(f'\nDone. {success_count}/{expected_count} requested trajectories saved '
           f'to {args.output_dir} in {total/60:.1f} min')
+
+    record_task_status(
+        chunk_dir,
+        {
+            'status': 'complete' if fail_count == 0 else 'failed',
+            'success_count': success_count,
+            'fail_count': fail_count,
+            'start_idx': args.start_idx,
+            'end_idx': end_idx,
+            'n_workers': args.n_workers,
+            'output_dir': os.path.abspath(args.output_dir),
+            'trajectories_dir': str(dataset_paths(args.output_dir)['trajectories']),
+        },
+    )
 
     sys.stdout.flush()
     sys.stderr.flush()

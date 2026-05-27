@@ -6,6 +6,8 @@ import re
 from pathlib import Path
 from datetime import datetime
 
+from dataloader import find_trajectory_files
+
 
 DEFAULT_DATASET_DIR = "rl_dataset_delta_sampling_maxloop=2_grid_51_preprocessed"
 DEFAULT_OUTPUT_ROOT = Path("out/grid_search")
@@ -20,7 +22,10 @@ def parse_args():
         "--dataset-dir",
         type=Path,
         default=Path(DEFAULT_DATASET_DIR),
-        help=f"Directory containing trajectory_*.json files. Default: {DEFAULT_DATASET_DIR}",
+        help=(
+            "Dataset root containing trajectories/trajectory_*.json, or an old "
+            f"flat trajectory_*.json directory. Default: {DEFAULT_DATASET_DIR}"
+        ),
     )
     parser.add_argument(
         "--output-dir",
@@ -168,7 +173,7 @@ def main():
     output_dir = resolve_output_dir(args)
     print(f"Output directory: {output_dir}")
 
-    trajectory_files = sorted(args.dataset_dir.glob("trajectory_*.json"))
+    trajectory_files = find_trajectory_files(args.dataset_dir)
     if not trajectory_files:
         raise SystemExit(f"No trajectory_*.json files found in {args.dataset_dir}")
 
