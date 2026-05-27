@@ -301,6 +301,7 @@ def train_modal():
         "num_transitions": specs["num_transitions"],
         "state_dim": specs["state_dim"],
         "action_dim": specs["action_dim"],
+        "dataset_format": specs.get("format", "unknown"),
         "batch_size": 128,
         "num_steps": 100000
     })

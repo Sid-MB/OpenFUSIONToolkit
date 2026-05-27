@@ -19,8 +19,8 @@ Usage:
 Output layout:
     output_dir/run_manifest.json
     output_dir/all_actions.npy
-    output_dir/trajectories/trajectory_<run_id>.json
     output_dir/full_trajectories/trajectory_<run_id>.zarr
+    output_dir/trajectories/trajectory_<run_id>.json  # optional, with --save_json
     output_dir/failures/failed_run_<run_id>.json
     output_dir/chunks/<chunk>/task_status.json
 """
@@ -855,30 +855,44 @@ def save_trajectory(transitions, summary, action_row, run_id, dataset_dir):
 
 
 def save_trajectory_outputs(transitions, summary, action_row, run_id, dataset_dir,
-                            data_tree=None, save_full_zarr=False):
+                            data_tree=None, save_full_zarr=True, save_json=False):
     payload = trajectory_payload(transitions, summary, action_row, run_id)
-    json_path = save_trajectory_atomic(dataset_dir, payload)
+    json_path = None
+    if save_json:
+        json_path = save_trajectory_atomic(dataset_dir, payload)
+
     zarr_path = None
     if save_full_zarr:
         if data_tree is None:
             raise ValueError('save_full_zarr=True requires a TORAX data_tree')
-        zarr_path = save_full_trajectory_zarr_atomic(dataset_dir, payload, data_tree)
-    return json_path if zarr_path is None else f'{json_path} | {zarr_path}'
+        zarr_path = save_full_trajectory_zarr_atomic(
+            dataset_dir,
+            payload,
+            data_tree,
+            json_path=json_path,
+        )
+
+    paths = [str(path) for path in (json_path, zarr_path) if path is not None]
+    if not paths:
+        raise ValueError('At least one trajectory output format must be enabled')
+    return ' | '.join(paths)
 
 
 def worker_fn(run_id, all_actions, eqdsk_list, eqtimes, coil_bounds,
               x_points, diverted_isoflux_pts, Ip_targets, ne_init, Te_init,
               psi_sample, dataset_dir, initial_relax_cache, log_dir,
-              max_loop, grid_size, trajectory_timeout_seconds, save_full_zarr):
+              max_loop, grid_size, trajectory_timeout_seconds, save_full_zarr,
+              save_json):
     """Run and save one trajectory using this worker's initialized TokaMaker."""
     global _mygs
 
     try:
-        existing_path = trajectory_path(dataset_dir, run_id)
-        if existing_path.exists():
-            raise FileExistsError(
-                f'trajectory output already exists before run starts: {existing_path}'
-            )
+        if save_json:
+            existing_path = trajectory_path(dataset_dir, run_id)
+            if existing_path.exists():
+                raise FileExistsError(
+                    f'trajectory output already exists before run starts: {existing_path}'
+                )
         if save_full_zarr:
             existing_zarr_path = full_trajectory_zarr_path(dataset_dir, run_id)
             if existing_zarr_path.exists():
@@ -903,7 +917,9 @@ def worker_fn(run_id, all_actions, eqdsk_list, eqtimes, coil_bounds,
         if transitions is not None:
             path = save_trajectory_outputs(
                 transitions, summary, action_row, run_id, dataset_dir,
-                data_tree=data_tree, save_full_zarr=save_full_zarr,
+                data_tree=data_tree,
+                save_full_zarr=save_full_zarr,
+                save_json=save_json,
             )
             return run_id, True, path
 
@@ -952,11 +968,18 @@ if __name__ == '__main__':
                         default=True,
                         help='Save full TORAX scalars/profiles and reward components as one Zarr store per trajectory (default)')
     parser.add_argument('--no_save_full_zarr', dest='save_full_zarr', action='store_false',
-                        help='Disable per-trajectory full Zarr output and save compact JSON only')
+                        help='Disable per-trajectory full Zarr output')
+    parser.add_argument('--save_json', dest='save_json', action='store_true',
+                        default=False,
+                        help='Also save compact trajectory JSON files; disabled by default')
+    parser.add_argument('--no_save_json', dest='save_json', action='store_false',
+                        help='Disable compact trajectory JSON output (default)')
     args = parser.parse_args()
 
     if args.n_workers < 1:
         raise ValueError('--n_workers must be >= 1')
+    if not args.save_full_zarr and not args.save_json:
+        raise ValueError('At least one output format must be enabled')
 
     cwd = os.getcwd()
     require_cuda_on_gpu = not args.allow_cpu_jax_on_gpu
@@ -1081,6 +1104,7 @@ if __name__ == '__main__':
             'trajectories_dir': str(dataset_paths(args.output_dir)['trajectories']),
             'full_trajectories_dir': str(dataset_paths(args.output_dir)['full_trajectories']),
             'save_full_zarr': bool(args.save_full_zarr),
+            'save_json': bool(args.save_json),
         },
     )
 
@@ -1107,11 +1131,12 @@ if __name__ == '__main__':
     if args.n_workers == 1:
         # ── Serial run loop ───────────────────────────────────────────────────
         for run_id in run_ids:
-            existing_path = trajectory_path(args.output_dir, run_id)
-            if existing_path.exists():
-                raise FileExistsError(
-                    f'trajectory output already exists before run starts: {existing_path}'
-                )
+            if args.save_json:
+                existing_path = trajectory_path(args.output_dir, run_id)
+                if existing_path.exists():
+                    raise FileExistsError(
+                        f'trajectory output already exists before run starts: {existing_path}'
+                    )
             if args.save_full_zarr:
                 existing_zarr_path = full_trajectory_zarr_path(args.output_dir, run_id)
                 if existing_zarr_path.exists():
@@ -1140,7 +1165,9 @@ if __name__ == '__main__':
             if transitions is not None:
                 path = save_trajectory_outputs(
                     transitions, summary, action_row, run_id, args.output_dir,
-                    data_tree=data_tree, save_full_zarr=args.save_full_zarr,
+                    data_tree=data_tree,
+                    save_full_zarr=args.save_full_zarr,
+                    save_json=args.save_json,
                 )
                 success_count += 1
                 print(f'  Saved to {path} ({elapsed:.1f}s)')
@@ -1179,6 +1206,7 @@ if __name__ == '__main__':
             grid_size=args.grid_size,
             trajectory_timeout_seconds=args.trajectory_timeout_seconds,
             save_full_zarr=args.save_full_zarr,
+            save_json=args.save_json,
         )
 
         mp_context = os.environ.get('MP_CONTEXT', 'fork')
@@ -1227,6 +1255,7 @@ if __name__ == '__main__':
             'trajectories_dir': str(dataset_paths(args.output_dir)['trajectories']),
             'full_trajectories_dir': str(dataset_paths(args.output_dir)['full_trajectories']),
             'save_full_zarr': bool(args.save_full_zarr),
+            'save_json': bool(args.save_json),
         },
     )
 

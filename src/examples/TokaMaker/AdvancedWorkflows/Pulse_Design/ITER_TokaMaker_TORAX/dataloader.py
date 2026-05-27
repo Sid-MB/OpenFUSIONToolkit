@@ -347,7 +347,7 @@ def build_reward_components_dataset(transitions):
     return dataset
 
 
-def save_full_trajectory_zarr_atomic(dataset_dir, payload, data_tree):
+def save_full_trajectory_zarr_atomic(dataset_dir, payload, data_tree, json_path=None):
     """Write one per-trajectory Zarr store and publish it with an atomic rename."""
     import zarr
 
@@ -374,15 +374,17 @@ def save_full_trajectory_zarr_atomic(dataset_dir, payload, data_tree):
         _write_xarray_group(reward_components, tmp_path, 'reward_components')
 
         root = zarr.open_group(str(tmp_path), mode='a')
-        root.attrs.update(_normalize_for_json({
+        attrs = {
             'schema_version': DATASET_SCHEMA_VERSION,
             'kind': 'tokamaker_torax_full_trajectory',
             'run_id': payload['run_id'],
             'timestamp': payload['timestamp'],
             'actions_raw': payload['actions_raw'],
             'summary': payload['summary'],
-            'json_trajectory': str(trajectory_path(dataset_dir, run_id)),
-        }))
+        }
+        if json_path is not None:
+            attrs['json_trajectory'] = str(json_path)
+        root.attrs.update(_normalize_for_json(attrs))
         os.replace(tmp_path, final_path)
     except Exception:
         if tmp_path.exists():
@@ -424,12 +426,80 @@ def find_trajectory_files(dataset_dir):
     return sorted(root.glob('trajectory_*.json'))
 
 
+def find_full_trajectory_zarr_stores(dataset_dir):
+    root = Path(dataset_dir)
+    nested = root / FULL_TRAJECTORIES_DIRNAME
+    if nested.is_dir():
+        stores = sorted(nested.glob('trajectory_*.zarr'))
+        if stores:
+            return stores
+    return sorted(root.glob('trajectory_*.zarr'))
+
+
 def load_state(state, state_keys=None):
     keys = state_keys if state_keys is not None else state.keys()
     return np.array([state[key] for key in keys], dtype=np.float32)
 
 
-def infer_dataset_specs(directory):
+def _zarr_reward_components_dataset(store_path):
+    return xr.open_zarr(store_path, group='reward_components', consolidated=False)
+
+
+def _zarr_state_keys(dataset):
+    state_keys = dataset.attrs.get('state_keys')
+    if state_keys:
+        return list(state_keys)
+    return sorted(
+        var_name.removeprefix('state_')
+        for var_name in dataset.data_vars
+        if var_name.startswith('state_')
+    )
+
+
+def infer_zarr_dataset_specs(directory):
+    zarr_stores = find_full_trajectory_zarr_stores(directory)
+    if not zarr_stores:
+        raise FileNotFoundError(f'No trajectory_*.zarr stores found in {directory}')
+
+    total_transitions = 0
+    state_keys = None
+    action_dim = None
+    nonempty_count = 0
+
+    for store_path in zarr_stores:
+        dataset = _zarr_reward_components_dataset(store_path)
+        try:
+            n_decisions = int(dataset.sizes.get('decision', 0))
+            if n_decisions == 0:
+                continue
+
+            keys = _zarr_state_keys(dataset)
+            if not keys:
+                continue
+
+            if state_keys is None:
+                state_keys = keys
+                action_dim = int(dataset.sizes['action_dim'])
+
+            total_transitions += n_decisions
+            nonempty_count += 1
+        finally:
+            dataset.close()
+
+    if state_keys is None or action_dim is None:
+        raise ValueError(f'No non-empty Zarr trajectories found in {directory}')
+
+    return {
+        'num_trajectories': nonempty_count,
+        'num_transitions': total_transitions,
+        'state_dim': len(state_keys),
+        'action_dim': action_dim,
+        'state_keys': state_keys,
+        'format': 'zarr',
+    }
+
+
+def infer_json_dataset_specs(directory):
     trajectory_files = find_trajectory_files(directory)
     if not trajectory_files:
         raise FileNotFoundError(f'No trajectory_*.json files found in {directory}')
@@ -458,10 +528,18 @@ def infer_dataset_specs(directory):
         'state_dim': len(state_keys),
         'action_dim': action_dim,
         'state_keys': state_keys,
+        'format': 'json',
     }
 
 
-def iter_d4rl_transitions(directory, state_keys=None):
+def infer_dataset_specs(directory):
+    zarr_stores = find_full_trajectory_zarr_stores(directory)
+    if zarr_stores:
+        return infer_zarr_dataset_specs(directory)
+    return infer_json_dataset_specs(directory)
+
+
+def iter_json_d4rl_transitions(directory, state_keys=None):
     for filepath in find_trajectory_files(directory):
         traj = load_json(filepath)
         transitions = traj['transitions']
@@ -477,6 +555,49 @@ def iter_d4rl_transitions(directory, state_keys=None):
             reward = np.array([transition['r']], dtype=np.float32)
             done = np.array([transition.get('done', idx == len(transitions) - 1)], dtype=np.float32)
             yield state, action, next_state, reward, done
+
+
+def iter_zarr_d4rl_transitions(directory, state_keys=None):
+    for store_path in find_full_trajectory_zarr_stores(directory):
+        dataset = _zarr_reward_components_dataset(store_path)
+        try:
+            keys = list(state_keys) if state_keys is not None else _zarr_state_keys(dataset)
+            state_arrays = []
+            for key in keys:
+                var_name = f'state_{key}'
+                if var_name not in dataset:
+                    raise KeyError(f'Missing Zarr state variable {var_name!r} in {store_path}')
+                state_arrays.append(np.asarray(dataset[var_name].values, dtype=np.float32))
+
+            if not state_arrays:
+                continue
+
+            states = np.stack(state_arrays, axis=1).astype(np.float32)
+            actions = np.asarray(dataset['action'].values, dtype=np.float32)
+            rewards = np.asarray(dataset['reward'].values, dtype=np.float32)
+            dones = np.asarray(dataset['done'].values, dtype=np.float32)
+
+            for idx in range(states.shape[0]):
+                if idx < states.shape[0] - 1 and dones[idx] < 0.5:
+                    next_state = states[idx + 1]
+                else:
+                    next_state = np.zeros_like(states[idx])
+                yield (
+                    states[idx],
+                    actions[idx],
+                    next_state,
+                    np.array([rewards[idx]], dtype=np.float32),
+                    np.array([dones[idx]], dtype=np.float32),
+                )
+        finally:
+            dataset.close()
+
+
+def iter_d4rl_transitions(directory, state_keys=None):
+    if find_full_trajectory_zarr_stores(directory):
+        yield from iter_zarr_d4rl_transitions(directory, state_keys)
+    else:
+        yield from iter_json_d4rl_transitions(directory, state_keys)
 
 
 def load_d4rl_dataset(directory, buffer, state_keys=None):
