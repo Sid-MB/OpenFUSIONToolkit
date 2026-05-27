@@ -1,4 +1,7 @@
 import itertools
+import argparse
+import json
+import os
 from pathlib import Path
 
 import modal
@@ -243,7 +246,16 @@ def normalize_buffer(buffer):
 
     return action_max
 
-def train_iql(iql, buffer, batch_size=128, num_steps=1000000, checkpoint_dir='/data', resume_from=None):
+def train_iql(
+    iql,
+    buffer,
+    batch_size=128,
+    num_steps=1000000,
+    checkpoint_dir='/data',
+    resume_from=None,
+    checkpoint_interval=5000,
+    log_interval=100,
+):
     dataloader = DataLoader(buffer, batch_size=batch_size, shuffle=True)
     
     start_step = 0
@@ -266,11 +278,10 @@ def train_iql(iql, buffer, batch_size=128, num_steps=1000000, checkpoint_dir='/d
         batch = next(batches)
         metrics = iql.update(batch)
         
-        if step % 100 == 0:
+        if log_interval > 0 and step % log_interval == 0:
             wandb.log(metrics, step=step)
         
-        # Save checkpoint every 5000 gradient updates.
-        if step % 5000 == 0 and step > 0:
+        if checkpoint_interval > 0 and step % checkpoint_interval == 0 and step > 0:
             torch.save({
                 'actor': iql.actor.state_dict(),
                 'q1': iql.q1.state_dict(),
@@ -285,6 +296,98 @@ def train_iql(iql, buffer, batch_size=128, num_steps=1000000, checkpoint_dir='/d
             }, f'{checkpoint_dir}/checkpoint_step_{step}.pt')
             print(f"Saved checkpoint at step {step}")
 
+def latest_checkpoint(checkpoint_dir):
+    checkpoints = list(Path(checkpoint_dir).glob('checkpoint_step_*.pt'))
+    if not checkpoints:
+        return None
+    return max(checkpoints, key=lambda p: int(p.stem.split('_')[-1]))
+
+def train_from_config(
+    dataset_dir,
+    output_dir,
+    batch_size=128,
+    num_steps=100000,
+    project='iql-training',
+    run_name=None,
+    resume_from='auto',
+    wandb_mode=None,
+    checkpoint_interval=5000,
+    log_interval=100,
+):
+    dataset_dir = Path(dataset_dir).resolve()
+    output_dir = Path(output_dir).resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    print(f"IQL dataset_dir={dataset_dir}", flush=True)
+    print(f"IQL output_dir={output_dir}", flush=True)
+
+    specs = infer_dataset_specs(dataset_dir)
+    config = {
+        "dataset_dir": str(dataset_dir),
+        "output_dir": str(output_dir),
+        "num_trajectories": specs["num_trajectories"],
+        "num_transitions": specs["num_transitions"],
+        "state_dim": specs["state_dim"],
+        "action_dim": specs["action_dim"],
+        "dataset_format": specs.get("format", "unknown"),
+        "state_keys": specs["state_keys"],
+        "batch_size": batch_size,
+        "num_steps": num_steps,
+        "checkpoint_interval": checkpoint_interval,
+        "log_interval": log_interval,
+    }
+    with (output_dir / "iql_config.json").open("w") as f:
+        json.dump(config, f, indent=2)
+
+    wandb_init_kwargs = {"project": project, "config": config}
+    if run_name:
+        wandb_init_kwargs["name"] = run_name
+    if wandb_mode:
+        wandb_init_kwargs["mode"] = wandb_mode
+    wandb.init(**wandb_init_kwargs)
+
+    state_dim = specs["state_dim"]
+    action_dim = specs["action_dim"]
+    dataset_size = specs["num_transitions"]
+    buffer = ReplayBuffer(state_dim, action_dim, dataset_size)
+    load_d4rl_dataset(str(dataset_dir), buffer, specs["state_keys"])
+
+    action_max = normalize_buffer(buffer)
+    iql_agent = IQL(action_max, state_dim, action_dim)
+
+    checkpoint_path = None
+    if resume_from == 'auto':
+        checkpoint_path = latest_checkpoint(output_dir)
+    elif resume_from:
+        checkpoint_path = Path(resume_from)
+
+    train_iql(
+        iql_agent,
+        buffer,
+        batch_size=batch_size,
+        num_steps=num_steps,
+        checkpoint_dir=str(output_dir),
+        resume_from=checkpoint_path,
+        checkpoint_interval=checkpoint_interval,
+        log_interval=log_interval,
+    )
+
+    weights_path = output_dir / 'iql_weights.pt'
+    torch.save({
+        'actor': iql_agent.actor.state_dict(),
+        'q1': iql_agent.q1.state_dict(),
+        'q2': iql_agent.q2.state_dict(),
+        'v': iql_agent.v.state_dict(),
+        'q1_target': iql_agent.q1_target.state_dict(),
+        'q2_target': iql_agent.q2_target.state_dict(),
+        'action_max': torch.as_tensor(action_max),
+        'state_keys': specs["state_keys"],
+        'state_dim': state_dim,
+        'action_dim': action_dim,
+        'config': config,
+    }, weights_path)
+    print(f"Saved final weights to {weights_path}", flush=True)
+    wandb.finish()
+
 @app.function(
     image=image,
     secrets=[modal.Secret.from_name("wandb-secret")],
@@ -292,51 +395,45 @@ def train_iql(iql, buffer, batch_size=128, num_steps=1000000, checkpoint_dir='/d
     timeout=86400
 )
 def train_modal():
-    dataset_dir = '/data/rl_dataset_delta_sampling_maxloop=2_grid_51_preprocessed'
-    specs = infer_dataset_specs(dataset_dir)
-
-    wandb.init(project="iql-training", config={
-        "dataset_dir": dataset_dir,
-        "num_trajectories": specs["num_trajectories"],
-        "num_transitions": specs["num_transitions"],
-        "state_dim": specs["state_dim"],
-        "action_dim": specs["action_dim"],
-        "dataset_format": specs.get("format", "unknown"),
-        "batch_size": 128,
-        "num_steps": 100000
-    })
-    
-    state_dim = specs["state_dim"]
-    action_dim = specs["action_dim"]
-    dataset_size = specs["num_transitions"]
-    buffer = ReplayBuffer(state_dim, action_dim, dataset_size)
-    load_d4rl_dataset(dataset_dir, buffer, specs["state_keys"])
-
-    action_max = normalize_buffer(buffer)
-    IQL_agent = IQL(action_max, state_dim, action_dim)
-
-    # Find latest checkpoint
-    checkpoint_path = None
-    checkpoints = list(Path('/data').glob('checkpoint_step_*.pt'))
-    if checkpoints:
-        checkpoint_path = max(checkpoints, key=lambda p: int(p.stem.split('_')[-1]))
-    
-    train_iql(IQL_agent, buffer, batch_size=128, num_steps=100000, 
-              checkpoint_dir='/data', resume_from=checkpoint_path)
-
-    torch.save({
-        'actor': IQL_agent.actor.state_dict(),
-        'q1': IQL_agent.q1.state_dict(),
-        'q2': IQL_agent.q2.state_dict(),
-        'v': IQL_agent.v.state_dict(),
-        'action_max': torch.as_tensor(action_max),
-        'state_keys': specs["state_keys"],
-        'state_dim': state_dim,
-        'action_dim': action_dim,
-    }, '/data/iql_weights.pt')
-    
-    wandb.finish()
+    train_from_config(
+        dataset_dir='/data/rl_dataset_delta_sampling_maxloop=2_grid_51_preprocessed',
+        output_dir='/data',
+        batch_size=128,
+        num_steps=100000,
+    )
 
 @app.local_entrypoint()
-def main():
+def modal_main():
     train_modal.remote()
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Train IQL on a collected TORAX trajectory dataset.")
+    parser.add_argument("--dataset_dir", required=True, help="Collected dataset root containing trajectories/")
+    parser.add_argument("--output_dir", required=True, help="Directory for checkpoints, config, and final weights")
+    parser.add_argument("--batch_size", type=int, default=128)
+    parser.add_argument("--num_steps", type=int, default=100000)
+    parser.add_argument("--project", default=os.environ.get("WANDB_PROJECT", "iql-training"))
+    parser.add_argument("--run_name", default=None)
+    parser.add_argument("--resume_from", default="auto", help="Checkpoint path, 'auto', or empty string to disable resume")
+    parser.add_argument("--wandb_mode", default=os.environ.get("WANDB_MODE"), help="Set to offline or disabled for debugging")
+    parser.add_argument("--checkpoint_interval", type=int, default=5000)
+    parser.add_argument("--log_interval", type=int, default=100)
+    return parser.parse_args()
+
+def main():
+    args = parse_args()
+    train_from_config(
+        dataset_dir=args.dataset_dir,
+        output_dir=args.output_dir,
+        batch_size=args.batch_size,
+        num_steps=args.num_steps,
+        project=args.project,
+        run_name=args.run_name,
+        resume_from=args.resume_from,
+        wandb_mode=args.wandb_mode,
+        checkpoint_interval=args.checkpoint_interval,
+        log_interval=args.log_interval,
+    )
+
+if __name__ == "__main__":
+    main()

@@ -8,7 +8,7 @@ Quick reference for launching trajectory collection from the
 Use the CPU array submit helper for production runs:
 
 ```bash
-START_IDX=600 END_IDX=1000 ARRAY_SPEC=0-399%16 \
+START_IDX=600 END_IDX=1000 ARRAY_CONCURRENCY=16 \
   ./run_scripts/submit_collect_trajectories_cpu_array.sh
 ```
 
@@ -22,14 +22,18 @@ This runs trajectories `600..999` on `john` with:
 - one shared `run_manifest.json` and `all_actions.npy` for the whole dataset
 
 For future full production runs targeting 64 total CPUs, keep the same
-`ARRAY_SPEC=0-399%16` and `CPUS_PER_TASK=4` shape:
+`ARRAY_CONCURRENCY=16` and `CPUS_PER_TASK=4` shape. The submit helper derives
+the array range from `START_IDX`, `END_IDX`, and `CHUNK_SIZE`.
 
 ```bash
-START_IDX=600 END_IDX=1000 ARRAY_SPEC=0-399%16 CPUS_PER_TASK=4 \
+START_IDX=600 END_IDX=1000 ARRAY_CONCURRENCY=16 CPUS_PER_TASK=4 \
   ./run_scripts/submit_collect_trajectories_cpu_array.sh
 ```
 
 Keep `N_WORKERS=1`; scale with Slurm array concurrency instead.
+The cluster reports `MaxArraySize=1001`, so valid array task IDs are `0..1000`.
+If a run would need more than 1001 array tasks, increase `CHUNK_SIZE` or split
+the range into multiple submissions.
 
 ## Useful Overrides
 
@@ -38,6 +42,7 @@ MAX_LOOP=3                         # extra TORAX/TokaMaker coupling pass
 TRAJECTORY_TIMEOUT_SECONDS=14400    # per-trajectory wall-time limit
 OUTPUT_BASE_DIR=./my_output_dir     # explicit result directory
 USE_INITIAL_RELAX_CACHE=1           # opt into cache build + dependency
+DRY_RUN=1                           # print derived array shape without submitting
 ```
 
 Example small diagnostic:
