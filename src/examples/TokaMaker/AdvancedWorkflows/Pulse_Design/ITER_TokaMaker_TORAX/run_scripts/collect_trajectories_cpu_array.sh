@@ -31,10 +31,9 @@
 #
 # Resource scaling note:
 #   The current best-supported shape is one trajectory worker per Slurm task,
-#   with about four CPUs allocated to that worker. Scale by increasing the
-#   array concurrency after a small run looks healthy. `%32` is a reasonable
-#   future-run target on john when enough CPUs are idle. N_WORKERS>1 can
-#   increase RAM pressure and makes it harder to tell which trajectory is slow.
+#   with about four CPUs allocated to that worker. The standard 64-total-CPU
+#   run uses `%16` array concurrency. N_WORKERS>1 can increase RAM pressure and
+#   makes it harder to tell which trajectory is slow.
 #
 # Shared initial relax cache is optional. Set USE_INITIAL_RELAX_CACHE=0 to run
 # without it, or build it first and submit this script with --dependency=afterok.

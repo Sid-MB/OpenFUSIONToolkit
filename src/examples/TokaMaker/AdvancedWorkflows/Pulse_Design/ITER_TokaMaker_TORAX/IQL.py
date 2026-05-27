@@ -265,7 +265,9 @@ def load_d4rl_dataset(directory, buffer, state_keys=None):
                 datapoint = {}
                 datapoint["s"] = load_state(traj['transitions'][i]['s'], state_keys)
                 datapoint["a"] = traj['transitions'][i]['a']
-                if i < len(traj['transitions']) - 1:
+                if 's_next' in traj['transitions'][i]:
+                    datapoint["s_next"] = load_state(traj['transitions'][i]['s_next'], state_keys)
+                elif i < len(traj['transitions']) - 1:
                     datapoint["s_next"] = load_state(traj['transitions'][i+1]['s'], state_keys)
                 else:
                     datapoint["s_next"] = np.zeros(buffer.states.shape[1], dtype=np.float32)

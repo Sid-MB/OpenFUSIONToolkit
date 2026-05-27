@@ -18,12 +18,13 @@ This runs trajectories `600..999` on `john` with:
 - `4` CPUs and `16G` RAM per task
 - `MAX_LOOP=2`, `GRID_SIZE=51`
 - no shared initial relax cache by default
-- at most `16` tasks running at once
+- at most `16` tasks running at once, for `64` total allocated CPUs
 
-For a future higher-throughput run, use `%32` when `john` has enough idle CPUs:
+For future full production runs targeting 64 total CPUs, keep the same
+`ARRAY_SPEC=0-399%16` and `CPUS_PER_TASK=4` shape:
 
 ```bash
-START_IDX=600 END_IDX=1000 ARRAY_SPEC=0-399%32 \
+START_IDX=600 END_IDX=1000 ARRAY_SPEC=0-399%16 CPUS_PER_TASK=4 \
   ./run_scripts/submit_collect_trajectories_cpu_array.sh
 ```
 

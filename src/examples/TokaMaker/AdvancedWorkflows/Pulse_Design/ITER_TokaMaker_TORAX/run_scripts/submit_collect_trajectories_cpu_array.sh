@@ -11,13 +11,9 @@ set -euo pipefail
 # Should you call this directly?
 #   Yes. For the standard full run, paste the example below into your shell.
 #
-# Standard full-run example:
-#   START_IDX=600 END_IDX=1000 ARRAY_SPEC=0-399%16 N_WORKERS=1 CHUNK_SIZE=1 \
-#     MAX_LOOP=2 GRID_SIZE=51 TRAJECTORY_TIMEOUT_SECONDS=7200 \
-#     ./run_scripts/submit_collect_trajectories_cpu_array.sh
-#
-# Higher-throughput future-run example, when john has enough idle CPUs:
-#   START_IDX=600 END_IDX=1000 ARRAY_SPEC=0-399%32 N_WORKERS=1 CHUNK_SIZE=1 \
+# Standard full-run example (64 total allocated CPUs: 16 tasks x 4 CPUs):
+#   START_IDX=600 END_IDX=1000 ARRAY_SPEC=0-399%16 CPUS_PER_TASK=4 \
+#     N_WORKERS=1 CHUNK_SIZE=1 \
 #     MAX_LOOP=2 GRID_SIZE=51 TRAJECTORY_TIMEOUT_SECONDS=7200 \
 #     ./run_scripts/submit_collect_trajectories_cpu_array.sh
 #

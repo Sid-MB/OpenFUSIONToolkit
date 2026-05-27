@@ -4,9 +4,9 @@ collect_trajectories.py
 Generates a static offline RL dataset by running TokaMaker_TORAX simulations
 with varied ECRH and NBI heating schedules sampled via Latin Hypercube Sampling.
 
-Dataset structure (per trajectory, 12 transitions):
+Dataset structure (per trajectory, 21 transitions):
     s       : state vector at rl_time[i]
-    a       : [ecrh_MW, nbi_MW] applied from rl_time[i] to rl_time[i+1]
+    a       : [ecrh_W, nbi_W] applied from rl_time[i] to rl_time[i+1]
     r       : mean Q_fusion from rl_time[i] to rl_time[i+1]
               (plus terminal reward at last step)
     s_next  : state vector at rl_time[i+1]
@@ -24,6 +24,7 @@ import time
 import argparse
 import multiprocessing as mp
 import signal
+import copy
 import numpy as np
 from scipy.stats import qmc
 from datetime import datetime
@@ -248,7 +249,7 @@ def build_nbi_schedule(action_row):
     NBI is 0 before t=80 by construction.
     Fixed at 33 MW at t=80, agent-controlled from t=100 to t=500,
     fixed ramp-down from t=520 onward.
-    action_row[:, 1] = nbi_MW at each decision time.
+    action_row[:, 1] = nbi_W at each decision time.
     """
     schedule = {}
 
@@ -285,8 +286,10 @@ def interpolate_torax_scalar(tmtx, var_name, rl_time):
         torax_times = tmtx._data_tree['scalars'].coords['time'].values
         values = tmtx._data_tree['scalars'][var_name].values.astype(float)
         return float(np.interp(rl_time, torax_times, values))
-    except Exception:
-        return float('nan')
+    except Exception as e:
+        raise RuntimeError(
+            f'Failed to interpolate TORAX scalar {var_name!r} at t={rl_time}.'
+        ) from e
 
 
 def get_torax_profile_at_rho(tmtx, var_name, rho_values, rl_time):
@@ -301,28 +304,22 @@ def get_torax_profile_at_rho(tmtx, var_name, rho_values, rl_time):
     t_idx = int(np.argmin(np.abs(torax_times - rl_time)))
     profile_data = ds[var_name].values  # shape (time, rho)
 
-    # Check which rho coordinate THIS SPECIFIC VARIABLE uses
+    # Check which rho coordinate this variable uses.
     var_dims = ds[var_name].dims
-    print(f"DEBUG: var={var_name}, dims={var_dims}")  # DIAGNOSTIC
 
     if 'rho_face_norm' in var_dims:
         rho_coord = ds.coords['rho_face_norm'].values
-        print(f"  -> using rho_face_norm, shape={rho_coord.shape}")
     elif 'rho_norm' in var_dims:
         rho_coord = ds.coords['rho_norm'].values
-        print(f"  -> using rho_norm, shape={rho_coord.shape}")
     elif 'rho_cell_norm' in var_dims:
         rho_coord = ds.coords['rho_cell_norm'].values
-        print(f"  -> using rho_cell_norm, shape={rho_coord.shape}")
     else:
-        print(f"  -> ERROR: no rho coordinate found!")
-        return [float('nan')] * len(rho_values)
+        raise RuntimeError(
+            f'No rho coordinate found for TORAX profile {var_name!r}: dims={var_dims}.'
+        )
 
     profile_at_t = profile_data[t_idx, :]
-    print(f"  profile_at_t shape={profile_at_t.shape}, first 5 vals={profile_at_t[:5]}")
-
     result = [float(np.interp(rho, rho_coord, profile_at_t)) for rho in rho_values]
-    print(f"  result for rho={rho_values}: {result}")
     return result
 
 
@@ -404,10 +401,10 @@ def extract_state(tmtx, t_start, t_end, current_action):
         state['penalty_q95']   = float(np.sum(np.maximum(Q95_MIN - q95_vals, 0)))
         state['penalty_betaN'] = float(np.sum(np.maximum(betaN_vals - BETA_N_MAX, 0)))
         state['penalty_fgw']   = float(np.sum(np.maximum(fgw_vals - FGW_MAX, 0)))
-    except Exception:
-        state['penalty_q95']   = 0.0
-        state['penalty_betaN'] = 0.0
-        state['penalty_fgw']   = 0.0
+    except Exception as e:
+        raise RuntimeError(
+            f'Failed to compute safety penalties for interval [{t_start}, {t_end}].'
+        ) from e
 
     # ── Profiles at rho = 0.2, 0.5, 0.8 at t_start ────────────────────────────
     profile_vars = ['T_e', 'T_i', 'n_e', 'q', 'magnetic_shear']
@@ -451,8 +448,11 @@ def compute_reward(tmtx, t_start, t_end, is_terminal=False):
             penalty += Q95_PENALTY_WEIGHT * np.sum(np.maximum(Q95_MIN - q95_vals, 0))
             penalty += BETA_N_PENALTY_WEIGHT * np.sum(np.maximum(betaN_vals - BETA_N_MAX, 0))
             penalty += FGW_PENALTY_WEIGHT * np.sum(np.maximum(fgw_vals - FGW_MAX, 0))
-        except Exception:
-            pass
+        except Exception as e:
+            raise RuntimeError(
+                f'Failed to compute reward safety penalties for interval '
+                f'[{t_start}, {t_end}].'
+            ) from e
 
     reward = step_reward - penalty
 
@@ -466,6 +466,49 @@ def compute_reward(tmtx, t_start, t_end, is_terminal=False):
         reward += Q_avg - FLUX_WEIGHT * flux_wb
 
     return reward
+
+
+def iter_numeric_values(value, path='value'):
+    """Yield (path, value) for numeric leaves in nested lists/dicts."""
+    if isinstance(value, dict):
+        for key, item in value.items():
+            yield from iter_numeric_values(item, f'{path}.{key}')
+    elif isinstance(value, (list, tuple)):
+        for idx, item in enumerate(value):
+            yield from iter_numeric_values(item, f'{path}[{idx}]')
+    elif isinstance(value, (int, float, np.integer, np.floating)):
+        yield path, float(value)
+
+
+def assert_all_numeric_finite(value, label):
+    for path, number in iter_numeric_values(value, label):
+        if not np.isfinite(number):
+            raise ValueError(f'Non-finite numeric value at {path}: {number}')
+
+
+def validate_trajectory(transitions, summary, action_row):
+    if len(transitions) != len(DECISION_TIMES):
+        raise ValueError(
+            f'Expected {len(DECISION_TIMES)} transitions, got {len(transitions)}.'
+        )
+    if action_row.shape != (len(DECISION_TIMES), 2):
+        raise ValueError(
+            f'Expected action shape {(len(DECISION_TIMES), 2)}, got {action_row.shape}.'
+        )
+
+    for idx, transition in enumerate(transitions):
+        required = {'s', 'a', 'r', 's_next', 'done', 't', 't_next'}
+        missing = required.difference(transition)
+        if missing:
+            raise ValueError(f'Transition {idx} missing keys: {sorted(missing)}')
+        assert_all_numeric_finite(transition['s'], f'transitions[{idx}].s')
+        assert_all_numeric_finite(transition['s_next'], f'transitions[{idx}].s_next')
+        assert_all_numeric_finite(transition['a'], f'transitions[{idx}].a')
+        assert_all_numeric_finite(transition['r'], f'transitions[{idx}].r')
+
+    if not isinstance(summary, dict) or not summary:
+        raise ValueError('Trajectory summary is missing or empty.')
+    assert_all_numeric_finite(summary, 'summary')
 
 
 # ── Trajectory builder ────────────────────────────────────────────────────────
@@ -484,18 +527,24 @@ def build_trajectory(tmtx, action_row):
         t_next = RL_TIMES[i + 1]
 
         is_terminal = (i == len(DECISION_TIMES) - 1)
-        a  = action_row[i].tolist()  # [ecrh_MW, nbi_MW]
+        a  = action_row[i].tolist()  # [ecrh_W, nbi_W]
         s = extract_state(tmtx, t, t_next, a)
         r = compute_reward(tmtx, t, t_next, is_terminal=is_terminal)
 
         transitions.append({
             's':      s,
-            'a':      a,          # [ecrh_MW, nbi_MW] in MW
+            'a':      a,          # [ecrh_W, nbi_W]
             'r':      r,
             'done':   is_terminal,
             't':      t,
             't_next': t_next,
         })
+
+    for i, transition in enumerate(transitions):
+        if i < len(transitions) - 1:
+            transition['s_next'] = copy.deepcopy(transitions[i + 1]['s'])
+        else:
+            transition['s_next'] = {key: 0.0 for key in transition['s']}
 
     return transitions
 
@@ -506,7 +555,14 @@ def setup_tokamaker(cwd):
     """Initialize OFT and TokaMaker, produce seed eqdsks. Run once per process."""
 
     import sys
-    sys.path.append('/Users/deniz/Desktop/Spring2026/CS224R/project/OpenFUSIONToolkit/install_release/python')
+
+    oft_install = os.environ.get('OFT_SELECTED_INSTALL')
+    if oft_install is None:
+        oft_root = os.path.abspath(os.path.join(cwd, '../../../../../../'))
+        oft_install = os.path.join(oft_root, 'install_release')
+    oft_python = os.path.join(oft_install, 'python')
+    if os.path.isdir(oft_python) and oft_python not in sys.path:
+        sys.path.append(oft_python)
 
     from OpenFUSIONToolkit import OFT_env
     from OpenFUSIONToolkit.TokaMaker import TokaMaker
@@ -653,6 +709,7 @@ def run_single_trajectory(mygs, action_row, run_id, cwd, eqdsk_list, eqtimes,
         transitions = build_trajectory(tmtx, action_row)
         with redirect_stdout(io.StringIO()):
             summary = tmtx.summary()
+        validate_trajectory(transitions, summary, action_row)
 
         return transitions, summary
 
@@ -671,8 +728,8 @@ def save_trajectory(transitions, summary, action_row, run_id, output_dir):
     payload = {
         'run_id':      run_id,
         'timestamp':   datetime.now().isoformat(),
-        'actions_raw': action_row.tolist(),   # (21, 2) array in MW
-        'transitions': transitions,            # list of 12 dicts
+        'actions_raw': action_row.tolist(),   # (21, 2) array in W
+        'transitions': transitions,            # list of 21 dicts
         'summary':     summary,
     }
     path = os.path.join(output_dir, f'trajectory_{run_id:04d}.json')
