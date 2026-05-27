@@ -1,23 +1,23 @@
+import itertools
+import json
+from pathlib import Path
+
+import modal
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader
-import numpy as np
-from typing import Tuple, Optional
-from pathlib import Path
-import json
 import wandb
-
-import modal
+from torch.utils.data import Dataset, DataLoader
 
 app = modal.App("iql-training")
 
 image = modal.Image.debian_slim().pip_install(
-    "torch", "numpy", "wandb"
+    "modal", "torch", "numpy", "wandb"
 )
 
 class ReplayBuffer(Dataset):
-    def __init__(self, state_dim: int, action_dim: int, max_size: int = 600*12):
+    def __init__(self, state_dim: int, action_dim: int, max_size: int):
         self.states = np.zeros((max_size, state_dim))
         self.actions = np.zeros((max_size, action_dim))
         self.next_states = np.zeros((max_size, state_dim))
@@ -82,7 +82,7 @@ class Actor(nn.Module):
             nn.Linear(hidden_dim, action_dim),
             nn.Tanh()
         )
-        self.action_max = action_max
+        self.register_buffer("action_max", torch.as_tensor(action_max, dtype=torch.float32))
 
     def forward(self, state):
         return self.net(state)
@@ -94,6 +94,8 @@ class IQL:
     def __init__(self, action_max, state_dim: int, action_dim: int, 
                  tau: float = 0.7, beta: float = 3.0, 
                  gamma: float = 0.99, lr: float = 1e-4):
+        self.state_dim = state_dim
+        self.action_dim = action_dim
         self.q1 = QNetwork(state_dim, action_dim)
         self.q2 = QNetwork(state_dim, action_dim)
         self.q1_target = QNetwork(state_dim, action_dim)
@@ -192,12 +194,8 @@ class IQL:
     def select_action(self, state):
         with torch.no_grad():
             state = torch.FloatTensor(state).unsqueeze(0)
-            return self.actor(state).cpu().numpy()[0]
+            return self.actor.act(state).cpu().numpy()[0]
         
-import numpy as np
-import pickle
-from pathlib import Path
-
 # Option 1: Load from individual trajectories
 def load_trajectories_to_buffer(buffer, trajectories):
     """
@@ -220,29 +218,57 @@ def load_trajectories_to_buffer(buffer, trajectories):
                 reward=rewards[t],
                 done=dones[t]
             )
-  
-def load_state(state):
-  arr = []
-  for key in state:
-      arr.append(state[key])
-  new_row = np.array(arr)
-  return new_row
+def load_state(state, state_keys=None):
+    keys = state_keys if state_keys is not None else state.keys()
+    return np.array([state[key] for key in keys], dtype=np.float32)
+
+
+def infer_dataset_specs(directory):
+    trajectory_files = sorted(Path(directory).glob('trajectory_*.json'))
+    if not trajectory_files:
+        raise FileNotFoundError(f"No trajectory_*.json files found in {directory}")
+
+    total_transitions = 0
+    state_keys = None
+    action_dim = None
+    for filepath in trajectory_files:
+        with open(filepath, 'r') as f:
+            traj = json.load(f)
+
+        transitions = traj.get('transitions', [])
+        if not transitions:
+            continue
+
+        if state_keys is None:
+            state_keys = list(transitions[0]['s'].keys())
+            action_dim = len(transitions[0]['a'])
+
+        total_transitions += len(transitions)
+
+    if state_keys is None or action_dim is None:
+        raise ValueError(f"No non-empty trajectories found in {directory}")
+
+    return {
+        "num_trajectories": len(trajectory_files),
+        "num_transitions": total_transitions,
+        "state_dim": len(state_keys),
+        "action_dim": action_dim,
+        "state_keys": state_keys,
+    }
 
 # Option 2: Load from D4RL-style dataset
-def load_d4rl_dataset(directory, buffer):
-    trajectories = []
-
-    for filepath in Path(directory).glob('trajectory_*.json'):
+def load_d4rl_dataset(directory, buffer, state_keys=None):
+    for filepath in sorted(Path(directory).glob('trajectory_*.json')):
         with open(filepath, 'r') as f:
             traj = json.load(f)
             for i in range(len(traj['transitions'])):
                 datapoint = {}
-                datapoint["s"] = load_state(traj['transitions'][i]['s'])
+                datapoint["s"] = load_state(traj['transitions'][i]['s'], state_keys)
                 datapoint["a"] = traj['transitions'][i]['a']
                 if i < len(traj['transitions']) - 1:
-                  datapoint["s_next"] = load_state(traj['transitions'][i+1]['s'])
+                    datapoint["s_next"] = load_state(traj['transitions'][i+1]['s'], state_keys)
                 else:
-                    datapoint["s_next"] = np.zeros(len(traj['transitions'][i]['s']))
+                    datapoint["s_next"] = np.zeros(buffer.states.shape[1], dtype=np.float32)
 
                 datapoint["r"] = traj['transitions'][i]['r']
                 datapoint["done"] = int(i == len(traj['transitions']) - 1)
@@ -254,6 +280,7 @@ def normalize_buffer(buffer):
     # Calculate mean and std across all states
     state_mean = buffer.states[:buffer.size].mean(axis=0)  # Mean of each feature
     state_std = buffer.states[:buffer.size].std(axis=0)    # Std of each feature
+    state_std[state_std < 1e-8] = 1.0
     
     # Transform: (original - mean) / std
     buffer.states[:buffer.size] = (buffer.states[:buffer.size] - state_mean) / state_std
@@ -261,10 +288,14 @@ def normalize_buffer(buffer):
         # Add action normalization
 
     action_max = np.abs(buffer.actions[:buffer.size]).max(axis=0)  # Shape: (2,)
+    action_max[action_max < 1e-8] = 1.0
     buffer.actions[:buffer.size] = buffer.actions[:buffer.size] / action_max  # Divide each dimension
     
     # Same for rewards
-    buffer.rewards[:buffer.size] = (buffer.rewards[:buffer.size] - buffer.rewards[:buffer.size].mean()) / buffer.rewards[:buffer.size].std()
+    reward_std = buffer.rewards[:buffer.size].std()
+    if reward_std < 1e-8:
+        reward_std = 1.0
+    buffer.rewards[:buffer.size] = (buffer.rewards[:buffer.size] - buffer.rewards[:buffer.size].mean()) / reward_std
 
     return action_max
 
@@ -274,35 +305,41 @@ def train_iql(iql, buffer, batch_size=128, num_steps=1000000, checkpoint_dir='/d
     start_step = 0
     if resume_from and Path(resume_from).exists():
         checkpoint = torch.load(resume_from, weights_only=False)
-        iql.actor.load_state_dict(checkpoint['actor'])
-        iql.q1.load_state_dict(checkpoint['q1'])
-        iql.q2.load_state_dict(checkpoint['q2'])
-        iql.v.load_state_dict(checkpoint['v'])
-        iql.q1_target.load_state_dict(checkpoint['q1_target'])
-        iql.q2_target.load_state_dict(checkpoint['q2_target'])
-        start_step = checkpoint['step']
-        print(f"Resumed from step {start_step}")
+        try:
+            iql.actor.load_state_dict(checkpoint['actor'])
+            iql.q1.load_state_dict(checkpoint['q1'])
+            iql.q2.load_state_dict(checkpoint['q2'])
+            iql.v.load_state_dict(checkpoint['v'])
+            iql.q1_target.load_state_dict(checkpoint['q1_target'])
+            iql.q2_target.load_state_dict(checkpoint['q2_target'])
+            start_step = checkpoint['step']
+            print(f"Resumed from step {start_step}")
+        except RuntimeError as exc:
+            print(f"Skipping incompatible checkpoint {resume_from}: {exc}")
     
+    batches = itertools.cycle(dataloader)
     for step in range(start_step, num_steps):
-        for batch in dataloader:
-            metrics = iql.update(batch)
-            
-            if step % 100 == 0:
-                wandb.log(metrics, step=step)
-            
-            # Save checkpoint every 5000 steps
-            if step % 5000 == 0 and step > 0:
-                torch.save({
-                    'actor': iql.actor.state_dict(),
-                    'q1': iql.q1.state_dict(),
-                    'q2': iql.q2.state_dict(),
-                    'v': iql.v.state_dict(),
-                    'q1_target': iql.q1_target.state_dict(),
-                    'q2_target': iql.q2_target.state_dict(),
-                    'step': step,
-                    'action_max': iql.actor.action_max,
-                }, f'{checkpoint_dir}/checkpoint_step_{step}.pt')
-                print(f"Saved checkpoint at step {step}")
+        batch = next(batches)
+        metrics = iql.update(batch)
+        
+        if step % 100 == 0:
+            wandb.log(metrics, step=step)
+        
+        # Save checkpoint every 5000 gradient updates.
+        if step % 5000 == 0 and step > 0:
+            torch.save({
+                'actor': iql.actor.state_dict(),
+                'q1': iql.q1.state_dict(),
+                'q2': iql.q2.state_dict(),
+                'v': iql.v.state_dict(),
+                'q1_target': iql.q1_target.state_dict(),
+                'q2_target': iql.q2_target.state_dict(),
+                'step': step,
+                'action_max': iql.actor.action_max.cpu(),
+                'state_dim': iql.state_dim,
+                'action_dim': iql.action_dim,
+            }, f'{checkpoint_dir}/checkpoint_step_{step}.pt')
+            print(f"Saved checkpoint at step {step}")
 
 @app.function(
     image=image,
@@ -311,18 +348,24 @@ def train_iql(iql, buffer, batch_size=128, num_steps=1000000, checkpoint_dir='/d
     timeout=86400
 )
 def train_modal():
+    dataset_dir = '/data/rl_dataset_delta_sampling_maxloop=2_grid_51_preprocessed'
+    specs = infer_dataset_specs(dataset_dir)
+
     wandb.init(project="iql-training", config={
-        "state_dim": 34,
-        "action_dim": 2,
+        "dataset_dir": dataset_dir,
+        "num_trajectories": specs["num_trajectories"],
+        "num_transitions": specs["num_transitions"],
+        "state_dim": specs["state_dim"],
+        "action_dim": specs["action_dim"],
         "batch_size": 128,
         "num_steps": 100000
     })
     
-    state_dim = 34
-    action_dim = 2
-    dataset_size = 600*12
+    state_dim = specs["state_dim"]
+    action_dim = specs["action_dim"]
+    dataset_size = specs["num_transitions"]
     buffer = ReplayBuffer(state_dim, action_dim, dataset_size)
-    load_d4rl_dataset('/data/rl_dataset_test', buffer)
+    load_d4rl_dataset(dataset_dir, buffer, specs["state_keys"])
 
     action_max = normalize_buffer(buffer)
     IQL_agent = IQL(action_max, state_dim, action_dim)
@@ -341,7 +384,10 @@ def train_modal():
         'q1': IQL_agent.q1.state_dict(),
         'q2': IQL_agent.q2.state_dict(),
         'v': IQL_agent.v.state_dict(),
-        'action_max': action_max,
+        'action_max': torch.as_tensor(action_max),
+        'state_keys': specs["state_keys"],
+        'state_dim': state_dim,
+        'action_dim': action_dim,
     }, '/data/iql_weights.pt')
     
     wandb.finish()
