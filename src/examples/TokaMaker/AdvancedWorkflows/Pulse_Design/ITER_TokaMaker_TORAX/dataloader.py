@@ -1,17 +1,20 @@
 import copy
 import json
 import os
+import shutil
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
+import xarray as xr
 
 
 DATASET_SCHEMA_VERSION = 1
 MANIFEST_FILENAME = 'run_manifest.json'
 ACTIONS_FILENAME = 'all_actions.npy'
 TRAJECTORIES_DIRNAME = 'trajectories'
+FULL_TRAJECTORIES_DIRNAME = 'full_trajectories'
 FAILURES_DIRNAME = 'failures'
 CHUNKS_DIRNAME = 'chunks'
 
@@ -31,6 +34,7 @@ def dataset_paths(dataset_dir):
         'manifest': root / MANIFEST_FILENAME,
         'actions': root / ACTIONS_FILENAME,
         'trajectories': root / TRAJECTORIES_DIRNAME,
+        'full_trajectories': root / FULL_TRAJECTORIES_DIRNAME,
         'failures': root / FAILURES_DIRNAME,
         'chunks': root / CHUNKS_DIRNAME,
     }
@@ -40,6 +44,7 @@ def ensure_dataset_dirs(dataset_dir):
     paths = dataset_paths(dataset_dir)
     paths['root'].mkdir(parents=True, exist_ok=True)
     paths['trajectories'].mkdir(parents=True, exist_ok=True)
+    paths['full_trajectories'].mkdir(parents=True, exist_ok=True)
     paths['failures'].mkdir(parents=True, exist_ok=True)
     paths['chunks'].mkdir(parents=True, exist_ok=True)
     return paths
@@ -166,6 +171,7 @@ def create_run_manifest(*, n_trajectories, seed, max_loop, grid_size,
         'layout': {
             'actions': ACTIONS_FILENAME,
             'trajectories': TRAJECTORIES_DIRNAME,
+            'full_trajectories': FULL_TRAJECTORIES_DIRNAME,
             'failures': FAILURES_DIRNAME,
             'chunks': CHUNKS_DIRNAME,
         },
@@ -274,6 +280,10 @@ def trajectory_path(dataset_dir, run_id):
     return dataset_paths(dataset_dir)['trajectories'] / f'trajectory_{int(run_id):04d}.json'
 
 
+def full_trajectory_zarr_path(dataset_dir, run_id):
+    return dataset_paths(dataset_dir)['full_trajectories'] / f'trajectory_{int(run_id):04d}.zarr'
+
+
 def failure_path(dataset_dir, run_id):
     return dataset_paths(dataset_dir)['failures'] / f'failed_run_{int(run_id):04d}.json'
 
@@ -283,6 +293,103 @@ def save_trajectory_atomic(dataset_dir, payload):
     path = trajectory_path(dataset_dir, run_id)
     atomic_write_json_once(path, payload)
     return str(path)
+
+
+def _xarray_node_to_dataset(node):
+    if isinstance(node, xr.Dataset):
+        return node
+    if hasattr(node, 'to_dataset'):
+        return node.to_dataset()
+    if hasattr(node, 'ds') and isinstance(node.ds, xr.Dataset):
+        return node.ds
+    raise TypeError(f'Cannot convert {type(node)!r} to xarray.Dataset')
+
+
+def _write_xarray_group(dataset, store_path, group_name):
+    dataset = dataset.copy()
+    dataset.attrs = _normalize_for_json(dataset.attrs)
+    for var_name in dataset.variables:
+        dataset[var_name].attrs = _normalize_for_json(dataset[var_name].attrs)
+    dataset.to_zarr(store_path, group=group_name, mode='a', consolidated=False)
+
+
+def build_reward_components_dataset(transitions):
+    decision_t = np.array([transition.get('t', np.nan) for transition in transitions], dtype=float)
+    t_next = np.array([transition.get('t_next', np.nan) for transition in transitions], dtype=float)
+    rewards = np.array([transition['r'] for transition in transitions], dtype=float)
+    actions = np.array([transition['a'] for transition in transitions], dtype=float)
+    dones = np.array([bool(transition.get('done', False)) for transition in transitions], dtype=bool)
+
+    data_vars = {
+        'reward': ('decision', rewards),
+        'done': ('decision', dones),
+        'action': (('decision', 'action_dim'), actions),
+    }
+
+    state_keys = []
+    if transitions and isinstance(transitions[0].get('s'), dict):
+        state_keys = list(transitions[0]['s'].keys())
+        for key in state_keys:
+            values = [transition.get('s', {}).get(key, np.nan) for transition in transitions]
+            if all(isinstance(value, (int, float, np.integer, np.floating, bool, np.bool_)) for value in values):
+                data_vars[f'state_{key}'] = ('decision', np.array(values, dtype=float))
+
+    dataset = xr.Dataset(
+        data_vars=data_vars,
+        coords={
+            'decision': np.arange(len(transitions), dtype=np.int32),
+            'decision_t': ('decision', decision_t),
+            't_next': ('decision', t_next),
+            'action_dim': np.arange(actions.shape[1], dtype=np.int32),
+        },
+        attrs={'state_keys': state_keys},
+    )
+    return dataset
+
+
+def save_full_trajectory_zarr_atomic(dataset_dir, payload, data_tree):
+    """Write one per-trajectory Zarr store and publish it with an atomic rename."""
+    import zarr
+
+    run_id = int(payload['run_id'])
+    final_path = full_trajectory_zarr_path(dataset_dir, run_id)
+    if final_path.exists():
+        raise FileExistsError(f'File already exists: {final_path}')
+
+    final_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = final_path.with_name(f'.{final_path.name}.tmp.{os.getpid()}')
+    if tmp_path.exists():
+        shutil.rmtree(tmp_path)
+
+    try:
+        for group_name in ('scalars', 'profiles'):
+            if group_name in data_tree:
+                _write_xarray_group(
+                    _xarray_node_to_dataset(data_tree[group_name]),
+                    tmp_path,
+                    group_name,
+                )
+
+        reward_components = build_reward_components_dataset(payload['transitions'])
+        _write_xarray_group(reward_components, tmp_path, 'reward_components')
+
+        root = zarr.open_group(str(tmp_path), mode='a')
+        root.attrs.update(_normalize_for_json({
+            'schema_version': DATASET_SCHEMA_VERSION,
+            'kind': 'tokamaker_torax_full_trajectory',
+            'run_id': payload['run_id'],
+            'timestamp': payload['timestamp'],
+            'actions_raw': payload['actions_raw'],
+            'summary': payload['summary'],
+            'json_trajectory': str(trajectory_path(dataset_dir, run_id)),
+        }))
+        os.replace(tmp_path, final_path)
+    except Exception:
+        if tmp_path.exists():
+            shutil.rmtree(tmp_path)
+        raise
+
+    return str(final_path)
 
 
 def save_failure_atomic(dataset_dir, run_id, error, *, chunk_dir=None):

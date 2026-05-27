@@ -20,6 +20,7 @@ Output layout:
     output_dir/run_manifest.json
     output_dir/all_actions.npy
     output_dir/trajectories/trajectory_<run_id>.json
+    output_dir/full_trajectories/trajectory_<run_id>.zarr
     output_dir/failures/failed_run_<run_id>.json
     output_dir/chunks/<chunk>/task_status.json
 """
@@ -31,6 +32,7 @@ import argparse
 import multiprocessing as mp
 import signal
 import copy
+import types
 import numpy as np
 from scipy.stats import qmc
 from datetime import datetime
@@ -48,7 +50,9 @@ from dataloader import (
     record_task_status,
     require_dataset,
     save_failure_atomic,
+    save_full_trajectory_zarr_atomic,
     save_trajectory_atomic,
+    full_trajectory_zarr_path,
     trajectory_path,
 )
 
@@ -85,6 +89,7 @@ FGW_PENALTY_WEIGHT = 3
 
 # Pellet schedule (fixed to baseline)
 PELLET_S_TOTAL = {0: 0, 90: 5e21, 450: 5e21, 451: 0}
+SEED_EQDSK_COUNT = 5
 
 
 # ── Per-worker global state ───────────────────────────────────────────────────
@@ -100,6 +105,56 @@ FATAL_EXCEPTIONS = (
     ImportError,
     OSError,
 )
+
+
+def require_readable_file(path, description):
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f'{description} is missing: {path}')
+    if not os.access(path, os.R_OK):
+        raise PermissionError(f'{description} is not readable: {path}')
+    if os.path.getsize(path) == 0:
+        raise OSError(f'{description} is empty: {path}')
+
+
+def resolve_seed_eqdsk_paths(cwd):
+    """
+    Resolve the five seed EQDSKs without silently falling back on partial data.
+
+    The current layout keeps seeds in seed_eqdsks/. A legacy root-level layout is
+    still accepted only when all five files are present there.
+    """
+    candidates = [
+        os.path.join(cwd, 'seed_eqdsks'),
+        cwd,
+    ]
+    checked = []
+
+    for directory in candidates:
+        paths = [os.path.join(directory, f'i={i}.eqdsk') for i in range(SEED_EQDSK_COUNT)]
+        existing = [path for path in paths if os.path.isfile(path)]
+        checked.extend(paths)
+        if len(existing) == SEED_EQDSK_COUNT:
+            return paths
+        if existing:
+            missing = [path for path in paths if not os.path.isfile(path)]
+            raise FileNotFoundError(
+                'Seed EQDSK directory is incomplete. Missing files:\n'
+                + '\n'.join(f'  {path}' for path in missing)
+            )
+
+    raise FileNotFoundError(
+        'Seed EQDSK files were not found. Checked:\n'
+        + '\n'.join(f'  {path}' for path in checked)
+    )
+
+
+def preflight_required_inputs(cwd, eqdsk_list, initial_relax_cache=None,
+                              require_initial_relax_cache=False):
+    require_readable_file(os.path.join(cwd, 'ITER_mesh.h5'), 'TokaMaker mesh')
+    for i, eqdsk_path in enumerate(eqdsk_list):
+        require_readable_file(eqdsk_path, f'seed EQDSK i={i}')
+    if require_initial_relax_cache:
+        require_readable_file(initial_relax_cache, 'initial relax cache')
 
 
 class TrajectoryTimeoutError(RuntimeError):
@@ -695,6 +750,26 @@ def build_initial_relax_cache(mygs, action_row, cache_path, eqdsk_list, eqtimes,
     return cache_path
 
 
+def normalize_loaded_initial_relax_state(tmtx):
+    """Restore tuple-wrapped TORAX profile inputs after JSON cache loading."""
+    for attr in ('_psi_init', '_n_e_init', '_T_e_init', '_T_i_init'):
+        value = getattr(tmtx, attr, None)
+        if isinstance(value, list) and len(value) in (2, 3):
+            setattr(tmtx, attr, tuple(value))
+
+
+def patch_initial_relax_cache_loader(tmtx):
+    """Make TokaMaker_TORAX JSON cache loading compatible with current TORAX."""
+    original_load = tmtx.load_initial_relax_state
+
+    def load_and_normalize(self, filename):
+        result = original_load(filename)
+        normalize_loaded_initial_relax_state(self)
+        return result
+
+    tmtx.load_initial_relax_state = types.MethodType(load_and_normalize, tmtx)
+
+
 def run_single_trajectory(mygs, action_row, run_id, cwd, eqdsk_list, eqtimes,
                            coil_bounds, x_points, diverted_isoflux_pts,
                            Ip_targets, ne_init, Te_init, psi_sample,
@@ -703,7 +778,7 @@ def run_single_trajectory(mygs, action_row, run_id, cwd, eqdsk_list, eqtimes,
                            trajectory_timeout_seconds=0):
     """
     Configure and run one TokaMaker_TORAX simulation with the given action_row.
-    Returns the transitions list and summary dict, or None if simulation failed.
+    Returns (transitions, summary, data_tree), or (None, None, None) if simulation failed.
     """
     try:
         with trajectory_timeout(trajectory_timeout_seconds):
@@ -711,6 +786,8 @@ def run_single_trajectory(mygs, action_row, run_id, cwd, eqdsk_list, eqtimes,
                 mygs, action_row, eqdsk_list, eqtimes, coil_bounds, x_points,
                 Ip_targets, ne_init, Te_init, psi_sample, grid_size=grid_size,
             )
+            if initial_relax_cache is not None:
+                patch_initial_relax_cache_loader(tmtx)
 
             tmtx.fly(
                 output_mode=False,
@@ -729,14 +806,14 @@ def run_single_trajectory(mygs, action_row, run_id, cwd, eqdsk_list, eqtimes,
             summary = tmtx.summary()
         validate_trajectory(transitions, summary, action_row)
 
-        return transitions, summary
+        return transitions, summary, tmtx._data_tree
 
     except FATAL_EXCEPTIONS as e:
         print(f'  [run {run_id}] FATAL: {type(e).__name__}: {e}')
         raise
     except Exception as e:
         print(f'  [run {run_id}] FAILED: {e}')
-        return None, None
+        return None, None, None
 
 
 # ── Dataset saving ────────────────────────────────────────────────────────────
@@ -760,8 +837,7 @@ def sampler_manifest_fields():
     }
 
 
-def save_trajectory(transitions, summary, action_row, run_id, dataset_dir):
-    """Save one trajectory as an atomically published JSON file."""
+def trajectory_payload(transitions, summary, action_row, run_id):
     payload = {
         'run_id':      run_id,
         'timestamp':   datetime.now().isoformat(),
@@ -769,13 +845,31 @@ def save_trajectory(transitions, summary, action_row, run_id, dataset_dir):
         'transitions': transitions,            # list of 21 dicts
         'summary':     summary,
     }
+    return payload
+
+
+def save_trajectory(transitions, summary, action_row, run_id, dataset_dir):
+    """Save one trajectory as an atomically published JSON file."""
+    payload = trajectory_payload(transitions, summary, action_row, run_id)
     return save_trajectory_atomic(dataset_dir, payload)
+
+
+def save_trajectory_outputs(transitions, summary, action_row, run_id, dataset_dir,
+                            data_tree=None, save_full_zarr=False):
+    payload = trajectory_payload(transitions, summary, action_row, run_id)
+    json_path = save_trajectory_atomic(dataset_dir, payload)
+    zarr_path = None
+    if save_full_zarr:
+        if data_tree is None:
+            raise ValueError('save_full_zarr=True requires a TORAX data_tree')
+        zarr_path = save_full_trajectory_zarr_atomic(dataset_dir, payload, data_tree)
+    return json_path if zarr_path is None else f'{json_path} | {zarr_path}'
 
 
 def worker_fn(run_id, all_actions, eqdsk_list, eqtimes, coil_bounds,
               x_points, diverted_isoflux_pts, Ip_targets, ne_init, Te_init,
               psi_sample, dataset_dir, initial_relax_cache, log_dir,
-              max_loop, grid_size, trajectory_timeout_seconds):
+              max_loop, grid_size, trajectory_timeout_seconds, save_full_zarr):
     """Run and save one trajectory using this worker's initialized TokaMaker."""
     global _mygs
 
@@ -785,11 +879,17 @@ def worker_fn(run_id, all_actions, eqdsk_list, eqtimes, coil_bounds,
             raise FileExistsError(
                 f'trajectory output already exists before run starts: {existing_path}'
             )
+        if save_full_zarr:
+            existing_zarr_path = full_trajectory_zarr_path(dataset_dir, run_id)
+            if existing_zarr_path.exists():
+                raise FileExistsError(
+                    f'full trajectory output already exists before run starts: {existing_zarr_path}'
+                )
 
         action_row = all_actions[run_id]
         cwd = os.getcwd()
 
-        transitions, summary = run_single_trajectory(
+        transitions, summary, data_tree = run_single_trajectory(
             _mygs, action_row, run_id, cwd, eqdsk_list, eqtimes,
             coil_bounds, x_points, diverted_isoflux_pts,
             Ip_targets, ne_init, Te_init, psi_sample,
@@ -801,7 +901,10 @@ def worker_fn(run_id, all_actions, eqdsk_list, eqtimes, coil_bounds,
         )
 
         if transitions is not None:
-            path = save_trajectory(transitions, summary, action_row, run_id, dataset_dir)
+            path = save_trajectory_outputs(
+                transitions, summary, action_row, run_id, dataset_dir,
+                data_tree=data_tree, save_full_zarr=save_full_zarr,
+            )
             return run_id, True, path
 
         return run_id, False, 'simulation returned None'
@@ -845,6 +948,11 @@ if __name__ == '__main__':
                         help='TORAX radial grid size passed to set_TORAX_grid')
     parser.add_argument('--trajectory_timeout_seconds', type=int, default=0,
                         help='Abort a single trajectory after this many seconds; 0 disables timeout')
+    parser.add_argument('--save_full_zarr', dest='save_full_zarr', action='store_true',
+                        default=True,
+                        help='Save full TORAX scalars/profiles and reward components as one Zarr store per trajectory (default)')
+    parser.add_argument('--no_save_full_zarr', dest='save_full_zarr', action='store_false',
+                        help='Disable per-trajectory full Zarr output and save compact JSON only')
     args = parser.parse_args()
 
     if args.n_workers < 1:
@@ -891,32 +999,6 @@ if __name__ == '__main__':
         all_actions = expected_actions
     print(f'Action matrix ready: {paths["actions"]}; shape {all_actions.shape}')
 
-    if args.init_dataset_only:
-        print(f'Dataset initialized: {os.path.abspath(args.output_dir)}')
-        sys.exit(0)
-
-    validate_jax_backend(require_cuda_on_gpu=require_cuda_on_gpu)
-
-    initial_relax_cache = None
-    if not args.no_initial_relax_cache:
-        initial_relax_cache = args.initial_relax_cache
-        if initial_relax_cache is None:
-            initial_relax_cache = os.path.join(args.output_dir, 'initial_relax_state.json')
-        initial_relax_cache = os.path.abspath(initial_relax_cache)
-
-    needs_relax_cache_build = (
-        initial_relax_cache is not None
-        and (args.build_initial_relax_cache_only or not os.path.exists(initial_relax_cache))
-    )
-    needs_main_tokamaker = args.n_workers == 1 or needs_relax_cache_build
-    if needs_main_tokamaker:
-        # ── One-time setup ────────────────────────────────────────────────────
-        print('Setting up TokaMaker...')
-        mygs, R0, B0, Z0 = setup_tokamaker(cwd)
-    else:
-        print(f'Setting up TokaMaker inside {args.n_workers} worker processes...')
-        mygs = None
-
     # ── Fixed simulation parameters ───────────────────────────────────────────
     coil_bounds = {key: [-50.e6, 50.e6] for key in [
         'CS3U', 'CS2U', 'CS1U', 'CS1L', 'CS2L', 'CS3L',
@@ -924,10 +1006,7 @@ if __name__ == '__main__':
     ]}
 
     Ip_targets = [1.5e6, 5e6, 15e6, 15e6, 1.5e6]
-    seed_eqdsk_dir = os.path.join(cwd, 'seed_eqdsks')
-    if not all(os.path.exists(os.path.join(seed_eqdsk_dir, f'i={i}.eqdsk')) for i in range(5)):
-        seed_eqdsk_dir = cwd
-    eqdsk_list = [os.path.join(seed_eqdsk_dir, f'i={i}.eqdsk') for i in range(5)]
+    eqdsk_list = resolve_seed_eqdsk_paths(cwd)
     eqtimes    = [0, 30, 80, 500, 600]
     x_points   = np.array([[5.125, -3.4]])
     diverted_isoflux_pts = np.array([
@@ -944,6 +1023,42 @@ if __name__ == '__main__':
     Te_init = np.array([1.50, 1.33, 1.17, 1.04, 0.92, 0.82, 0.72, 0.64,
                         0.57, 0.50, 0.45, 0.40, 0.36, 0.32, 0.28, 0.25,
                         0.23, 0.20, 0.18, 0.16, 0.15, 0.13, 0.12, 0.11, 0.10])
+
+    if args.init_dataset_only:
+        preflight_required_inputs(cwd, eqdsk_list)
+        print(f'Seed EQDSKs: {os.path.dirname(eqdsk_list[0])}')
+        print(f'Dataset initialized: {os.path.abspath(args.output_dir)}')
+        sys.exit(0)
+
+    validate_jax_backend(require_cuda_on_gpu=require_cuda_on_gpu)
+
+    initial_relax_cache = None
+    if not args.no_initial_relax_cache:
+        initial_relax_cache = args.initial_relax_cache
+        if initial_relax_cache is None:
+            initial_relax_cache = os.path.join(args.output_dir, 'initial_relax_state.json')
+        initial_relax_cache = os.path.abspath(initial_relax_cache)
+
+    needs_relax_cache_build = (
+        initial_relax_cache is not None
+        and (args.build_initial_relax_cache_only or not os.path.exists(initial_relax_cache))
+    )
+    preflight_required_inputs(
+        cwd,
+        eqdsk_list,
+        initial_relax_cache=initial_relax_cache,
+        require_initial_relax_cache=initial_relax_cache is not None and not needs_relax_cache_build,
+    )
+    print(f'Seed EQDSKs: {os.path.dirname(eqdsk_list[0])}')
+
+    needs_main_tokamaker = args.n_workers == 1 or needs_relax_cache_build
+    if needs_main_tokamaker:
+        # ── One-time setup ────────────────────────────────────────────────────
+        print('Setting up TokaMaker...')
+        mygs, R0, B0, Z0 = setup_tokamaker(cwd)
+    else:
+        print(f'Setting up TokaMaker inside {args.n_workers} worker processes...')
+        mygs = None
 
     end_idx = args.n_trajectories if args.end_idx is None else args.end_idx
     if not (0 <= args.start_idx <= end_idx <= args.n_trajectories):
@@ -964,6 +1079,8 @@ if __name__ == '__main__':
             'n_workers': args.n_workers,
             'output_dir': os.path.abspath(args.output_dir),
             'trajectories_dir': str(dataset_paths(args.output_dir)['trajectories']),
+            'full_trajectories_dir': str(dataset_paths(args.output_dir)['full_trajectories']),
+            'save_full_zarr': bool(args.save_full_zarr),
         },
     )
 
@@ -995,13 +1112,19 @@ if __name__ == '__main__':
                 raise FileExistsError(
                     f'trajectory output already exists before run starts: {existing_path}'
                 )
+            if args.save_full_zarr:
+                existing_zarr_path = full_trajectory_zarr_path(args.output_dir, run_id)
+                if existing_zarr_path.exists():
+                    raise FileExistsError(
+                        f'full trajectory output already exists before run starts: {existing_zarr_path}'
+                    )
 
             action_row = all_actions[run_id]
 
             print(f'\n[{run_id + 1}/{args.n_trajectories}] Running trajectory {run_id}...')
             t0 = time.time()
 
-            transitions, summary = run_single_trajectory(
+            transitions, summary, data_tree = run_single_trajectory(
                 mygs, action_row, run_id, cwd, eqdsk_list, eqtimes,
                 coil_bounds, x_points, diverted_isoflux_pts,
                 Ip_targets, ne_init, Te_init, psi_sample,
@@ -1015,7 +1138,10 @@ if __name__ == '__main__':
             elapsed = time.time() - t0
 
             if transitions is not None:
-                path = save_trajectory(transitions, summary, action_row, run_id, args.output_dir)
+                path = save_trajectory_outputs(
+                    transitions, summary, action_row, run_id, args.output_dir,
+                    data_tree=data_tree, save_full_zarr=args.save_full_zarr,
+                )
                 success_count += 1
                 print(f'  Saved to {path} ({elapsed:.1f}s)')
             else:
@@ -1052,6 +1178,7 @@ if __name__ == '__main__':
             max_loop=args.max_loop,
             grid_size=args.grid_size,
             trajectory_timeout_seconds=args.trajectory_timeout_seconds,
+            save_full_zarr=args.save_full_zarr,
         )
 
         mp_context = os.environ.get('MP_CONTEXT', 'fork')
@@ -1098,6 +1225,8 @@ if __name__ == '__main__':
             'n_workers': args.n_workers,
             'output_dir': os.path.abspath(args.output_dir),
             'trajectories_dir': str(dataset_paths(args.output_dir)['trajectories']),
+            'full_trajectories_dir': str(dataset_paths(args.output_dir)['full_trajectories']),
+            'save_full_zarr': bool(args.save_full_zarr),
         },
     )
 

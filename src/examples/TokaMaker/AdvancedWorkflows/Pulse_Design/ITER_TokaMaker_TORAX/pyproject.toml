@@ -15,6 +15,7 @@ dependencies = [
     "tqdm>=4.67.3,<5.0.0",
     "wandb>=0.23.0,<1.0.0",
     "xarray>=2026.2.0,<2027.0.0",
+    "zarr>=3.2.1",
 ]
 
 [project.optional-dependencies]
