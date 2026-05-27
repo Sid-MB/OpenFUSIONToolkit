@@ -97,18 +97,19 @@ class Actor(nn.Module):
 class IQL:
     def __init__(self, action_max, state_dim: int, action_dim: int, 
                  tau: float = 0.7, beta: float = 3.0, 
-                 gamma: float = 0.99, lr: float = 1e-4):
+                 gamma: float = 0.99, lr: float = 1e-4,
+                 hidden_dim: int = 256):
         self.state_dim = state_dim
         self.action_dim = action_dim
-        self.q1 = QNetwork(state_dim, action_dim)
-        self.q2 = QNetwork(state_dim, action_dim)
-        self.q1_target = QNetwork(state_dim, action_dim)
-        self.q2_target = QNetwork(state_dim, action_dim)
+        self.q1 = QNetwork(state_dim, action_dim, hidden_dim)
+        self.q2 = QNetwork(state_dim, action_dim, hidden_dim)
+        self.q1_target = QNetwork(state_dim, action_dim, hidden_dim)
+        self.q2_target = QNetwork(state_dim, action_dim, hidden_dim)
         self.q1_target.load_state_dict(self.q1.state_dict())
         self.q2_target.load_state_dict(self.q2.state_dict())
         
-        self.v = ValueNetwork(state_dim)
-        self.actor = Actor(action_max, state_dim, action_dim)
+        self.v = ValueNetwork(state_dim, hidden_dim)
+        self.actor = Actor(action_max, state_dim, action_dim, hidden_dim)
         
         self.q1_opt = torch.optim.Adam(self.q1.parameters(), lr=lr)
         self.q2_opt = torch.optim.Adam(self.q2.parameters(), lr=lr)
@@ -152,7 +153,7 @@ class IQL:
         
         self.v_opt.zero_grad()
         v_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.v.parameters(), 1.0)
+        v_grad_norm = torch.nn.utils.clip_grad_norm_(self.v.parameters(), 1.0)
         self.v_opt.step()
 
         # Update Q
@@ -167,12 +168,12 @@ class IQL:
         
         self.q1_opt.zero_grad()
         q1_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.q1.parameters(), 1.0)  # ADD HERE
+        q1_grad_norm = torch.nn.utils.clip_grad_norm_(self.q1.parameters(), 1.0)
         self.q1_opt.step()
         
         self.q2_opt.zero_grad()
         q2_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.q2.parameters(), 1.0)  # ADD HERE
+        q2_grad_norm = torch.nn.utils.clip_grad_norm_(self.q2.parameters(), 1.0)
         self.q2_opt.step()
 
         # Update Actor
@@ -183,17 +184,43 @@ class IQL:
             exp_adv = torch.exp(self.beta * adv).clamp(max=100.0)
         
         action_pred = self.actor(states)
-        actor_loss = -(exp_adv * F.mse_loss(action_pred, actions, reduction='none').sum(-1, keepdim=True)).mean()
+        bc_loss = F.mse_loss(action_pred, actions, reduction='none').sum(-1, keepdim=True)
+        actor_loss = (exp_adv * bc_loss).mean()
         
         self.actor_opt.zero_grad()
         actor_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.actor.parameters(), 1.0)  # ADD HERE
+        actor_grad_norm = torch.nn.utils.clip_grad_norm_(self.actor.parameters(), 1.0)
         self.actor_opt.step()
 
         # Update targets - ADD THIS WHOLE SECTION
         self.soft_update_targets()
 
-        return {"q_loss": (q1_loss + q2_loss).item(), "v_loss": v_loss.item(), "actor_loss": actor_loss.item()}
+        return {
+            "loss/q_total": (q1_loss + q2_loss).item(),
+            "loss/q1": q1_loss.item(),
+            "loss/q2": q2_loss.item(),
+            "loss/v": v_loss.item(),
+            "loss/actor": actor_loss.item(),
+            "loss/bc_unweighted": bc_loss.mean().item(),
+            "values/q_target_mean": target_q.mean().item(),
+            "values/q1_mean": q1.mean().item(),
+            "values/q2_mean": q2.mean().item(),
+            "values/v_mean": v.mean().item(),
+            "advantage/mean": adv.mean().item(),
+            "advantage/std": adv.std(unbiased=False).item(),
+            "advantage/max": adv.max().item(),
+            "advantage/exp_mean": exp_adv.mean().item(),
+            "advantage/exp_max": exp_adv.max().item(),
+            "batch/reward_mean": rewards.mean().item(),
+            "batch/reward_std": rewards.std(unbiased=False).item(),
+            "batch/done_mean": dones.mean().item(),
+            "batch/action_abs_mean": actions.abs().mean().item(),
+            "batch/pred_action_abs_mean": action_pred.abs().mean().item(),
+            "grad_norm/q1": float(q1_grad_norm),
+            "grad_norm/q2": float(q2_grad_norm),
+            "grad_norm/v": float(v_grad_norm),
+            "grad_norm/actor": float(actor_grad_norm),
+        }
 
     def select_action(self, state):
         with torch.no_grad():
@@ -245,6 +272,23 @@ def normalize_buffer(buffer):
     buffer.rewards[:buffer.size] = (buffer.rewards[:buffer.size] - buffer.rewards[:buffer.size].mean()) / reward_std
 
     return action_max
+
+def buffer_stats(buffer):
+    states = buffer.states[:buffer.size]
+    actions = buffer.actions[:buffer.size]
+    rewards = buffer.rewards[:buffer.size]
+    dones = buffer.dones[:buffer.size]
+    return {
+        "dataset/state_mean_abs": float(np.abs(states).mean()),
+        "dataset/state_std_mean": float(states.std(axis=0).mean()),
+        "dataset/action_abs_mean": float(np.abs(actions).mean()),
+        "dataset/action_abs_max": float(np.abs(actions).max()),
+        "dataset/reward_mean": float(rewards.mean()),
+        "dataset/reward_std": float(rewards.std()),
+        "dataset/reward_min": float(rewards.min()),
+        "dataset/reward_max": float(rewards.max()),
+        "dataset/done_fraction": float(dones.mean()),
+    }
 
 def train_iql(
     iql,
@@ -313,15 +357,49 @@ def train_from_config(
     wandb_mode=None,
     checkpoint_interval=5000,
     log_interval=100,
+    tau=0.7,
+    beta=3.0,
+    gamma=0.99,
+    lr=1e-4,
+    hidden_dim=256,
+    use_wandb_run_subdir=False,
 ):
-    dataset_dir = Path(dataset_dir).resolve()
-    output_dir = Path(output_dir).resolve()
+    base_config = {
+        "dataset_dir": str(dataset_dir),
+        "output_dir": str(output_dir),
+        "use_wandb_run_subdir": use_wandb_run_subdir,
+        "batch_size": batch_size,
+        "num_steps": num_steps,
+        "checkpoint_interval": checkpoint_interval,
+        "log_interval": log_interval,
+        "resume_from": resume_from,
+        "tau": tau,
+        "beta": beta,
+        "gamma": gamma,
+        "lr": lr,
+        "hidden_dim": hidden_dim,
+    }
+    wandb_init_kwargs = {"project": project, "config": base_config}
+    if run_name:
+        wandb_init_kwargs["name"] = run_name
+    if wandb_mode:
+        wandb_init_kwargs["mode"] = wandb_mode
+
+    run = wandb.init(**wandb_init_kwargs)
+    config = dict(run.config)
+
+    dataset_dir = Path(config["dataset_dir"]).resolve()
+    output_dir = Path(config["output_dir"]).resolve()
+    if config.get("use_wandb_run_subdir"):
+        output_dir = output_dir / run.id
+        run.config.update({"output_dir": str(output_dir)}, allow_val_change=True)
+        config = dict(run.config)
     output_dir.mkdir(parents=True, exist_ok=True)
     print(f"IQL dataset_dir={dataset_dir}", flush=True)
     print(f"IQL output_dir={output_dir}", flush=True)
 
     specs = infer_dataset_specs(dataset_dir)
-    config = {
+    dataset_config = {
         "dataset_dir": str(dataset_dir),
         "output_dir": str(output_dir),
         "num_trajectories": specs["num_trajectories"],
@@ -330,45 +408,49 @@ def train_from_config(
         "action_dim": specs["action_dim"],
         "dataset_format": specs.get("format", "unknown"),
         "state_keys": specs["state_keys"],
-        "batch_size": batch_size,
-        "num_steps": num_steps,
-        "checkpoint_interval": checkpoint_interval,
-        "log_interval": log_interval,
     }
+    run.config.update(dataset_config, allow_val_change=True)
+    config = dict(run.config)
     with (output_dir / "iql_config.json").open("w") as f:
         json.dump(config, f, indent=2)
-
-    wandb_init_kwargs = {"project": project, "config": config}
-    if run_name:
-        wandb_init_kwargs["name"] = run_name
-    if wandb_mode:
-        wandb_init_kwargs["mode"] = wandb_mode
-    wandb.init(**wandb_init_kwargs)
 
     state_dim = specs["state_dim"]
     action_dim = specs["action_dim"]
     dataset_size = specs["num_transitions"]
     buffer = ReplayBuffer(state_dim, action_dim, dataset_size)
     load_d4rl_dataset(str(dataset_dir), buffer, specs["state_keys"])
+    raw_stats = {f"raw_{key}": value for key, value in buffer_stats(buffer).items()}
 
     action_max = normalize_buffer(buffer)
-    iql_agent = IQL(action_max, state_dim, action_dim)
+    normalized_stats = buffer_stats(buffer)
+    run.log({**raw_stats, **normalized_stats}, step=0)
+    run.summary.update({**raw_stats, **normalized_stats})
+    iql_agent = IQL(
+        action_max,
+        state_dim,
+        action_dim,
+        tau=float(config["tau"]),
+        beta=float(config["beta"]),
+        gamma=float(config["gamma"]),
+        lr=float(config["lr"]),
+        hidden_dim=int(config["hidden_dim"]),
+    )
 
     checkpoint_path = None
-    if resume_from == 'auto':
+    if config["resume_from"] == 'auto':
         checkpoint_path = latest_checkpoint(output_dir)
-    elif resume_from:
-        checkpoint_path = Path(resume_from)
+    elif config["resume_from"]:
+        checkpoint_path = Path(config["resume_from"])
 
     train_iql(
         iql_agent,
         buffer,
-        batch_size=batch_size,
-        num_steps=num_steps,
+        batch_size=int(config["batch_size"]),
+        num_steps=int(config["num_steps"]),
         checkpoint_dir=str(output_dir),
         resume_from=checkpoint_path,
-        checkpoint_interval=checkpoint_interval,
-        log_interval=log_interval,
+        checkpoint_interval=int(config["checkpoint_interval"]),
+        log_interval=int(config["log_interval"]),
     )
 
     weights_path = output_dir / 'iql_weights.pt'
@@ -418,6 +500,12 @@ def parse_args():
     parser.add_argument("--wandb_mode", default=os.environ.get("WANDB_MODE"), help="Set to offline or disabled for debugging")
     parser.add_argument("--checkpoint_interval", type=int, default=5000)
     parser.add_argument("--log_interval", type=int, default=100)
+    parser.add_argument("--tau", type=float, default=0.7)
+    parser.add_argument("--beta", type=float, default=3.0)
+    parser.add_argument("--gamma", type=float, default=0.99)
+    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--hidden_dim", type=int, default=256)
+    parser.add_argument("--use_wandb_run_subdir", action="store_true")
     return parser.parse_args()
 
 def main():
@@ -433,6 +521,12 @@ def main():
         wandb_mode=args.wandb_mode,
         checkpoint_interval=args.checkpoint_interval,
         log_interval=args.log_interval,
+        tau=args.tau,
+        beta=args.beta,
+        gamma=args.gamma,
+        lr=args.lr,
+        hidden_dim=args.hidden_dim,
+        use_wandb_run_subdir=args.use_wandb_run_subdir,
     )
 
 if __name__ == "__main__":

@@ -27,6 +27,12 @@ LOG_INTERVAL="${LOG_INTERVAL:-100}"
 WANDB_PROJECT="${WANDB_PROJECT:-iql-training}"
 RUN_NAME="${RUN_NAME:-${RUN_ID}}"
 RESUME_FROM="${RESUME_FROM:-auto}"
+TAU="${TAU:-0.7}"
+BETA="${BETA:-3.0}"
+GAMMA="${GAMMA:-0.99}"
+LR="${LR:-0.0001}"
+HIDDEN_DIM="${HIDDEN_DIM:-256}"
+USE_WANDB_RUN_SUBDIR="${USE_WANDB_RUN_SUBDIR:-1}"
 
 export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-4}"
@@ -44,6 +50,17 @@ echo "LOG_INTERVAL=${LOG_INTERVAL}"
 echo "WANDB_PROJECT=${WANDB_PROJECT}"
 echo "RUN_NAME=${RUN_NAME}"
 echo "RESUME_FROM=${RESUME_FROM}"
+echo "TAU=${TAU}"
+echo "BETA=${BETA}"
+echo "GAMMA=${GAMMA}"
+echo "LR=${LR}"
+echo "HIDDEN_DIM=${HIDDEN_DIM}"
+echo "USE_WANDB_RUN_SUBDIR=${USE_WANDB_RUN_SUBDIR}"
+
+WANDB_SUBDIR_ARGS=()
+if [ "${USE_WANDB_RUN_SUBDIR}" != "0" ]; then
+  WANDB_SUBDIR_ARGS=(--use_wandb_run_subdir)
+fi
 
 uv run python IQL.py \
   --dataset_dir "${DATASET_DIR}" \
@@ -54,4 +71,10 @@ uv run python IQL.py \
   --run_name "${RUN_NAME}" \
   --resume_from "${RESUME_FROM}" \
   --checkpoint_interval "${CHECKPOINT_INTERVAL}" \
-  --log_interval "${LOG_INTERVAL}"
+  --log_interval "${LOG_INTERVAL}" \
+  --tau "${TAU}" \
+  --beta "${BETA}" \
+  --gamma "${GAMMA}" \
+  --lr "${LR}" \
+  --hidden_dim "${HIDDEN_DIM}" \
+  "${WANDB_SUBDIR_ARGS[@]}"
