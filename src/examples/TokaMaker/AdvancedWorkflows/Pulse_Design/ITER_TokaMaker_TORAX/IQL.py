@@ -13,8 +13,10 @@ import wandb
 from torch.utils.data import Dataset, DataLoader
 
 from dataloader import describe_dataset, load_d4rl_dataset
+from log import get_logger
 
 app = modal.App("iql-training")
+logger = get_logger(__name__)
 
 image = modal.Image.debian_slim().pip_install(
     "modal", "torch", "numpy", "wandb"
@@ -383,9 +385,9 @@ def train_iql(
             iql.q1_target.load_state_dict(checkpoint['q1_target'])
             iql.q2_target.load_state_dict(checkpoint['q2_target'])
             start_step = checkpoint['step']
-            print(f"Resumed from step {start_step}")
+            logger.info("Resumed from step %s", start_step)
         except RuntimeError as exc:
-            print(f"Skipping incompatible checkpoint {resume_from}: {exc}")
+            logger.warning("Skipping incompatible checkpoint %s: %s", resume_from, exc)
     
     batches = itertools.cycle(dataloader)
     for step in range(start_step, num_steps):
@@ -417,7 +419,7 @@ def train_iql(
                 'state_dim': iql.state_dim,
                 'action_dim': iql.action_dim,
             }, f'{checkpoint_dir}/checkpoint_step_{step}.pt')
-            print(f"Saved checkpoint at step {step}")
+            logger.info("Saved checkpoint at step %s", step)
 
 def latest_checkpoint(checkpoint_dir):
     checkpoints = list(Path(checkpoint_dir).glob('checkpoint_step_*.pt'))
@@ -484,24 +486,24 @@ def train_from_config(
         run.config.update({"output_dir": str(output_dir)}, allow_val_change=True)
         config = dict(run.config)
     output_dir.mkdir(parents=True, exist_ok=True)
-    print(f"IQL dataset_dir={dataset_dir}", flush=True)
-    print(f"IQL output_dir={output_dir}", flush=True)
+    logger.info("IQL dataset_dir=%s", dataset_dir)
+    logger.info("IQL output_dir=%s", output_dir)
 
     specs = describe_dataset(dataset_dir)
-    print(
-        "IQL dataset selected_format={selected_format} "
-        "zarr_store_count={zarr_store_count} "
-        "json_file_count={json_file_count} "
-        "num_trajectories={num_trajectories} "
-        "num_transitions={num_transitions} "
-        "state_dim={state_dim} "
-        "action_dim={action_dim} "
-        "explicit_next_state={dataset_has_explicit_next_state} "
-        "zarr_explicit_next_state_store_count={zarr_explicit_next_state_store_count}".format(**specs),
-        flush=True,
+    logger.info(
+        "IQL dataset selected_format=%s zarr_store_count=%s json_file_count=%s num_trajectories=%s num_transitions=%s state_dim=%s action_dim=%s explicit_next_state=%s zarr_explicit_next_state_store_count=%s",
+        specs["selected_format"],
+        specs["zarr_store_count"],
+        specs["json_file_count"],
+        specs["num_trajectories"],
+        specs["num_transitions"],
+        specs["state_dim"],
+        specs["action_dim"],
+        specs["dataset_has_explicit_next_state"],
+        specs["zarr_explicit_next_state_store_count"],
     )
     if specs["zarr_takes_precedence"]:
-        print("IQL dataset warning: both Zarr and JSON were found; using Zarr.", flush=True)
+        logger.warning("IQL dataset warning: both Zarr and JSON were found; using Zarr.")
     dataset_config = {
         "dataset_dir": str(dataset_dir),
         "output_dir": str(output_dir),
@@ -528,7 +530,7 @@ def train_from_config(
     dataset_size = specs["num_transitions"]
     buffer = ReplayBuffer(state_dim, action_dim, dataset_size)
     load_d4rl_dataset(str(dataset_dir), buffer, specs["state_keys"])
-    print(f"IQL replay transitions_loaded={buffer.size}", flush=True)
+    logger.info("IQL replay transitions_loaded=%s", buffer.size)
     run.config.update({"transitions_loaded": buffer.size}, allow_val_change=True)
     raw_stats = {f"raw_{key}": value for key, value in buffer_stats(buffer).items()}
 
@@ -545,7 +547,7 @@ def train_from_config(
         raise RuntimeError(
             f"Requested device {train_device}, but torch.cuda.is_available() is False."
         )
-    print(f"IQL train_device={train_device}", flush=True)
+    logger.info("IQL train_device=%s", train_device)
     run.config.update({
         "train_device": str(train_device),
         "torch_version": torch.__version__,
@@ -611,7 +613,7 @@ def train_from_config(
         'action_dim': action_dim,
         'config': config,
     }, weights_path)
-    print(f"Saved final weights to {weights_path}", flush=True)
+    logger.info("Saved final weights to %s", weights_path)
     wandb.finish()
 
 @app.function(
