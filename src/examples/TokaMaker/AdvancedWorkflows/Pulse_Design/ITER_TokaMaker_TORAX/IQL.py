@@ -98,18 +98,20 @@ class IQL:
     def __init__(self, action_max, state_dim: int, action_dim: int, 
                  tau: float = 0.7, beta: float = 3.0, 
                  gamma: float = 0.99, lr: float = 1e-4,
-                 hidden_dim: int = 256):
+                 hidden_dim: int = 256,
+                 device=None):
+        self.device = torch.device(device or "cpu")
         self.state_dim = state_dim
         self.action_dim = action_dim
-        self.q1 = QNetwork(state_dim, action_dim, hidden_dim)
-        self.q2 = QNetwork(state_dim, action_dim, hidden_dim)
-        self.q1_target = QNetwork(state_dim, action_dim, hidden_dim)
-        self.q2_target = QNetwork(state_dim, action_dim, hidden_dim)
+        self.q1 = QNetwork(state_dim, action_dim, hidden_dim).to(self.device)
+        self.q2 = QNetwork(state_dim, action_dim, hidden_dim).to(self.device)
+        self.q1_target = QNetwork(state_dim, action_dim, hidden_dim).to(self.device)
+        self.q2_target = QNetwork(state_dim, action_dim, hidden_dim).to(self.device)
         self.q1_target.load_state_dict(self.q1.state_dict())
         self.q2_target.load_state_dict(self.q2.state_dict())
         
-        self.v = ValueNetwork(state_dim, hidden_dim)
-        self.actor = Actor(action_max, state_dim, action_dim, hidden_dim)
+        self.v = ValueNetwork(state_dim, hidden_dim).to(self.device)
+        self.actor = Actor(action_max, state_dim, action_dim, hidden_dim).to(self.device)
         
         self.q1_opt = torch.optim.Adam(self.q1.parameters(), lr=lr)
         self.q2_opt = torch.optim.Adam(self.q2.parameters(), lr=lr)
@@ -134,11 +136,11 @@ class IQL:
 
     def update(self, batch):
         states, actions, next_states, rewards, dones = batch
-        states = states.float()
-        actions = actions.float()
-        next_states = next_states.float()
-        rewards = rewards.float()
-        dones = dones.float()
+        states = states.float().to(self.device, non_blocking=True)
+        actions = actions.float().to(self.device, non_blocking=True)
+        next_states = next_states.float().to(self.device, non_blocking=True)
+        rewards = rewards.float().to(self.device, non_blocking=True)
+        dones = dones.float().to(self.device, non_blocking=True)
         
         # Update V
         with torch.no_grad():
@@ -224,7 +226,7 @@ class IQL:
 
     def select_action(self, state):
         with torch.no_grad():
-            state = torch.FloatTensor(state).unsqueeze(0)
+            state = torch.as_tensor(state, dtype=torch.float32, device=self.device).unsqueeze(0)
             return self.actor.act(state).cpu().numpy()[0]
         
 # Option 1: Load from individual trajectories
@@ -290,14 +292,15 @@ def buffer_stats(buffer):
         "dataset/done_fraction": float(dones.mean()),
     }
 
-def make_eval_batch(buffer, eval_batch_size, seed=0):
+def make_eval_batch(buffer, eval_batch_size, seed=0, device=None):
     if eval_batch_size <= 0 or buffer.size == 0:
         return None
     rng = np.random.default_rng(seed)
     size = min(eval_batch_size, buffer.size)
     indices = rng.choice(buffer.size, size=size, replace=False)
+    target_device = torch.device(device or "cpu")
     return tuple(
-        torch.as_tensor(array[indices], dtype=torch.float32)
+        torch.as_tensor(array[indices], dtype=torch.float32, device=target_device)
         for array in (buffer.states, buffer.actions, buffer.next_states, buffer.rewards, buffer.dones)
     )
 
@@ -313,7 +316,9 @@ def tensor_stats(prefix, value):
 def evaluate_iql(iql, batch, include_histograms=False):
     if batch is None:
         return {}
-    states, actions, next_states, rewards, dones = batch
+    states, actions, next_states, rewards, dones = (
+        tensor.to(iql.device, non_blocking=True) for tensor in batch
+    )
     with torch.no_grad():
         q1_data = iql.q1(states, actions)
         q2_data = iql.q2(states, actions)
@@ -441,6 +446,7 @@ def train_from_config(
     eval_batch_size=2048,
     eval_histogram_interval=5000,
     eval_seed=0,
+    device="auto",
 ):
     base_config = {
         "dataset_dir": str(dataset_dir),
@@ -460,6 +466,7 @@ def train_from_config(
         "eval_batch_size": eval_batch_size,
         "eval_histogram_interval": eval_histogram_interval,
         "eval_seed": eval_seed,
+        "device": device,
     }
     wandb_init_kwargs = {"project": project, "config": base_config}
     if run_name:
@@ -529,10 +536,34 @@ def train_from_config(
     normalized_stats = buffer_stats(buffer)
     run.log({**raw_stats, **normalized_stats}, step=0)
     run.summary.update({**raw_stats, **normalized_stats})
+    requested_device = str(config.get("device", "auto"))
+    if requested_device == "auto":
+        train_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    else:
+        train_device = torch.device(requested_device)
+    if train_device.type == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError(
+            f"Requested device {train_device}, but torch.cuda.is_available() is False."
+        )
+    print(f"IQL train_device={train_device}", flush=True)
+    run.config.update({
+        "train_device": str(train_device),
+        "torch_version": torch.__version__,
+        "torch_cuda_version": torch.version.cuda,
+        "torch_cuda_available": torch.cuda.is_available(),
+        "torch_cuda_device_count": torch.cuda.device_count(),
+        "torch_cuda_device_name": (
+            torch.cuda.get_device_name(train_device)
+            if train_device.type == "cuda"
+            else None
+        ),
+    }, allow_val_change=True)
+
     eval_batch = make_eval_batch(
         buffer,
         eval_batch_size=int(config["eval_batch_size"]),
         seed=int(config["eval_seed"]),
+        device=train_device,
     )
     iql_agent = IQL(
         action_max,
@@ -543,6 +574,7 @@ def train_from_config(
         gamma=float(config["gamma"]),
         lr=float(config["lr"]),
         hidden_dim=int(config["hidden_dim"]),
+        device=train_device,
     )
 
     checkpoint_path = None
@@ -622,6 +654,11 @@ def parse_args():
     parser.add_argument("--eval_batch_size", type=int, default=2048)
     parser.add_argument("--eval_histogram_interval", type=int, default=5000)
     parser.add_argument("--eval_seed", type=int, default=0)
+    parser.add_argument(
+        "--device",
+        default=os.environ.get("IQL_DEVICE", "auto"),
+        help="Training device: auto, cpu, cuda, cuda:0, etc.",
+    )
     return parser.parse_args()
 
 def main():
@@ -647,6 +684,7 @@ def main():
         eval_batch_size=args.eval_batch_size,
         eval_histogram_interval=args.eval_histogram_interval,
         eval_seed=args.eval_seed,
+        device=args.device,
     )
 
 if __name__ == "__main__":

@@ -3,7 +3,9 @@
 #SBATCH --account=nlp
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
-#SBATCH --partition=john
+#SBATCH --gres=gpu:1
+#SBATCH --constraint=48G
+#SBATCH --partition=jag-standard
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
 
@@ -37,6 +39,7 @@ EVAL_INTERVAL="${EVAL_INTERVAL:-1000}"
 EVAL_BATCH_SIZE="${EVAL_BATCH_SIZE:-2048}"
 EVAL_HISTOGRAM_INTERVAL="${EVAL_HISTOGRAM_INTERVAL:-5000}"
 EVAL_SEED="${EVAL_SEED:-0}"
+IQL_DEVICE="${IQL_DEVICE:-cuda}"
 
 export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-4}"
@@ -64,6 +67,8 @@ echo "EVAL_INTERVAL=${EVAL_INTERVAL}"
 echo "EVAL_BATCH_SIZE=${EVAL_BATCH_SIZE}"
 echo "EVAL_HISTOGRAM_INTERVAL=${EVAL_HISTOGRAM_INTERVAL}"
 echo "EVAL_SEED=${EVAL_SEED}"
+echo "IQL_DEVICE=${IQL_DEVICE}"
+nvidia-smi || true
 
 WANDB_SUBDIR_ARGS=()
 if [ "${USE_WANDB_RUN_SUBDIR}" != "0" ]; then
@@ -89,4 +94,5 @@ uv run python IQL.py \
   --eval_batch_size "${EVAL_BATCH_SIZE}" \
   --eval_histogram_interval "${EVAL_HISTOGRAM_INTERVAL}" \
   --eval_seed "${EVAL_SEED}" \
+  --device "${IQL_DEVICE}" \
   "${WANDB_SUBDIR_ARGS[@]}"
