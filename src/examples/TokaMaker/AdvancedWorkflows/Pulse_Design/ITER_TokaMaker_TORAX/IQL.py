@@ -86,7 +86,7 @@ class Actor(nn.Module):
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, action_dim),
-            nn.Tanh()
+            nn.Sigmoid()
         )
         self.register_buffer("action_max", torch.as_tensor(action_max, dtype=torch.float32))
 
