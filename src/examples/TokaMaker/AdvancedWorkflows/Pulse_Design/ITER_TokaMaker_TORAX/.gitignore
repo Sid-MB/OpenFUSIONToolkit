@@ -2,3 +2,6 @@
 /rl_dataset_*/
 /*.prof
 /*.log
+/visualize/out/
+
+/timing_test*/

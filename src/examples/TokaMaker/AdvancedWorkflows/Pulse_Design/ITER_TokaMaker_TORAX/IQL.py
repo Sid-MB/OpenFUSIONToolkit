@@ -12,7 +12,7 @@ import torch.nn.functional as F
 import wandb
 from torch.utils.data import Dataset, DataLoader
 
-from dataloader import infer_dataset_specs, load_d4rl_dataset
+from dataloader import describe_dataset, load_d4rl_dataset
 
 app = modal.App("iql-training")
 
@@ -480,7 +480,21 @@ def train_from_config(
     print(f"IQL dataset_dir={dataset_dir}", flush=True)
     print(f"IQL output_dir={output_dir}", flush=True)
 
-    specs = infer_dataset_specs(dataset_dir)
+    specs = describe_dataset(dataset_dir)
+    print(
+        "IQL dataset selected_format={selected_format} "
+        "zarr_store_count={zarr_store_count} "
+        "json_file_count={json_file_count} "
+        "num_trajectories={num_trajectories} "
+        "num_transitions={num_transitions} "
+        "state_dim={state_dim} "
+        "action_dim={action_dim} "
+        "explicit_next_state={dataset_has_explicit_next_state} "
+        "zarr_explicit_next_state_store_count={zarr_explicit_next_state_store_count}".format(**specs),
+        flush=True,
+    )
+    if specs["zarr_takes_precedence"]:
+        print("IQL dataset warning: both Zarr and JSON were found; using Zarr.", flush=True)
     dataset_config = {
         "dataset_dir": str(dataset_dir),
         "output_dir": str(output_dir),
@@ -489,6 +503,12 @@ def train_from_config(
         "state_dim": specs["state_dim"],
         "action_dim": specs["action_dim"],
         "dataset_format": specs.get("format", "unknown"),
+        "dataset_selected_format": specs["selected_format"],
+        "dataset_zarr_store_count": specs["zarr_store_count"],
+        "dataset_json_file_count": specs["json_file_count"],
+        "dataset_zarr_takes_precedence": specs["zarr_takes_precedence"],
+        "dataset_has_explicit_next_state": specs["dataset_has_explicit_next_state"],
+        "dataset_zarr_explicit_next_state_store_count": specs["zarr_explicit_next_state_store_count"],
         "state_keys": specs["state_keys"],
     }
     run.config.update(dataset_config, allow_val_change=True)
@@ -501,6 +521,8 @@ def train_from_config(
     dataset_size = specs["num_transitions"]
     buffer = ReplayBuffer(state_dim, action_dim, dataset_size)
     load_d4rl_dataset(str(dataset_dir), buffer, specs["state_keys"])
+    print(f"IQL replay transitions_loaded={buffer.size}", flush=True)
+    run.config.update({"transitions_loaded": buffer.size}, allow_val_change=True)
     raw_stats = {f"raw_{key}": value for key, value in buffer_stats(buffer).items()}
 
     action_max = normalize_buffer(buffer)

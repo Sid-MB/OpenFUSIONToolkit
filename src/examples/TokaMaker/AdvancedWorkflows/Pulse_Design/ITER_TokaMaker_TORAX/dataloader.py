@@ -334,6 +334,10 @@ def build_reward_components_dataset(transitions):
             if all(isinstance(value, (int, float, np.integer, np.floating, bool, np.bool_)) for value in values):
                 data_vars[f'state_{key}'] = ('decision', np.array(values, dtype=float))
 
+            next_values = [transition.get('s_next', {}).get(key, np.nan) for transition in transitions]
+            if all(isinstance(value, (int, float, np.integer, np.floating, bool, np.bool_)) for value in next_values):
+                data_vars[f'next_state_{key}'] = ('decision', np.array(next_values, dtype=float))
+
     dataset = xr.Dataset(
         data_vars=data_vars,
         coords={
@@ -342,7 +346,12 @@ def build_reward_components_dataset(transitions):
             't_next': ('decision', t_next),
             'action_dim': np.arange(actions.shape[1], dtype=np.int32),
         },
-        attrs={'state_keys': state_keys},
+        attrs={
+            'state_keys': state_keys,
+            'has_explicit_next_state': all(
+                f'next_state_{key}' in data_vars for key in state_keys
+            ),
+        },
     )
     return dataset
 
@@ -452,8 +461,13 @@ def _zarr_state_keys(dataset):
     return sorted(
         var_name.removeprefix('state_')
         for var_name in dataset.data_vars
-        if var_name.startswith('state_')
+        if var_name.startswith('state_') and not var_name.startswith('next_state_')
     )
+
+
+def _zarr_has_explicit_next_state(dataset, state_keys=None):
+    keys = list(state_keys) if state_keys is not None else _zarr_state_keys(dataset)
+    return bool(keys) and all(f'next_state_{key}' in dataset for key in keys)
 
 
 def infer_zarr_dataset_specs(directory):
@@ -465,6 +479,7 @@ def infer_zarr_dataset_specs(directory):
     state_keys = None
     action_dim = None
     nonempty_count = 0
+    explicit_next_state_count = 0
 
     for store_path in zarr_stores:
         dataset = _zarr_reward_components_dataset(store_path)
@@ -481,6 +496,9 @@ def infer_zarr_dataset_specs(directory):
                 state_keys = keys
                 action_dim = int(dataset.sizes['action_dim'])
 
+            if _zarr_has_explicit_next_state(dataset, keys):
+                explicit_next_state_count += 1
+
             total_transitions += n_decisions
             nonempty_count += 1
         finally:
@@ -496,6 +514,8 @@ def infer_zarr_dataset_specs(directory):
         'action_dim': action_dim,
         'state_keys': state_keys,
         'format': 'zarr',
+        'explicit_next_state_store_count': explicit_next_state_count,
+        'has_explicit_next_state': explicit_next_state_count == nonempty_count,
     }
 
 
@@ -529,6 +549,8 @@ def infer_json_dataset_specs(directory):
         'action_dim': action_dim,
         'state_keys': state_keys,
         'format': 'json',
+        'explicit_next_state_store_count': 0,
+        'has_explicit_next_state': True,
     }
 
 
@@ -537,6 +559,35 @@ def infer_dataset_specs(directory):
     if zarr_stores:
         return infer_zarr_dataset_specs(directory)
     return infer_json_dataset_specs(directory)
+
+
+def describe_dataset(directory):
+    zarr_stores = find_full_trajectory_zarr_stores(directory)
+    json_files = find_trajectory_files(directory)
+
+    if zarr_stores:
+        specs = infer_zarr_dataset_specs(directory)
+        selected_format = 'zarr'
+    elif json_files:
+        specs = infer_json_dataset_specs(directory)
+        selected_format = 'json'
+    else:
+        raise FileNotFoundError(
+            f'No trajectory data found in {directory}: expected '
+            f'{FULL_TRAJECTORIES_DIRNAME}/trajectory_*.zarr or '
+            f'{TRAJECTORIES_DIRNAME}/trajectory_*.json'
+        )
+
+    description = dict(specs)
+    description.update({
+        'selected_format': selected_format,
+        'zarr_store_count': len(zarr_stores),
+        'json_file_count': len(json_files),
+        'zarr_takes_precedence': bool(zarr_stores and json_files),
+        'dataset_has_explicit_next_state': specs.get('has_explicit_next_state', False),
+        'zarr_explicit_next_state_store_count': specs.get('explicit_next_state_store_count', 0),
+    })
+    return description
 
 
 def iter_json_d4rl_transitions(directory, state_keys=None):
@@ -573,12 +624,23 @@ def iter_zarr_d4rl_transitions(directory, state_keys=None):
                 continue
 
             states = np.stack(state_arrays, axis=1).astype(np.float32)
+            next_state_arrays = []
+            has_explicit_next_state = _zarr_has_explicit_next_state(dataset, keys)
+            if has_explicit_next_state:
+                for key in keys:
+                    next_state_arrays.append(
+                        np.asarray(dataset[f'next_state_{key}'].values, dtype=np.float32)
+                    )
+                next_states = np.stack(next_state_arrays, axis=1).astype(np.float32)
+
             actions = np.asarray(dataset['action'].values, dtype=np.float32)
             rewards = np.asarray(dataset['reward'].values, dtype=np.float32)
             dones = np.asarray(dataset['done'].values, dtype=np.float32)
 
             for idx in range(states.shape[0]):
-                if idx < states.shape[0] - 1 and dones[idx] < 0.5:
+                if has_explicit_next_state:
+                    next_state = next_states[idx]
+                elif idx < states.shape[0] - 1 and dones[idx] < 0.5:
                     next_state = states[idx + 1]
                 else:
                     next_state = np.zeros_like(states[idx])
