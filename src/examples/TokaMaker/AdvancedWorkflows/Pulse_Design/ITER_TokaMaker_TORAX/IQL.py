@@ -64,7 +64,7 @@ class ValueNetwork(nn.Module):
         return self.net(state)
 
 class Actor(nn.Module):
-    def __init__(self, action_max, state_dim: int, action_dim: int, hidden_dim: int = 256):
+    def __init__(self, action_max, action_min, state_dim: int, action_dim: int, hidden_dim: int = 256):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(state_dim, hidden_dim),
@@ -75,16 +75,17 @@ class Actor(nn.Module):
             nn.Sigmoid()
         )
         self.action_max = action_max
+        self.action_min = action_min
 
     def forward(self, state):
         return self.net(state)
 
     def act(self, state):
-        return self.net(state) * self.action_max
+        return self.net(state) * (self.action_max - self.action_min) + self.action_min
 
 class IQL:
-    def __init__(self, action_max, state_dim: int, action_dim: int, 
-                 tau: float = 0.8, beta: float = 3.0, 
+    def __init__(self, action_max, action_min, state_dim: int, action_dim: int, 
+                 tau: float = 0.8, beta: float = 10.0, 
                  gamma: float = 0.99, lr: float = 1e-4):
         self.q1 = QNetwork(state_dim, action_dim)
         self.q2 = QNetwork(state_dim, action_dim)
@@ -94,7 +95,7 @@ class IQL:
         self.q2_target.load_state_dict(self.q2.state_dict())
         
         self.v = ValueNetwork(state_dim)
-        self.actor = Actor(action_max, state_dim, action_dim)
+        self.actor = Actor(action_max, action_min, state_dim, action_dim)
         
         self.q1_opt = torch.optim.Adam(self.q1.parameters(), lr=lr)
         self.q2_opt = torch.optim.Adam(self.q2.parameters(), lr=lr)
@@ -162,8 +163,9 @@ class IQL:
             v = self.v(states)
             adv = q - v
             exp_adv = torch.exp(self.beta * adv).clamp(max=100.0)
- 
-        action_pred = self.actor(states)
+        
+        states_aug = states + torch.randn_like(states) * 0.05
+        action_pred = self.actor(states_aug)
         actor_loss = (exp_adv * F.mse_loss(action_pred, actions, reduction='none').sum(-1, keepdim=True)).mean()
         
         self.actor_opt.zero_grad()
@@ -214,21 +216,22 @@ def normalize_buffer(buffer):
     
     buffer.states[:buffer.size] = (buffer.states[:buffer.size] - state_mean) / state_std
     buffer.next_states[:buffer.size] = (buffer.next_states[:buffer.size] - state_mean) / state_std
+    
+    print(f"Normalized state ranges in training:")
+    print(f"Min: {buffer.states[:buffer.size].min(axis=0)[:5]}")
+    print(f"Max: {buffer.states[:buffer.size].max(axis=0)[:5]}")
 
-    # After normalize_buffer()
-    mask = (buffer.states[:buffer.size, 0] < -4.0) & (buffer.states[:buffer.size, 0] > -4.5)   
+    action_max = buffer.actions[:buffer.size].max(axis=0)
+    action_min = buffer.actions[:buffer.size].min(axis=0)
 
-    action_max = buffer.actions[:buffer.size].max(axis=0)  # Remove np.abs
-
-    # Normalize to [0, 1]
-    buffer.actions[:buffer.size] = (buffer.actions[:buffer.size]) / (action_max)
+    buffer.actions[:buffer.size] = (buffer.actions[:buffer.size] - action_min) / (action_max - action_min)
 
     reward_scale = np.abs(buffer.rewards[:buffer.size]).max()
     buffer.rewards[:buffer.size] = buffer.rewards[:buffer.size] / reward_scale 
 
-    return state_mean, state_std, action_max
+    return state_mean, state_std, action_max, action_min
 
-def train_iql(iql, buffer, batch_size=128, num_steps=1000000, checkpoint_dir='./checkpoints', resume_from=None):
+def train_iql(iql, buffer, batch_size=128, num_steps=20000, checkpoint_dir='./checkpoints', resume_from=None):
     Path(checkpoint_dir).mkdir(exist_ok=True)
     dataloader = DataLoader(buffer, batch_size=batch_size, shuffle=True)
     
@@ -266,7 +269,6 @@ def train_iql(iql, buffer, batch_size=128, num_steps=1000000, checkpoint_dir='./
 
                 print(f"Saved checkpoint at step {step}")
                 
-                # ADD THE TEST HERE:
                 iql.actor.eval()
                 
                 batch_size_test = 256
@@ -307,14 +309,18 @@ if __name__ == "__main__":
     action_dim = 2
     dataset_size = 300000
     buffer = ReplayBuffer(state_dim, action_dim, dataset_size)
-    load_d4rl_dataset('/home/users/sameer06/ITER_TokaMaker_TORAX/large_dataset', buffer)
-
-    min_action = buffer.actions[:buffer.size].min(axis=0)
-    max_action = buffer.actions[:buffer.size].max(axis=0)
+    load_d4rl_dataset('/home/users/sameer06/ITER_TokaMaker_TORAX/large_dataset_new_preprocessed', buffer)
     
-    state_mean, state_std, action_max = normalize_buffer(buffer)
+    print(f"Loaded buffer size: {buffer.size}")
     
-    IQL_agent = IQL(action_max, state_dim, action_dim)
+    state_mean, state_std, action_max, action_min = normalize_buffer(buffer)
+    print(f"Loaded {buffer.size} transitions")
+    print(f"State mean: {state_mean}")
+    print(f"State std: {state_std}")
+    print(f"Action max: {action_max}")
+    print(f"Action min: {action_min}")
+    
+    IQL_agent = IQL(action_max, action_min, state_dim, action_dim, beta=10.0)
 
     Path('./checkpoints').mkdir(exist_ok=True)
     checkpoint_path = None
@@ -322,7 +328,7 @@ if __name__ == "__main__":
     if checkpoints:
         checkpoint_path = max(checkpoints, key=lambda p: int(p.stem.split('_')[-1]))
     
-    train_iql(IQL_agent, buffer, batch_size=128, num_steps=100000, 
+    train_iql(IQL_agent, buffer, batch_size=128, num_steps=20000, 
               checkpoint_dir='./checkpoints', resume_from=checkpoint_path)
 
     torch.save({
@@ -331,6 +337,7 @@ if __name__ == "__main__":
         'q2': IQL_agent.q2.state_dict(),
         'v': IQL_agent.v.state_dict(),
         'action_max': action_max,
+        'action_min': action_min,
         'state_mean': state_mean,
         'state_std': state_std,
     }, './checkpoints/iql_weights.pt')
