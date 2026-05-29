@@ -2075,7 +2075,7 @@ class TokaMaker_TORAX:
         import torch.nn as nn
 
         class _RLActor(nn.Module):
-            def __init__(self, action_max, state_dim, action_dim, hidden_dim=256):
+            def __init__(self, action_max, action_min, state_dim, action_dim, hidden_dim=256):
                 super().__init__()
                 self.net = nn.Sequential(
                     nn.Linear(state_dim, hidden_dim),
@@ -2083,32 +2083,37 @@ class TokaMaker_TORAX:
                     nn.Linear(hidden_dim, hidden_dim),
                     nn.ReLU(),
                     nn.Linear(hidden_dim, action_dim),
-                    nn.Tanh(),
+                    nn.Sigmoid(),
                 )
                 self.action_max = torch.as_tensor(action_max, dtype=torch.float32)
+                self.action_min = torch.as_tensor(action_min, dtype=torch.float32)
 
             def act(self, state):
-                return self.net(state) * self.action_max
+                return self.net(state) * (self.action_max - self.action_min) + self.action_min
 
         ckpt = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
         if 'state_mean' not in ckpt or 'state_std' not in ckpt:
+            print("failed here!")
             raise ValueError(
                 f'RL checkpoint must contain state_mean and state_std: {checkpoint_path}'
             )
         action_max = np.asarray(ckpt['action_max'], dtype=np.float64).reshape(-1)
+        action_min = np.asarray(ckpt['action_min'], dtype=np.float64).reshape(-1)
         state_mean = np.asarray(ckpt['state_mean'], dtype=np.float64).reshape(-1)
         state_std = np.asarray(ckpt['state_std'], dtype=np.float64).reshape(-1)
         if state_mean.shape[0] != RL_STATE_DIM:
+            print("failed here2!")
             raise ValueError(
                 f'Checkpoint state_dim {state_mean.shape[0]} != RL_STATE_DIM {RL_STATE_DIM}'
             )
 
-        actor = _RLActor(action_max, RL_STATE_DIM, 2)
+        actor = _RLActor(action_max, action_min, RL_STATE_DIM, 2)
         actor.load_state_dict(ckpt['actor'])
         actor.eval()
 
         self._rl_actor = actor
         self._rl_action_max = action_max
+        self._rl_action_min = action_min
         self._rl_state_mean = state_mean
         self._rl_state_std = state_std
         self._rl_actor_checkpoint = checkpoint_path
@@ -2136,8 +2141,18 @@ class TokaMaker_TORAX:
 
         state = np.asarray(state_vector, dtype=np.float64).reshape(-1)
         s_norm = (state - self._rl_state_mean) / (self._rl_state_std + 1e-8)
+        print(f"Raw state: {state_vector[:5]}...")  # Add this before normalization
+        print(f"State mean: {self._rl_state_mean[:5]}...")
+        print(f"State std: {self._rl_state_std[:5]}...")
+        print(f"Normalized state: {s_norm[:5]}...")
         with torch.no_grad():
+            sigmoid_out = self._rl_actor.net(torch.FloatTensor(s_norm).unsqueeze(0))
+            print(f"Sigmoid output: {sigmoid_out.numpy()}")  # Should be ~[0.3-0.7]
+            print(f"action_max: {self._rl_action_max}")
+            print(f"action_min: {self._rl_action_min}")
             action_mw = self._rl_actor.act(torch.FloatTensor(s_norm).unsqueeze(0))
+            print(f"Final action: {action_mw.numpy()}")
+            #action_mw = self._rl_actor.act(torch.FloatTensor(s_norm).unsqueeze(0))
         return action_mw.cpu().numpy()[0]
 
     @staticmethod
@@ -2193,6 +2208,7 @@ class TokaMaker_TORAX:
                 t_dec, t_seg_end, last_action_mw, data_tree=data_tree,
             )
             action_mw = self._rl_select_action_mw(state, decision_t=t_dec)
+            print(action_mw)
             action_mw = np.maximum(action_mw, 0.0)
 
             knot_t = t_seg_end
