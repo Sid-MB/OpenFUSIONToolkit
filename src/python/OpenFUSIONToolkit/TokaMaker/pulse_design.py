@@ -2093,7 +2093,6 @@ class TokaMaker_TORAX:
 
         ckpt = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
         if 'state_mean' not in ckpt or 'state_std' not in ckpt:
-            print("failed here!")
             raise ValueError(
                 f'RL checkpoint must contain state_mean and state_std: {checkpoint_path}'
             )
@@ -2102,7 +2101,6 @@ class TokaMaker_TORAX:
         state_mean = np.asarray(ckpt['state_mean'], dtype=np.float64).reshape(-1)
         state_std = np.asarray(ckpt['state_std'], dtype=np.float64).reshape(-1)
         if state_mean.shape[0] != RL_STATE_DIM:
-            print("failed here2!")
             raise ValueError(
                 f'Checkpoint state_dim {state_mean.shape[0]} != RL_STATE_DIM {RL_STATE_DIM}'
             )
@@ -2134,8 +2132,6 @@ class TokaMaker_TORAX:
                 raise RuntimeError(
                     'RL actor not loaded; pass decision_t for baseline fallback or load a checkpoint.'
                 )
-            state = np.asarray(state_vector, dtype=np.float64).reshape(-1)
-            s_norm = (state - self._rl_state_mean) / (self._rl_state_std + 1e-8)
             knot_t = self._rl_knot_time_for_decision(decision_t)
             return np.array(self._rl_default_action_at_time(knot_t), dtype=np.float64)
 
