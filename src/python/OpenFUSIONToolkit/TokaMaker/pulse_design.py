@@ -893,13 +893,13 @@ class TokaMaker_TORAX:
     def _extract_rl_state(self, t_start, t_end, current_action, data_tree=None):
         r'''! RL observation dict (collect_trajectories.extract_state).
         
-                Scalars and profiles at t_start; current_action is [ecrh_MW, nbi_MW].
+                Scalars and profiles at t_start; current_action is [ecrh, nbi].
                 t_end is accepted for API compatibility (interval rewards use
                 compute_reward separately). Safety penalties are not in the state.
         
                 @param t_start Observation time (s).
                 @param t_end End of control interval (s); unused for features.
-                @param current_action [ecrh_MW, nbi_MW] at t_start.
+                @param current_action [ecrh, nbi] at t_start.
                 @param data_tree TORAX DataTree; defaults to self._data_tree.
                 
         '''
@@ -2119,8 +2119,8 @@ class TokaMaker_TORAX:
         self._rl_actor_checkpoint = checkpoint_path
         self._log(f'Loaded RL actor from {checkpoint_path}')
 
-    def _rl_select_action_mw(self, state_vector, decision_t=None):
-        r'''! Actor inference; returns [ecrh_MW, nbi_MW].
+    def _rl_select_action(self, state_vector, decision_t=None):
+        r'''! Actor inference; returns [ecrh, nbi].
         
                 If no checkpoint was loaded (self._rl_actor is None), returns baseline
                 schedule power at the knot for decision_t (for closed-loop testing).
@@ -2134,8 +2134,10 @@ class TokaMaker_TORAX:
                 raise RuntimeError(
                     'RL actor not loaded; pass decision_t for baseline fallback or load a checkpoint.'
                 )
+            state = np.asarray(state_vector, dtype=np.float64).reshape(-1)
+            s_norm = (state - self._rl_state_mean) / (self._rl_state_std + 1e-8)
             knot_t = self._rl_knot_time_for_decision(decision_t)
-            return np.array(self._rl_default_action_mw_at_time(knot_t), dtype=np.float64)
+            return np.array(self._rl_default_action_at_time(knot_t), dtype=np.float64)
 
         import torch
 
@@ -2150,14 +2152,14 @@ class TokaMaker_TORAX:
             print(f"Sigmoid output: {sigmoid_out.numpy()}")  # Should be ~[0.3-0.7]
             print(f"action_max: {self._rl_action_max}")
             print(f"action_min: {self._rl_action_min}")
-            action_mw = self._rl_actor.act(torch.FloatTensor(s_norm).unsqueeze(0))
-            print(f"Final action: {action_mw.numpy()}")
+            action = self._rl_actor.act(torch.FloatTensor(s_norm).unsqueeze(0))
+            print(f"Final action: {action.numpy()}")
             #action_mw = self._rl_actor.act(torch.FloatTensor(s_norm).unsqueeze(0))
-        return action_mw.cpu().numpy()[0]
+        return action.cpu().numpy()[0]
 
     @staticmethod
-    def _rl_default_action_mw_at_time(t):
-        r'''! Default schedule heating (MW) at absolute time t (nearest knot).'''
+    def _rl_default_action_at_time(t):
+        r'''! Default schedule heating at absolute time t (nearest knot).'''
         t = float(t)
         ecrh_w = float(_BASE_RL_ECRH_POWERS_W.get(t, np.interp(
             t, sorted(_BASE_RL_ECRH_POWERS_W.keys()), list(_BASE_RL_ECRH_POWERS_W.values())
@@ -2165,7 +2167,7 @@ class TokaMaker_TORAX:
         nbi_w = float(_BASE_RL_NBI_POWERS_W.get(t, np.interp(
             t, sorted(_BASE_RL_NBI_POWERS_W.keys()), list(_BASE_RL_NBI_POWERS_W.values())
         )))
-        return ecrh_w / 1e6, nbi_w / 1e6
+        return ecrh_w, nbi_w
 
     def _run_tx_rl_segmented(self):
         r'''! Full pulse TORAX with RL heating (80–480 s decisions, knot at t+20).
@@ -2200,30 +2202,30 @@ class TokaMaker_TORAX:
         self._print(f'  TORAX RL: cold-start t=[0, {t_prescribed_end:g}] s (defaults)')
         data_tree, _ = self._run_tx_segment(0.0, t_prescribed_end, ecrh, nbi)
 
-        last_action_mw = list(self._rl_default_action_mw_at_time(RL_DECISION_T_FIRST))
+        last_action = list(self._rl_default_action_at_time(RL_DECISION_T_FIRST))
 
         for t_dec in RL_DECISION_TIMES:
             t_seg_end = self._rl_knot_time_for_decision(t_dec)
             state = self._extract_rl_state_vector(
-                t_dec, t_seg_end, last_action_mw, data_tree=data_tree,
+                t_dec, t_seg_end, last_action, data_tree=data_tree,
             )
-            action_mw = self._rl_select_action_mw(state, decision_t=t_dec)
-            print(action_mw)
-            action_mw = np.maximum(action_mw, 0.0)
+            action = self._rl_select_action(state, decision_t=t_dec)
+            print(action)
+            action = np.maximum(action, 0.0)
 
             knot_t = t_seg_end
-            agent_knots[knot_t] = (float(action_mw[0]) * 1e6, float(action_mw[1]) * 1e6)
+            agent_knots[knot_t] = (float(action[0]), float(action[1]))
             self._rl_actions_history.append({
                 'decision_t': float(t_dec),
                 'knot_t': float(knot_t),
-                'ecrh_MW': float(action_mw[0]),
-                'nbi_MW': float(action_mw[1]),
+                'ecrh': float(action[0]),
+                'nbi': float(action[1]),
             })
             self._log(
                 f'RL decision t={t_dec:g} -> knot t={knot_t:g}: '
-                f'ECRH={action_mw[0]:.2f} MW, NBI={action_mw[1]:.2f} MW'
+                f'ECRH={action[0]:.2f} W, NBI={action[1]:.2f} W'
             )
-            last_action_mw = action_mw.tolist()
+            last_action = action.tolist()
 
             if t_dec < RL_DECISION_T_LAST:
                 ecrh, nbi = self._merge_rl_heating_schedules(agent_knots)
