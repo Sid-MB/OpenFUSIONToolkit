@@ -455,6 +455,8 @@ cfg = RLRewardConfig(
 
 rewards = tmtx.compute_rewards(cfg)
 
+import os
+
 with open("reward.txt", "w") as f:
     f.write(f"Total reward: {sum(rewards):.4f}\n")
     f.write(f"Per-step rewards: {rewards}\n")

@@ -329,7 +329,7 @@ if __name__ == "__main__":
     action_dim = 2
     dataset_size = 300000
     buffer = ReplayBuffer(state_dim, action_dim, dataset_size)
-    load_d4rl_dataset('OpenFUSIONToolkit/src/examples/TokaMaker/AdvancedWorkflows/Pulse_Design/ITER_TokaMaker_TORAX/test', buffer)
+    load_d4rl_dataset('/OpenFUSIONToolkit/src/examples/TokaMaker/AdvancedWorkflows/Pulse_Design/ITER_TokaMaker_TORAX/test', buffer)
     
     print(f"Loaded buffer size: {buffer.size}")
     
