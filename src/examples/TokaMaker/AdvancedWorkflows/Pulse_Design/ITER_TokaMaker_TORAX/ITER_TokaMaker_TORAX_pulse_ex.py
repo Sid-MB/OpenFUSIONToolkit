@@ -399,7 +399,7 @@ tmtx.set_TokaMaker_coil_reg(coil_bounds=coil_bounds, updownsym=False)
 
 # RL closed-loop TORAX heating (see markdown above)
 USE_RL_ACTOR = True
-ACTOR_CHECKPOINT = 'most_recent_model.pt'  # set to 'path/to/iql_weights.pt' to use a trained IQL actor
+ACTOR_CHECKPOINT = './checkpoints/final_weights.pt'  # set to 'path/to/iql_weights.pt' to use a trained IQL actor
 
 
 # In[ ]:

@@ -373,6 +373,6 @@ if __name__ == "__main__":
         'tau': args.tau,
         'lr': args.lr,
         'training_steps': args.training_steps,
-    }, final_path)
+    }, 'final_weights.pt')
 
     wandb.finish()
