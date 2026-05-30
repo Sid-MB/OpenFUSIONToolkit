@@ -341,5 +341,4 @@ if __name__ == "__main__":
         'state_mean': state_mean,
         'state_std': state_std,
     }, './checkpoints/iql_weights.pt')
-    
     wandb.finish()
