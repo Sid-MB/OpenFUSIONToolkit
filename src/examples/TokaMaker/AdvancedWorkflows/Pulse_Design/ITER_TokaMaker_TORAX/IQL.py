@@ -6,6 +6,7 @@ import numpy as np
 from typing import Tuple, Optional
 from pathlib import Path
 import json
+import argparse
 import wandb
 
 class ReplayBuffer(Dataset):
@@ -298,18 +299,37 @@ def train_iql(iql, buffer, batch_size=128, num_steps=20000, checkpoint_dir='./ch
                 break
  
 if __name__ == "__main__":
-    wandb.init(project="iql-training", config={
-        "state_dim": 43,
-        "action_dim": 2,
-        "batch_size": 128,
-        "num_steps": 100000
-    })
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument("--beta", type=float, default=10.0)
+    parser.add_argument("--tau", type=float, default=0.8)
+    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--training_steps", type=int, default=20000)
+
+    args = parser.parse_args()
+
+    run_name = f"iql_beta{args.beta}_tau{args.tau}_lr{args.lr}_steps{args.training_steps}"
+
+    wandb.init(
+        project="iql-training",
+        name=f"iql_beta{args.beta}_tau{args.tau}_lr{args.lr}",
+        config={
+            "state_dim": 43,
+            "action_dim": 2,
+            "batch_size": 128,
+            "num_steps": 100000,
+            "beta": args.beta,
+            "tau": args.tau,
+            "lr": args.lr,
+            "num_steps": args.training_steps
+        }
+    )
     
     state_dim = 43
     action_dim = 2
     dataset_size = 300000
     buffer = ReplayBuffer(state_dim, action_dim, dataset_size)
-    load_d4rl_dataset('/home/users/sameer06/ITER_TokaMaker_TORAX/large_dataset_new_preprocessed', buffer)
+    load_d4rl_dataset('OpenFUSIONToolkit/src/examples/TokaMaker/AdvancedWorkflows/Pulse_Design/ITER_TokaMaker_TORAX/test', buffer)
     
     print(f"Loaded buffer size: {buffer.size}")
     
@@ -320,7 +340,15 @@ if __name__ == "__main__":
     print(f"Action max: {action_max}")
     print(f"Action min: {action_min}")
     
-    IQL_agent = IQL(action_max, action_min, state_dim, action_dim, beta=10.0)
+    IQL_agent = IQL(
+        action_max,
+        action_min,
+        state_dim,
+        action_dim,
+        beta=args.beta,
+        tau=args.tau,
+        lr=args.lr
+    )
 
     Path('./checkpoints').mkdir(exist_ok=True)
     checkpoint_path = None
@@ -328,9 +356,10 @@ if __name__ == "__main__":
     if checkpoints:
         checkpoint_path = max(checkpoints, key=lambda p: int(p.stem.split('_')[-1]))
     
-    train_iql(IQL_agent, buffer, batch_size=128, num_steps=20000, 
+    train_iql(IQL_agent, buffer, batch_size=128, num_steps=args.training_steps, 
               checkpoint_dir='./checkpoints', resume_from=checkpoint_path)
 
+    final_path = f'./checkpoints/{run_name}.pt'
     torch.save({
         'actor': IQL_agent.actor.state_dict(),
         'q1': IQL_agent.q1.state_dict(),
@@ -340,5 +369,10 @@ if __name__ == "__main__":
         'action_min': action_min,
         'state_mean': state_mean,
         'state_std': state_std,
-    }, './checkpoints/iql_weights.pt')
+        'beta': args.beta,
+        'tau': args.tau,
+        'lr': args.lr,
+        'training_steps': args.training_steps,
+    }, final_path)
+
     wandb.finish()
