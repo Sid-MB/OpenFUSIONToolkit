@@ -403,9 +403,6 @@ def build_trajectory(tmtx, action_row):
 def setup_tokamaker(cwd):
     """Initialize OFT and TokaMaker, produce seed eqdsks. Run once per process."""
 
-    import sys
-    sys.path.append('/Users/deniz/Desktop/Spring2026/CS224R/project/OpenFUSIONToolkit/install_release/python')
-
     from OpenFUSIONToolkit import OFT_env
     from OpenFUSIONToolkit.TokaMaker import TokaMaker
     from OpenFUSIONToolkit.TokaMaker.meshing import load_gs_mesh

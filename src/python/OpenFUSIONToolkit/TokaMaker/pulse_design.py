@@ -2124,6 +2124,14 @@ class TokaMaker_TORAX:
             raise ValueError(
                 f'Checkpoint state_dim {state_mean.shape[0]} != RL_STATE_DIM {RL_STATE_DIM}'
             )
+        if state_std.shape[0] != RL_STATE_DIM:
+            raise ValueError(
+                f'Checkpoint state_std_dim {state_std.shape[0]} != RL_STATE_DIM {RL_STATE_DIM}'
+            )
+        if action_max.shape[0] != 2:
+            raise ValueError(
+                f'Checkpoint action_dim {action_max.shape[0]} != expected action_dim 2'
+            )
 
         actor = _RLActor(action_max, RL_STATE_DIM, 2)
         actor.load_state_dict(ckpt['actor'])
@@ -2189,11 +2197,10 @@ class TokaMaker_TORAX:
                 self._load_rl_actor(self._rl_actor_checkpoint)
             except Exception as e:
                 self._log(
-                    f'Warning: could not load RL actor ({self._rl_actor_checkpoint}): {e}; '
-                    'using baseline heating fallback.'
+                    f'Error: could not load RL actor ({self._rl_actor_checkpoint}): {e}'
                 )
-                self._print('  TORAX RL: actor load failed — baseline heating fallback')
-                self._rl_actor = None
+                self._print('  TORAX RL: actor load failed — raising (no baseline fallback)')
+                raise
         if self._rl_actor is None:
             self._log('TORAX RL: no actor loaded; baseline heating at each decision knot.')
             self._print('  TORAX RL: baseline heating fallback (no trained actor)')
@@ -3522,8 +3529,9 @@ class TokaMaker_TORAX:
                        80–480 s; knots at t+20). Each decision cold-starts a rerun from t=0 with
                        the merged schedule; self._data_tree is the final 0→t_final solve only.
                 @param actor_checkpoint Optional path to trained IQL .pt (actor, state_mean,
-                       state_std, action_max). If omitted or unloadable, baseline heating at
-                       each decision knot is used instead (closed-loop test mode).
+                       state_std, action_max). If omitted, baseline heating at each decision knot
+                       is used instead (closed-loop test mode). If supplied but unloadable,
+                       the run raises instead of falling back.
                        Call set_heating() with ecrh_loc and generic_heat_loc before fly().
                 
         '''

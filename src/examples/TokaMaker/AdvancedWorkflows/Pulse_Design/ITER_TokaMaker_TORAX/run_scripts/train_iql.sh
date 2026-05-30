@@ -18,6 +18,8 @@ else
   PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd -P)"
 fi
 cd "${PROJECT_DIR}"
+OFT_ROOT="$(cd "${PROJECT_DIR}/../../../../../../" && pwd -P)"
+source "${OFT_ROOT}/scripts/oft_arch/select_oft_install.sh"
 
 : "${DATASET_DIR:?Set DATASET_DIR to the collected dataset root}"
 
@@ -89,6 +91,8 @@ add_arg ACTOR_EVAL_DEVICE --actor_eval_device
 
 echo "Running on host: $(hostname)"
 echo "DATASET_DIR=${DATASET_DIR}"
+echo "OFT_SELECTED_FLAVOR=${OFT_SELECTED_FLAVOR}"
+echo "OFT_SELECTED_INSTALL=${OFT_SELECTED_INSTALL}"
 echo "IQL args: ${args[*]}"
 nvidia-smi || true
 

@@ -630,16 +630,6 @@ def build_trajectory(tmtx, action_row):
 def setup_tokamaker(cwd):
     """Initialize OFT and TokaMaker, produce seed eqdsks. Run once per process."""
 
-    import sys
-
-    oft_install = os.environ.get('OFT_SELECTED_INSTALL')
-    if oft_install is None:
-        oft_root = os.path.abspath(os.path.join(cwd, '../../../../../../'))
-        oft_install = os.path.join(oft_root, 'install_release')
-    oft_python = os.path.join(oft_install, 'python')
-    if os.path.isdir(oft_python) and oft_python not in sys.path:
-        sys.path.append(oft_python)
-
     from OpenFUSIONToolkit import OFT_env
     from OpenFUSIONToolkit.TokaMaker import TokaMaker
     from OpenFUSIONToolkit.TokaMaker.meshing import load_gs_mesh

@@ -18,6 +18,8 @@ else
   PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd -P)"
 fi
 cd "${PROJECT_DIR}"
+OFT_ROOT="$(cd "${PROJECT_DIR}/../../../../../../" && pwd -P)"
+source "${OFT_ROOT}/scripts/oft_arch/select_oft_install.sh"
 
 ACTOR_CHECKPOINT="${ACTOR_CHECKPOINT:?Set ACTOR_CHECKPOINT to iql_weights.pt or checkpoint_step_*.pt}"
 DATASET_DIR="${DATASET_DIR:-}"
@@ -44,6 +46,8 @@ export MKL_NUM_THREADS="${SLURM_CPUS_PER_TASK:-4}"
 export NUMEXPR_NUM_THREADS="${SLURM_CPUS_PER_TASK:-4}"
 
 echo "Running on host: $(hostname)"
+echo "OFT_SELECTED_FLAVOR=${OFT_SELECTED_FLAVOR}"
+echo "OFT_SELECTED_INSTALL=${OFT_SELECTED_INSTALL}"
 echo "ACTOR_CHECKPOINT=${ACTOR_CHECKPOINT}"
 echo "DATASET_DIR=${DATASET_DIR}"
 echo "OUTPUT_DIR=${OUTPUT_DIR}"
@@ -85,4 +89,4 @@ if [ "${ALLOW_CPU_JAX_ON_GPU}" != "0" ]; then
   ARGS+=(--allow_cpu_jax_on_gpu)
 fi
 
-uv run python rl/eval.py "${ARGS[@]}"
+uv run python -m rl.eval "${ARGS[@]}"

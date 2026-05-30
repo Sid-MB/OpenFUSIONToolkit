@@ -9,11 +9,13 @@ or set environment variable TOKAMAKER_ITER_MESH to the .h5 path.
 '''
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import sys
 import tempfile
 import time
+import types
 from typing import Any, Dict, Optional
 
 import numpy as np
@@ -346,6 +348,53 @@ def test_tokamaker_torax() -> None:
     assert isinstance(result, dict)
     assert "Ip_flattop_MA" in result
     assert "t_final_s" in result
+
+
+def test_rl_actor_state_dim_mismatch_raises(tmp_path, monkeypatch) -> None:
+    r'''! A supplied actor checkpoint with the wrong observation size must fail fast.'''
+    torch = pytest.importorskip("torch")
+
+    oft_pkg = types.ModuleType("OpenFUSIONToolkit")
+    oft_pkg.__path__ = []
+    tokamaker_pkg = types.ModuleType("OpenFUSIONToolkit.TokaMaker")
+    tokamaker_pkg.__path__ = []
+    util_mod = types.ModuleType("OpenFUSIONToolkit.TokaMaker.util")
+    util_mod.read_eqdsk = lambda *args, **kwargs: None
+    util_mod.create_power_flux_fun = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "OpenFUSIONToolkit", oft_pkg)
+    monkeypatch.setitem(sys.modules, "OpenFUSIONToolkit.TokaMaker", tokamaker_pkg)
+    monkeypatch.setitem(sys.modules, "OpenFUSIONToolkit.TokaMaker.util", util_mod)
+
+    module_path = os.path.join(
+        _PYTHON_SRC, "OpenFUSIONToolkit", "TokaMaker", "pulse_design.py"
+    )
+    spec = importlib.util.spec_from_file_location("_test_pulse_design_rl", module_path)
+    assert spec is not None and spec.loader is not None
+    pulse_design = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(pulse_design)
+
+    checkpoint_path = tmp_path / "bad_actor.pt"
+    torch.save(
+        {
+            "action_max": torch.ones(2),
+            "state_mean": torch.zeros(pulse_design.RL_STATE_DIM + 1),
+            "state_std": torch.ones(pulse_design.RL_STATE_DIM + 1),
+            "actor": {},
+        },
+        checkpoint_path,
+    )
+
+    tmtx = object.__new__(pulse_design.TokaMaker_TORAX)
+    tmtx._rl_actor = None
+    tmtx._rl_actor_checkpoint = str(checkpoint_path)
+    messages = []
+    tmtx._log = messages.append
+    tmtx._print = messages.append
+
+    with pytest.raises(ValueError, match=r"Checkpoint state_dim .* != RL_STATE_DIM"):
+        tmtx._run_tx_rl_segmented()
+
+    assert not any("baseline heating fallback" in msg for msg in messages)
 
 
 def main() -> None:

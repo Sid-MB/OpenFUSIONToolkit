@@ -2,20 +2,9 @@ import argparse
 import io
 import json
 import os
-import sys
 from contextlib import redirect_stdout
 from datetime import datetime
 from pathlib import Path
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-for parent in PROJECT_ROOT.parents:
-    oft_python = parent / "python"
-    if (oft_python / "OpenFUSIONToolkit").is_dir():
-        if str(oft_python) not in sys.path:
-            sys.path.insert(0, str(oft_python))
-        break
 
 import numpy as np
 import torch
