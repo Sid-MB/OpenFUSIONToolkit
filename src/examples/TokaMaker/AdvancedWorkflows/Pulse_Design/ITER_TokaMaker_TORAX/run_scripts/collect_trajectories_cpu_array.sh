@@ -19,7 +19,7 @@
 #   sets the output directory, and submits this script with the right array shape.
 #
 # Direct-use example, only when you intentionally want manual sbatch control:
-#   export OUTPUT_BASE_DIR=./rl_dataset_delta_sampling_manual_$(date +%Y%m%d_%H%M%S)
+#   export OUTPUT_BASE_DIR=./rl_dataset_delta_sampling_manual
 #   export N_TRAJECTORIES=1000 SEED=42 MAX_LOOP=2 GRID_SIZE=51
 #   uv run python collect_trajectories_delta.py \
 #     --n_trajectories "${N_TRAJECTORIES}" --seed "${SEED}" \
@@ -40,8 +40,9 @@
 #   run uses `%16` array concurrency. N_WORKERS>1 can increase RAM pressure and
 #   makes it harder to tell which trajectory is slow.
 #
-# Shared initial relax cache is optional. Set USE_INITIAL_RELAX_CACHE=0 to run
-# without it, or build it first and submit this script with --dependency=afterok.
+# Shared initial relax cache is controlled explicitly by USE_INITIAL_RELAX_CACHE.
+# When it is 1, INITIAL_RELAX_CACHE must point to an existing cache and this
+# script should be submitted with the appropriate afterok dependency.
 
 set -euo pipefail
 
@@ -55,33 +56,77 @@ cd "${PROJECT_DIR}"
 OFT_ROOT="$(cd "${PROJECT_DIR}/../../../../../../" && pwd -P)"
 source "${OFT_ROOT}/scripts/oft_arch/select_oft_install.sh"
 
-TOTAL_CPUS="${SLURM_CPUS_PER_TASK:-4}"
-N_WORKERS="${N_WORKERS:-1}"
-THREADS_PER_WORKER="${THREADS_PER_WORKER:-$(( TOTAL_CPUS / N_WORKERS ))}"
+require_env() {
+  local name="$1"
+  if [ -z "${!name:-}" ]; then
+    echo "ERROR: ${name} must be set by the submit wrapper or caller." >&2
+    exit 2
+  fi
+}
+
+add_arg() {
+  local env_name="$1"
+  local flag="$2"
+  local value="${!env_name:-}"
+  if [ -n "${value}" ]; then
+    COLLECT_ARGS+=("${flag}" "${value}")
+  fi
+}
+
+add_bool_output_arg() {
+  local env_name="$1"
+  local true_flag="$2"
+  local false_flag="$3"
+  local value="${!env_name:-}"
+  if [ -z "${value}" ]; then
+    return
+  fi
+  if [ "${value}" = "0" ] || [ "${value}" = "false" ] || [ "${value}" = "False" ]; then
+    COLLECT_ARGS+=("${false_flag}")
+  else
+    COLLECT_ARGS+=("${true_flag}")
+  fi
+}
+
+echo_env_or_argparse_default() {
+  local name="$1"
+  if [ -n "${!name:-}" ]; then
+    echo "${name}=${!name}"
+  else
+    echo "${name}=<argparse default>"
+  fi
+}
+
+require_env SLURM_CPUS_PER_TASK
+require_env SLURM_ARRAY_TASK_ID
+require_env SLURM_ARRAY_JOB_ID
+require_env N_TRAJECTORIES
+require_env START_IDX
+require_env END_IDX
+require_env N_WORKERS
+require_env CHUNK_SIZE
+require_env OUTPUT_BASE_DIR
+require_env USE_INITIAL_RELAX_CACHE
+
+TOTAL_CPUS="${SLURM_CPUS_PER_TASK}"
+if [ -z "${THREADS_PER_WORKER:-}" ]; then
+  THREADS_PER_WORKER="$(( TOTAL_CPUS / N_WORKERS ))"
+fi
 if [ "${THREADS_PER_WORKER}" -lt 1 ]; then
   THREADS_PER_WORKER=1
 fi
 
-N_TRAJECTORIES="${N_TRAJECTORIES:-1000}"
-START_IDX="${START_IDX:-0}"
-END_IDX="${END_IDX:-${N_TRAJECTORIES}}"
-CHUNK_SIZE="${CHUNK_SIZE:-1}"
-SEED="${SEED:-42}"
-MAX_LOOP="${MAX_LOOP:-2}"
-GRID_SIZE="${GRID_SIZE:-51}"
-TRAJECTORY_TIMEOUT_SECONDS="${TRAJECTORY_TIMEOUT_SECONDS:-7200}"
-
-ARRAY_TASK_ID="${SLURM_ARRAY_TASK_ID:-0}"
-ARRAY_JOB_ID="${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-$(date +%Y%m%d_%H%M%S)}}"
+ARRAY_TASK_ID="${SLURM_ARRAY_TASK_ID}"
+ARRAY_JOB_ID="${SLURM_ARRAY_JOB_ID}"
 CHUNK_START=$(( START_IDX + ARRAY_TASK_ID * CHUNK_SIZE ))
 CHUNK_END=$(( CHUNK_START + CHUNK_SIZE ))
 if [ "${CHUNK_END}" -gt "${END_IDX}" ]; then
   CHUNK_END="${END_IDX}"
 fi
 
-OUTPUT_BASE_DIR="${OUTPUT_BASE_DIR:-./rl_dataset_delta_sampling_maxloop=2_grid_51_cpu_array_${ARRAY_JOB_ID}}"
-CHUNK_DIR="${CHUNK_DIR:-${OUTPUT_BASE_DIR}/chunks/chunk_${ARRAY_TASK_ID}_${CHUNK_START}_${CHUNK_END}}"
-INITIAL_RELAX_CACHE="${INITIAL_RELAX_CACHE:-${OUTPUT_BASE_DIR}/initial_relax_state.json}"
+if [ -z "${CHUNK_DIR:-}" ]; then
+  CHUNK_DIR="${OUTPUT_BASE_DIR}/chunks/chunk_${ARRAY_TASK_ID}_${CHUNK_START}_${CHUNK_END}"
+fi
 
 # Force the CPU path even if this script is run from a GPU-capable login node.
 export CUDA_VISIBLE_DEVICES=-1
@@ -107,10 +152,13 @@ echo "N_TRAJECTORIES=${N_TRAJECTORIES}"
 echo "START_IDX=${START_IDX}"
 echo "END_IDX=${END_IDX}"
 echo "CHUNK_SIZE=${CHUNK_SIZE}"
-echo "SEED=${SEED}"
-echo "MAX_LOOP=${MAX_LOOP}"
-echo "GRID_SIZE=${GRID_SIZE}"
-echo "TRAJECTORY_TIMEOUT_SECONDS=${TRAJECTORY_TIMEOUT_SECONDS}"
+echo_env_or_argparse_default SEED
+echo_env_or_argparse_default MAX_LOOP
+echo_env_or_argparse_default GRID_SIZE
+echo_env_or_argparse_default TRAJECTORY_TIMEOUT_SECONDS
+echo_env_or_argparse_default SAVE_REPLAY_SHARD
+echo_env_or_argparse_default SAVE_FULL_ZARR
+echo_env_or_argparse_default SAVE_JSON
 echo "CHUNK_START=${CHUNK_START}"
 echo "CHUNK_END=${CHUNK_END}"
 echo "OFT_NUM_THREADS=${OFT_NUM_THREADS}"
@@ -120,7 +168,7 @@ echo "OFT_SELECTED_FLAVOR=${OFT_SELECTED_FLAVOR}"
 echo "OFT_SELECTED_INSTALL=${OFT_SELECTED_INSTALL}"
 echo "OUTPUT_BASE_DIR=${OUTPUT_BASE_DIR}"
 echo "CHUNK_DIR=${CHUNK_DIR}"
-echo "INITIAL_RELAX_CACHE=${INITIAL_RELAX_CACHE}"
+echo_env_or_argparse_default INITIAL_RELAX_CACHE
 
 if [ "${CHUNK_START}" -ge "${CHUNK_END}" ]; then
   echo "Array task has no trajectories in requested range; exiting."
@@ -129,29 +177,39 @@ fi
 
 mkdir -p "${OUTPUT_BASE_DIR}" "${CHUNK_DIR}"
 
-if [ "${USE_INITIAL_RELAX_CACHE:-1}" != "0" ]; then
+COLLECT_ARGS=(
+  --n_trajectories "${N_TRAJECTORIES}"
+  --start_idx "${CHUNK_START}"
+  --end_idx "${CHUNK_END}"
+  --n_workers "${N_WORKERS}"
+  --output_dir "${OUTPUT_BASE_DIR}"
+  --chunk_dir "${CHUNK_DIR}"
+  --require_existing_dataset
+)
+
+add_arg SEED --seed
+add_arg MAX_LOOP --max_loop
+add_arg GRID_SIZE --grid_size
+add_arg TRAJECTORY_TIMEOUT_SECONDS --trajectory_timeout_seconds
+add_bool_output_arg SAVE_REPLAY_SHARD --save_replay_shard --no_save_replay_shard
+add_bool_output_arg SAVE_FULL_ZARR --save_full_zarr --no_save_full_zarr
+add_bool_output_arg SAVE_JSON --save_json --no_save_json
+
+if [ "${USE_INITIAL_RELAX_CACHE}" != "0" ]; then
+  require_env INITIAL_RELAX_CACHE
   if [ ! -s "${INITIAL_RELAX_CACHE}" ]; then
     echo "ERROR: shared initial relax cache is missing: ${INITIAL_RELAX_CACHE}" >&2
     echo "Submit collect_initial_relax_cache_cpu.sh first and submit this array with --dependency=afterok:<cache_job_id>." >&2
     exit 2
   fi
   echo "Using shared initial relax cache: ${INITIAL_RELAX_CACHE}"
-  CACHE_ARGS=(--initial_relax_cache "${INITIAL_RELAX_CACHE}")
+  COLLECT_ARGS+=(--initial_relax_cache "${INITIAL_RELAX_CACHE}")
 else
-  CACHE_ARGS=(--no_initial_relax_cache)
+  COLLECT_ARGS+=(--no_initial_relax_cache)
 fi
 
+echo "collect_trajectories_delta.py args: ${COLLECT_ARGS[*]} $*"
+
 uv run python collect_trajectories_delta.py \
-  --n_trajectories "${N_TRAJECTORIES}" \
-  --seed "${SEED}" \
-  --start_idx "${CHUNK_START}" \
-  --end_idx "${CHUNK_END}" \
-  --n_workers "${N_WORKERS}" \
-  --output_dir "${OUTPUT_BASE_DIR}" \
-  --chunk_dir "${CHUNK_DIR}" \
-  --require_existing_dataset \
-  --max_loop "${MAX_LOOP}" \
-  --grid_size "${GRID_SIZE}" \
-  --trajectory_timeout_seconds "${TRAJECTORY_TIMEOUT_SECONDS}" \
-  "${CACHE_ARGS[@]}" \
+  "${COLLECT_ARGS[@]}" \
   "$@"

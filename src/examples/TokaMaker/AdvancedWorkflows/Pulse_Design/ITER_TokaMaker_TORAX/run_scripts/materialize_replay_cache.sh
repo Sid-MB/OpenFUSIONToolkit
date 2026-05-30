@@ -18,37 +18,41 @@ fi
 cd "${PROJECT_DIR}"
 
 DATASET_DIR="${DATASET_DIR:?Set DATASET_DIR to the collected dataset root}"
-REPLAY_CACHE_DIR="${REPLAY_CACHE_DIR:-}"
-OVERWRITE_REPLAY_CACHE="${OVERWRITE_REPLAY_CACHE:-0}"
-REPLAY_CACHE_PROGRESS="${REPLAY_CACHE_PROGRESS:-1}"
-REPLAY_CACHE_WORKERS="${REPLAY_CACHE_WORKERS:-${SLURM_CPUS_PER_TASK:-8}}"
-REPLAY_CACHE_WORKER_BACKEND="${REPLAY_CACHE_WORKER_BACKEND:-process}"
+: "${SLURM_CPUS_PER_TASK:?SLURM_CPUS_PER_TASK must be set by Slurm or sbatch --cpus-per-task}"
 
 export PYTHONUNBUFFERED=1
-export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-4}"
-export OPENBLAS_NUM_THREADS="${SLURM_CPUS_PER_TASK:-4}"
-export MKL_NUM_THREADS="${SLURM_CPUS_PER_TASK:-4}"
-export NUMEXPR_NUM_THREADS="${SLURM_CPUS_PER_TASK:-4}"
+export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK}"
+export OPENBLAS_NUM_THREADS="${SLURM_CPUS_PER_TASK}"
+export MKL_NUM_THREADS="${SLURM_CPUS_PER_TASK}"
+export NUMEXPR_NUM_THREADS="${SLURM_CPUS_PER_TASK}"
 
 echo "Running on host: $(hostname)"
 echo "DATASET_DIR=${DATASET_DIR}"
-echo "REPLAY_CACHE_DIR=${REPLAY_CACHE_DIR}"
-echo "OVERWRITE_REPLAY_CACHE=${OVERWRITE_REPLAY_CACHE}"
-echo "REPLAY_CACHE_PROGRESS=${REPLAY_CACHE_PROGRESS}"
-echo "REPLAY_CACHE_WORKERS=${REPLAY_CACHE_WORKERS}"
-echo "REPLAY_CACHE_WORKER_BACKEND=${REPLAY_CACHE_WORKER_BACKEND}"
+for name in REPLAY_CACHE_DIR OVERWRITE_REPLAY_CACHE REPLAY_CACHE_PROGRESS REPLAY_CACHE_WORKERS REPLAY_CACHE_WORKER_BACKEND; do
+  if [ -n "${!name:-}" ]; then
+    echo "${name}=${!name}"
+  else
+    echo "${name}=<argparse default>"
+  fi
+done
 
 args=("${DATASET_DIR}")
-if [ -n "${REPLAY_CACHE_DIR}" ]; then
+if [ -n "${REPLAY_CACHE_DIR:-}" ]; then
   args+=(--cache_dir "${REPLAY_CACHE_DIR}")
 fi
-if [ "${OVERWRITE_REPLAY_CACHE}" != "0" ]; then
+if [ -n "${OVERWRITE_REPLAY_CACHE:-}" ] && [ "${OVERWRITE_REPLAY_CACHE}" != "0" ]; then
   args+=(--overwrite)
 fi
-if [ "${REPLAY_CACHE_PROGRESS}" = "0" ]; then
+if [ -n "${REPLAY_CACHE_PROGRESS:-}" ] && [ "${REPLAY_CACHE_PROGRESS}" = "0" ]; then
   args+=(--no_progress)
 fi
-args+=(--max_workers "${REPLAY_CACHE_WORKERS}")
-args+=(--worker_backend "${REPLAY_CACHE_WORKER_BACKEND}")
+if [ -n "${REPLAY_CACHE_WORKERS:-}" ]; then
+  args+=(--max_workers "${REPLAY_CACHE_WORKERS}")
+fi
+if [ -n "${REPLAY_CACHE_WORKER_BACKEND:-}" ]; then
+  args+=(--worker_backend "${REPLAY_CACHE_WORKER_BACKEND}")
+fi
+
+echo "materialize_replay_cache.py args: ${args[*]}"
 
 uv run python materialize_replay_cache.py "${args[@]}"

@@ -7,51 +7,113 @@ set -euo pipefail
 #   changes to the example directory, chooses a timestamped output folder,
 #   initializes the shared dataset manifest/action table, optionally submits the
 #   initial relax cache job, and submits the john Slurm array that runs
-#   collect_trajectories_cpu_array.sh. By default, it also submits a dependent
-#   john CPU job that materializes a compact replay cache for IQL.
+#   collect_trajectories_cpu_array.sh. It can also submit dependent replay-cache
+#   materialization and IQL jobs when explicitly requested.
 #
 # Should you call this directly?
 #   Yes. For the standard full run, paste the example below into your shell.
 #
-# Standard full-run example (64 total allocated CPUs: 16 tasks x 4 CPUs):
-#   START_IDX=600 END_IDX=1000 ARRAY_CONCURRENCY=16 CPUS_PER_TASK=4 \
-#     N_WORKERS=1 CHUNK_SIZE=1 \
-#     MAX_LOOP=2 GRID_SIZE=51 TRAJECTORY_TIMEOUT_SECONDS=7200 \
+# Explicit full-run example (64 total allocated CPUs: 16 tasks x 4 CPUs):
+#   N_TRAJECTORIES=1000 START_IDX=600 END_IDX=1000 \
+#     N_WORKERS=1 CHUNK_SIZE=1 ARRAY_CONCURRENCY=16 \
+#     SLURM_MAX_ARRAY_SIZE=1001 CPUS_PER_TASK=4 MEM_PER_NODE=16G \
+#     USE_INITIAL_RELAX_CACHE=0 OUTPUT_BASE_DIR=./my_dataset \
+#     DRY_RUN=0 SUBMIT_GRID_SEARCH=1 SUBMIT_REPLAY_CACHE=1 SUBMIT_IQL=0 \
+#     GRID_SEARCH_CPUS=1 GRID_SEARCH_MEM=8G \
+#     REPLAY_CACHE_CPUS=8 REPLAY_CACHE_MEM=120G \
 #     ./run_scripts/submit_collect_trajectories_cpu_array.sh
 #
-# The default skips the shared initial relax cache because the no-cache path has
-# completed a diagnostic trajectory cleanly. Set USE_INITIAL_RELAX_CACHE=1 to
-# submit a cache job and a dependent trajectory array.
+# Shell wrappers intentionally do not assign run defaults. Collection defaults
+# live in collect_trajectories_delta.py argparse; set an env var here only when
+# the shell needs it for Slurm shape/dependencies or when overriding argparse.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd -P)"
 cd "${PROJECT_DIR}"
 
-N_TRAJECTORIES="${N_TRAJECTORIES:-1000}"
-START_IDX="${START_IDX:-0}"
-END_IDX="${END_IDX:-${N_TRAJECTORIES}}"
-N_WORKERS="${N_WORKERS:-1}"
-CHUNK_SIZE="${CHUNK_SIZE:-1}"
-SEED="${SEED:-42}"
-ARRAY_CONCURRENCY="${ARRAY_CONCURRENCY:-16}"
-SLURM_MAX_ARRAY_SIZE="${SLURM_MAX_ARRAY_SIZE:-1001}"
-CPUS_PER_TASK="${CPUS_PER_TASK:-${SLURM_CPUS_PER_TASK:-4}}"
-MEM_PER_NODE="${MEM_PER_NODE:-${SLURM_MEM_PER_NODE:-16G}}"
-USE_INITIAL_RELAX_CACHE="${USE_INITIAL_RELAX_CACHE:-0}"
-MAX_LOOP="${MAX_LOOP:-2}"
-GRID_SIZE="${GRID_SIZE:-51}"
-TRAJECTORY_TIMEOUT_SECONDS="${TRAJECTORY_TIMEOUT_SECONDS:-7200}"
-DRY_RUN="${DRY_RUN:-0}"
-SUBMIT_REPLAY_CACHE="${SUBMIT_REPLAY_CACHE:-1}"
-SUBMIT_IQL="${SUBMIT_IQL:-0}"
-REPLAY_CACHE_MEM="${REPLAY_CACHE_MEM:-120G}"
-REPLAY_CACHE_CPUS="${REPLAY_CACHE_CPUS:-8}"
-REPLAY_CACHE_WORKERS="${REPLAY_CACHE_WORKERS:-${REPLAY_CACHE_CPUS}}"
-REPLAY_CACHE_WORKER_BACKEND="${REPLAY_CACHE_WORKER_BACKEND:-process}"
-OVERWRITE_REPLAY_CACHE="${OVERWRITE_REPLAY_CACHE:-0}"
-REPLAY_CACHE_DIR="${REPLAY_CACHE_DIR:-}"
-OUTPUT_BASE_DIR="${OUTPUT_BASE_DIR:-./rl_dataset_delta_sampling_maxloop=2_grid_51_cpu_array_$(date +%Y%m%d_%H%M%S)}"
-INITIAL_RELAX_CACHE="${INITIAL_RELAX_CACHE:-${OUTPUT_BASE_DIR}/initial_relax_state.json}"
+require_env() {
+  local name="$1"
+  if [ -z "${!name:-}" ]; then
+    echo "ERROR: ${name} must be set by the caller." >&2
+    exit 2
+  fi
+}
+
+add_arg() {
+  local env_name="$1"
+  local flag="$2"
+  local value="${!env_name:-}"
+  if [ -n "${value}" ]; then
+    INIT_ARGS+=("${flag}" "${value}")
+  fi
+}
+
+add_bool_arg() {
+  local env_name="$1"
+  local true_flag="$2"
+  local false_flag="$3"
+  local value="${!env_name:-}"
+  if [ -z "${value}" ]; then
+    return
+  fi
+  if [ "${value}" = "0" ] || [ "${value}" = "false" ] || [ "${value}" = "False" ]; then
+    INIT_ARGS+=("${false_flag}")
+  else
+    INIT_ARGS+=("${true_flag}")
+  fi
+}
+
+append_export() {
+  local env_name="$1"
+  local value="${!env_name:-}"
+  if [ -n "${value}" ]; then
+    EXPORT_NAMES+=("${env_name}")
+  fi
+}
+
+echo_env_or_argparse_default() {
+  local name="$1"
+  local fallback_label="$2"
+  if [ -n "${!name:-}" ]; then
+    echo "${name}=${!name}"
+  else
+    echo "${name}=<${fallback_label}>"
+  fi
+}
+
+require_env N_TRAJECTORIES
+require_env START_IDX
+require_env END_IDX
+require_env N_WORKERS
+require_env CHUNK_SIZE
+require_env ARRAY_CONCURRENCY
+require_env SLURM_MAX_ARRAY_SIZE
+require_env CPUS_PER_TASK
+require_env MEM_PER_NODE
+require_env USE_INITIAL_RELAX_CACHE
+require_env OUTPUT_BASE_DIR
+
+if [ -z "${RUN_LOG_DIR:-}" ]; then
+  output_slug="$(basename "${OUTPUT_BASE_DIR%/}")"
+  RUN_LOG_DIR="logs/${output_slug}"
+fi
+require_env RUN_LOG_DIR
+require_env DRY_RUN
+require_env SUBMIT_GRID_SEARCH
+require_env SUBMIT_REPLAY_CACHE
+require_env SUBMIT_IQL
+
+if [ "${USE_INITIAL_RELAX_CACHE}" != "0" ]; then
+  require_env INITIAL_RELAX_CACHE
+fi
+if [ "${SUBMIT_GRID_SEARCH}" != "0" ]; then
+  require_env GRID_SEARCH_CPUS
+  require_env GRID_SEARCH_MEM
+fi
+if [ "${SUBMIT_REPLAY_CACHE}" != "0" ]; then
+  require_env REPLAY_CACHE_CPUS
+  require_env REPLAY_CACHE_MEM
+fi
 
 if [ "${CHUNK_SIZE}" -lt 1 ]; then
   echo "ERROR: CHUNK_SIZE must be >= 1, got ${CHUNK_SIZE}" >&2
@@ -80,15 +142,31 @@ if [ -z "${ARRAY_SPEC:-}" ]; then
   ARRAY_SPEC="0-$(( ARRAY_TASK_COUNT - 1 ))%${ARRAY_CONCURRENCY}"
 fi
 
-export N_TRAJECTORIES START_IDX END_IDX N_WORKERS CHUNK_SIZE SEED
-export MAX_LOOP GRID_SIZE TRAJECTORY_TIMEOUT_SECONDS
-export OUTPUT_BASE_DIR INITIAL_RELAX_CACHE USE_INITIAL_RELAX_CACHE
+EXPORT_NAMES=(
+  N_TRAJECTORIES
+  START_IDX
+  END_IDX
+  N_WORKERS
+  CHUNK_SIZE
+  OUTPUT_BASE_DIR
+  USE_INITIAL_RELAX_CACHE
+)
+append_export SEED
+append_export MAX_LOOP
+append_export GRID_SIZE
+append_export TRAJECTORY_TIMEOUT_SECONDS
+append_export SAVE_REPLAY_SHARD
+append_export SAVE_FULL_ZARR
+append_export SAVE_JSON
+append_export INITIAL_RELAX_CACHE
+export "${EXPORT_NAMES[@]}"
 
 echo "OUTPUT_BASE_DIR=${OUTPUT_BASE_DIR}"
-echo "INITIAL_RELAX_CACHE=${INITIAL_RELAX_CACHE}"
+echo "RUN_LOG_DIR=${RUN_LOG_DIR}"
+echo_env_or_argparse_default INITIAL_RELAX_CACHE "argparse/default unused when cache disabled"
 echo "N_WORKERS=${N_WORKERS}"
 echo "CHUNK_SIZE=${CHUNK_SIZE}"
-echo "SEED=${SEED}"
+echo_env_or_argparse_default SEED "argparse default"
 echo "REQUESTED_TRAJECTORIES=${REQUESTED_TRAJECTORIES}"
 echo "ARRAY_TASK_COUNT=${ARRAY_TASK_COUNT}"
 echo "ARRAY_SPEC=${ARRAY_SPEC}"
@@ -97,16 +175,25 @@ echo "SLURM_MAX_ARRAY_SIZE=${SLURM_MAX_ARRAY_SIZE}"
 echo "CPUS_PER_TASK=${CPUS_PER_TASK}"
 echo "MEM_PER_NODE=${MEM_PER_NODE}"
 echo "USE_INITIAL_RELAX_CACHE=${USE_INITIAL_RELAX_CACHE}"
-echo "MAX_LOOP=${MAX_LOOP}"
-echo "GRID_SIZE=${GRID_SIZE}"
-echo "TRAJECTORY_TIMEOUT_SECONDS=${TRAJECTORY_TIMEOUT_SECONDS}"
+echo_env_or_argparse_default MAX_LOOP "argparse default"
+echo_env_or_argparse_default GRID_SIZE "argparse default"
+echo_env_or_argparse_default TRAJECTORY_TIMEOUT_SECONDS "argparse default"
+echo_env_or_argparse_default SAVE_REPLAY_SHARD "argparse default"
+echo_env_or_argparse_default SAVE_FULL_ZARR "argparse default"
+echo_env_or_argparse_default SAVE_JSON "argparse default"
+echo "SUBMIT_GRID_SEARCH=${SUBMIT_GRID_SEARCH}"
+echo_env_or_argparse_default GRID_SEARCH_MEM "unset"
+echo_env_or_argparse_default GRID_SEARCH_CPUS "unset"
+echo_env_or_argparse_default GRID_SEARCH_OUTPUT_DIR "grid search argparse default"
+echo_env_or_argparse_default GRID_SEARCH_GAMMA "grid search argparse default"
+echo_env_or_argparse_default GRID_SEARCH_TOP_K "grid search argparse default"
 echo "SUBMIT_REPLAY_CACHE=${SUBMIT_REPLAY_CACHE}"
-echo "REPLAY_CACHE_MEM=${REPLAY_CACHE_MEM}"
-echo "REPLAY_CACHE_CPUS=${REPLAY_CACHE_CPUS}"
-echo "REPLAY_CACHE_WORKERS=${REPLAY_CACHE_WORKERS}"
-echo "REPLAY_CACHE_WORKER_BACKEND=${REPLAY_CACHE_WORKER_BACKEND}"
-echo "OVERWRITE_REPLAY_CACHE=${OVERWRITE_REPLAY_CACHE}"
-echo "REPLAY_CACHE_DIR=${REPLAY_CACHE_DIR}"
+echo_env_or_argparse_default REPLAY_CACHE_MEM "unset"
+echo_env_or_argparse_default REPLAY_CACHE_CPUS "unset"
+echo_env_or_argparse_default REPLAY_CACHE_WORKERS "materialize argparse default"
+echo_env_or_argparse_default REPLAY_CACHE_WORKER_BACKEND "materialize argparse default"
+echo_env_or_argparse_default OVERWRITE_REPLAY_CACHE "materialize argparse default"
+echo_env_or_argparse_default REPLAY_CACHE_DIR "materialize argparse default"
 echo "SUBMIT_IQL=${SUBMIT_IQL}"
 echo "DRY_RUN=${DRY_RUN}"
 
@@ -116,24 +203,41 @@ if [ "${DRY_RUN}" != "0" ]; then
 fi
 
 mkdir -p "${OUTPUT_BASE_DIR}"
+mkdir -p "${RUN_LOG_DIR}"
 
 echo "Initializing shared dataset manifest/action table..."
-uv run python collect_trajectories_delta.py \
-  --n_trajectories "${N_TRAJECTORIES}" \
-  --seed "${SEED}" \
-  --start_idx "${START_IDX}" \
-  --end_idx "${END_IDX}" \
-  --n_workers 1 \
-  --output_dir "${OUTPUT_BASE_DIR}" \
-  --max_loop "${MAX_LOOP}" \
-  --grid_size "${GRID_SIZE}" \
-  --no_initial_relax_cache \
+INIT_ARGS=(
+  --n_trajectories "${N_TRAJECTORIES}"
+  --start_idx "${START_IDX}"
+  --end_idx "${END_IDX}"
+  --output_dir "${OUTPUT_BASE_DIR}"
   --init_dataset_only
+)
+add_arg SEED --seed
+add_arg MAX_LOOP --max_loop
+add_arg GRID_SIZE --grid_size
+add_arg TRAJECTORY_TIMEOUT_SECONDS --trajectory_timeout_seconds
+add_bool_arg SAVE_REPLAY_SHARD --save_replay_shard --no_save_replay_shard
+add_bool_arg SAVE_FULL_ZARR --save_full_zarr --no_save_full_zarr
+add_bool_arg SAVE_JSON --save_json --no_save_json
+if [ "${USE_INITIAL_RELAX_CACHE}" = "0" ]; then
+  INIT_ARGS+=(--no_initial_relax_cache)
+elif [ -n "${INITIAL_RELAX_CACHE:-}" ]; then
+  INIT_ARGS+=(--initial_relax_cache "${INITIAL_RELAX_CACHE}")
+fi
+echo "collect_trajectories_delta.py init args: ${INIT_ARGS[*]}"
+uv run python collect_trajectories_delta.py \
+  "${INIT_ARGS[@]}"
 
 dependency_args=()
 if [ "${USE_INITIAL_RELAX_CACHE}" != "0" ]; then
   echo "Submitting initial relax cache job..."
-  cache_jid="$(sbatch --parsable "${SCRIPT_DIR}/collect_initial_relax_cache_cpu.sh")"
+  cache_jid="$(
+    sbatch --parsable \
+      --output="${RUN_LOG_DIR}/collect_initial_relax_cache-%j.out" \
+      --error="${RUN_LOG_DIR}/collect_initial_relax_cache-%j.err" \
+      "${SCRIPT_DIR}/collect_initial_relax_cache_cpu.sh"
+  )"
   echo "cache_jid=${cache_jid}"
   dependency_args=(--dependency=afterok:${cache_jid})
 else
@@ -147,19 +251,64 @@ array_jid="$(
     --cpus-per-task="${CPUS_PER_TASK}" \
     --mem="${MEM_PER_NODE}" \
     --array="${ARRAY_SPEC}" \
+    --output="${RUN_LOG_DIR}/collect_trajectories-%A_%a.out" \
+    --error="${RUN_LOG_DIR}/collect_trajectories-%A_%a.err" \
     "${SCRIPT_DIR}/collect_trajectories_cpu_array.sh"
 )"
 echo "array_jid=${array_jid}"
 
+grid_search_jid=""
+if [ "${SUBMIT_GRID_SEARCH}" != "0" ]; then
+  echo "Submitting dependent grid-search baseline job..."
+  grid_search_export="ALL,DATASET_DIR=${OUTPUT_BASE_DIR}"
+  if [ -n "${GRID_SEARCH_OUTPUT_DIR:-}" ]; then
+    grid_search_export+=",GRID_SEARCH_OUTPUT_DIR=${GRID_SEARCH_OUTPUT_DIR}"
+  fi
+  if [ -n "${GRID_SEARCH_GAMMA:-}" ]; then
+    grid_search_export+=",GRID_SEARCH_GAMMA=${GRID_SEARCH_GAMMA}"
+  fi
+  if [ -n "${GRID_SEARCH_TOP_K:-}" ]; then
+    grid_search_export+=",GRID_SEARCH_TOP_K=${GRID_SEARCH_TOP_K}"
+  fi
+  grid_search_jid="$(
+    sbatch --parsable \
+      --dependency=afterok:${array_jid} \
+      --cpus-per-task="${GRID_SEARCH_CPUS}" \
+      --mem="${GRID_SEARCH_MEM}" \
+      --export="${grid_search_export}" \
+      --output="${RUN_LOG_DIR}/grid_search_baseline-%j.out" \
+      --error="${RUN_LOG_DIR}/grid_search_baseline-%j.err" \
+      "${SCRIPT_DIR}/grid_search_baseline.sh"
+  )"
+  echo "grid_search_jid=${grid_search_jid}"
+else
+  echo "Skipping grid-search baseline submission."
+fi
+
 replay_cache_jid=""
 if [ "${SUBMIT_REPLAY_CACHE}" != "0" ]; then
   echo "Submitting dependent replay-cache materialization job..."
+  replay_export="ALL,DATASET_DIR=${OUTPUT_BASE_DIR}"
+  if [ -n "${REPLAY_CACHE_DIR:-}" ]; then
+    replay_export+=",REPLAY_CACHE_DIR=${REPLAY_CACHE_DIR}"
+  fi
+  if [ -n "${OVERWRITE_REPLAY_CACHE:-}" ]; then
+    replay_export+=",OVERWRITE_REPLAY_CACHE=${OVERWRITE_REPLAY_CACHE}"
+  fi
+  if [ -n "${REPLAY_CACHE_WORKERS:-}" ]; then
+    replay_export+=",REPLAY_CACHE_WORKERS=${REPLAY_CACHE_WORKERS}"
+  fi
+  if [ -n "${REPLAY_CACHE_WORKER_BACKEND:-}" ]; then
+    replay_export+=",REPLAY_CACHE_WORKER_BACKEND=${REPLAY_CACHE_WORKER_BACKEND}"
+  fi
   replay_cache_jid="$(
     sbatch --parsable \
       --dependency=afterok:${array_jid} \
       --cpus-per-task="${REPLAY_CACHE_CPUS}" \
       --mem="${REPLAY_CACHE_MEM}" \
-      --export=ALL,DATASET_DIR="${OUTPUT_BASE_DIR}",REPLAY_CACHE_DIR="${REPLAY_CACHE_DIR}",OVERWRITE_REPLAY_CACHE="${OVERWRITE_REPLAY_CACHE}",REPLAY_CACHE_WORKERS="${REPLAY_CACHE_WORKERS}",REPLAY_CACHE_WORKER_BACKEND="${REPLAY_CACHE_WORKER_BACKEND}" \
+      --export="${replay_export}" \
+      --output="${RUN_LOG_DIR}/materialize_replay_cache-%j.out" \
+      --error="${RUN_LOG_DIR}/materialize_replay_cache-%j.err" \
       "${SCRIPT_DIR}/materialize_replay_cache.sh"
   )"
   echo "replay_cache_jid=${replay_cache_jid}"
@@ -173,10 +322,16 @@ if [ "${SUBMIT_IQL}" != "0" ]; then
     iql_dependency="${replay_cache_jid}"
   fi
   echo "Submitting dependent IQL training job..."
+  iql_export="ALL,DATASET_DIR=${OUTPUT_BASE_DIR}"
+  if [ -n "${REPLAY_CACHE_DIR:-}" ]; then
+    iql_export+=",REPLAY_CACHE_DIR=${REPLAY_CACHE_DIR}"
+  fi
   iql_jid="$(
     sbatch --parsable \
       --dependency=afterok:${iql_dependency} \
-      --export=ALL,DATASET_DIR="${OUTPUT_BASE_DIR}",REPLAY_CACHE_DIR="${REPLAY_CACHE_DIR}" \
+      --export="${iql_export}" \
+      --output="${RUN_LOG_DIR}/train_iql-%j.out" \
+      --error="${RUN_LOG_DIR}/train_iql-%j.err" \
       "${SCRIPT_DIR}/train_iql.sh"
   )"
   echo "iql_jid=${iql_jid}"
