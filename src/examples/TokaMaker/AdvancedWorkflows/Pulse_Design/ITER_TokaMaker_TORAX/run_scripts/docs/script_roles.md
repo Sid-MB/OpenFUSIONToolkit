@@ -1,21 +1,48 @@
 # Script Roles
 
-Use `submit_collect_trajectories_cpu_array.sh` for normal production runs.
+For **data collection** use `submit_collect_trajectories_cpu_array.sh`.
+For **evaluation** (single checkpoint) use `eval_iql_actor_cpu.sh`.
+For **evaluation** (many checkpoints in parallel) use `eval_iql_actor_cpu_batch.sh`.
 
-## Entrypoint
+See also `docs/eval_performance.md` for the compile-once / persistent-cache
+optimizations that make all eval scripts fast.
+
+## Evaluation Scripts
+
+- `eval_iql_actor_cpu.sh` _(direct use: `sbatch run_scripts/eval_iql_actor_cpu.sh`)_
+  - Evaluates **one** IQL actor checkpoint in RL closed-loop mode on `john` (CPU).
+  - Forces JAX/TORAX onto CPU; no GPU required.
+  - Configures the persistent XLA compilation cache so only the first segment
+    pays compilation cost; later segments (and later runs) load from `.jax_cache/`.
+  - Required env var: `ACTOR_CHECKPOINT=<path/to/iql_weights.pt>`
+  - GPU counterpart: `eval_iql_actor.sh` (requests `jag-standard` partition).
+
+- `eval_iql_actor_cpu_batch.sh` _(direct use: `sbatch run_scripts/eval_iql_actor_cpu_batch.sh`)_
+  - Evaluates **multiple** checkpoints in parallel on `john` (CPU).
+  - Wraps `rl/eval_batch.py`; each checkpoint runs in its own worker process.
+  - Workers share a single XLA cache directory: first worker compiles, the rest
+    load from disk.
+  - Requires `ACTOR_CHECKPOINTS="a.pt b.pt ..."` or `CHECKPOINTS_FILE=ckpts.txt`.
+  - Thread budget is automatically divided across `N_WORKERS` (default: 4).
+
+- `eval_iql_actor.sh` _(direct use: `sbatch run_scripts/eval_iql_actor.sh`)_
+  - Evaluates **one** IQL actor checkpoint on `jag-standard` (GPU).
+  - Use when GPU is intentionally needed; for normal eval prefer the CPU scripts.
+
+## Trajectory Collection Entrypoint
 
 - `submit_collect_trajectories_cpu_array.sh`
-  - Recommended launcher.
+  - Recommended launcher for data collection.
   - Creates a timestamped output directory unless `OUTPUT_BASE_DIR` is set.
   - Optionally submits the cache builder when `USE_INITIAL_RELAX_CACHE=1`.
   - Submits `collect_trajectories_cpu_array.sh`.
 
-## Slurm Workers
+## Collection Slurm Workers
 
 - `collect_trajectories_cpu_array.sh`
   - CPU array worker on `john`.
   - Maps each array task to a trajectory chunk.
-  - Usually called by the submit helper, not directly.
+  - Usually called by `submit_collect_trajectories_cpu_array.sh`, not directly.
 
 - `collect_trajectories_cpu.sh`
   - Single CPU Slurm job on `john`.

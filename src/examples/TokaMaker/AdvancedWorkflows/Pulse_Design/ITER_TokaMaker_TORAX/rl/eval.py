@@ -1,10 +1,50 @@
+"""Evaluate a trained IQL actor with TokaMaker_TORAX in RL closed-loop mode.
+
+Single-checkpoint entry point. For evaluating multiple checkpoints in parallel
+use rl/eval_batch.py (driven by run_scripts/eval_iql_actor_cpu_batch.sh).
+
+The eval reproduces the exact trajectory-collection convention: TORAX is cold-
+started from t=0 for every RL decision segment so that each observation is
+consistent with the heating schedule accumulated so far. See
+TokaMaker_TORAX._run_tx_rl_segmented and _full_agent_knots_defaults for the
+compile-once schedule fix that eliminates per-segment XLA recompilation.
+
+Performance notes:
+  - JAX compilation cache is enabled by default (see block below). The first
+    eval compiles once and writes to .jax_cache/; subsequent evals (including
+    batch workers) load from cache without recompiling.
+  - CPU is the recommended backend for this workload (see eval_iql_actor_cpu.sh).
+    The RL loop is latency-bound on a 51-point 1-D grid; GPU util spikes briefly
+    then sits idle, while CPU avoids GPU memory preallocation and kernel-launch
+    overhead.
+
+Main entry points:
+  run_actor_eval_from_config(...)   programmatic use
+  main()                            CLI (python -m rl.eval --actor_checkpoint ...)
+"""
+
 import argparse
 import io
 import json
 import os
+import time
 from contextlib import redirect_stdout
 from datetime import datetime
 from pathlib import Path
+
+# Set JAX compilation cache env vars before JAX is imported. pulse_design.fly()
+# also enables the cache at the jax.config level, but setting these env vars
+# ensures the cache dir is configured even if JAX initializes before fly() runs.
+# An explicit JAX_COMPILATION_CACHE_DIR from the environment (e.g. set by the
+# run script) takes precedence over the default here.
+os.environ.setdefault(
+    "JAX_COMPILATION_CACHE_DIR",
+    str(Path(__file__).resolve().parent.parent / ".jax_cache"),
+)
+# Cache every compile regardless of how fast or how small — the RL segments
+# reuse a single executable so any cache hit is worth it.
+os.environ.setdefault("JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS", "0")
+os.environ.setdefault("JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES", "0")
 
 import numpy as np
 import torch
@@ -136,6 +176,8 @@ def run_actor_eval_from_config(
         setup_tokamaker,
         validate_jax_backend,
     )
+    from OpenFUSIONToolkit.TokaMaker.pulse_design import RL_DECISION_TIMES
+    n_decisions = len(RL_DECISION_TIMES)
 
     output_dir = Path(output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -204,28 +246,45 @@ def run_actor_eval_from_config(
         "rl_segment_timeout_seconds": rl_segment_timeout_seconds,
         "rl_max_action_power_w": rl_max_action_power_w,
     }
+
     wandb_kwargs = {"project": project, "config": _plain(config), "reinit": True}
     if run_name:
         wandb_kwargs["name"] = run_name
     if wandb_mode:
         wandb_kwargs["mode"] = wandb_mode
     run = wandb.init(**wandb_kwargs)
+    # Tell wandb to use decision_index as the x-axis for all live per-decision
+    # charts, so the plots show "decision 0 … 20" rather than an internal counter.
+    wandb.define_metric("actor_eval_live/*", step_metric="actor_eval_live/decision_index")
 
     log_dir = output_dir / "tokamaker_torax_logs"
     log_dir.mkdir(parents=True, exist_ok=True)
 
+    # Populated just before tmtx.fly() so elapsed_s in live logs covers the
+    # full fly() duration, including the initial [0→80] cold-start.
+    _fly_t0 = [0.0]
+
     def log_rl_event(event):
+        """Stream one RL decision to wandb as it happens (live progress)."""
         if event.get("event") != "decision":
             return
         try:
+            idx = int(event["decision_index"])
+            ecrh_mw = float(event["ecrh_MW"])
+            nbi_mw = float(event["nbi_MW"])
             wandb.log({
-                "actor_eval_live/decision_index": int(event["decision_index"]),
-                "actor_eval_live/decision_t": float(event["decision_t"]),
-                "actor_eval_live/knot_t": float(event["knot_t"]),
-                "actor_eval_live/ecrh_W": float(event["ecrh_W"]),
-                "actor_eval_live/nbi_W": float(event["nbi_W"]),
-                "actor_eval_live/ecrh_MW": float(event["ecrh_MW"]),
-                "actor_eval_live/nbi_MW": float(event["nbi_MW"]),
+                # x-axis for these charts (see define_metric above)
+                "actor_eval_live/decision_index": idx,
+                # physical time this decision corresponds to
+                "actor_eval_live/decision_t_s": float(event["decision_t"]),
+                # actions chosen by the actor
+                "actor_eval_live/ecrh_MW": ecrh_mw,
+                "actor_eval_live/nbi_MW": nbi_mw,
+                "actor_eval_live/total_heating_MW": ecrh_mw + nbi_mw,
+                # wall-clock elapsed since fly() started (includes initial cold-start)
+                "actor_eval_live/elapsed_s": time.time() - _fly_t0[0],
+                # fraction of decisions completed (useful progress bar proxy)
+                "actor_eval_live/progress": (idx + 1) / n_decisions,
             })
         except Exception as exc:
             logger.warning("Could not stream RL event to wandb: %s", exc)
@@ -265,6 +324,7 @@ def run_actor_eval_from_config(
             grid_size=grid_size,
         )
         patch_initial_relax_cache_loader(tmtx)
+        _fly_t0[0] = time.time()
         tmtx.fly(
             output_mode=False,
             max_loop=max_loop,
@@ -292,31 +352,33 @@ def run_actor_eval_from_config(
             "actor_eval/reward_mean": float(np.mean(rewards)),
             "actor_eval/reward_min": float(np.min(rewards)),
             "actor_eval/reward_max": float(np.max(rewards)),
-            "actor_eval/n_actions": len(actions),
+            "actor_eval/n_decisions": len(actions),
         }
-        for key in (
-            "Q_flattop_avg",
-            "flux_consumed_Wb",
-            "q95_min",
-            "beta_N_max",
-            "f_GW_max",
-        ):
-            if key in summary:
-                metrics[f"actor_eval/{key}"] = float(summary[key])
+        # All physics figures of merit returned by summary() — Q, flux, stability,
+        # confinement, temperatures, density, heating. Log all non-None values so
+        # wandb captures the full physics outcome without a manual keep-list.
+        for key, val in summary.items():
+            if val is not None:
+                metrics[f"actor_eval/{key}"] = float(val)
 
-        action_columns = ["decision_t", "knot_t", "ecrh_W", "nbi_W", "ecrh_MW", "nbi_MW"]
+        # Action table: one row per RL decision (human-readable MW columns only).
+        action_columns = ["decision_t", "knot_t", "ecrh_MW", "nbi_MW"]
         action_table = wandb.Table(
             columns=action_columns,
-            data=[[row[column] for column in action_columns] for row in actions],
+            data=[[row[col] for col in action_columns] for row in actions],
         )
+        # Reward table: one row per decision with physical time for context.
         reward_table = wandb.Table(
-            columns=["decision_index", "reward"],
-            data=[[idx, float(reward)] for idx, reward in enumerate(rewards)],
+            columns=["decision_index", "decision_t_s", "reward"],
+            data=[
+                [idx, float(RL_DECISION_TIMES[idx]), float(r)]
+                for idx, r in enumerate(rewards)
+            ],
         )
         wandb.log({
             **metrics,
             "actor_eval/actions": action_table,
-            "actor_eval/rewards": reward_table,
+            "actor_eval/rewards_per_decision": reward_table,
         })
         run.summary.update(metrics)
 

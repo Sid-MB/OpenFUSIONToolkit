@@ -2230,6 +2230,32 @@ class TokaMaker_TORAX:
         return ecrh_w, nbi_w
 
     @staticmethod
+    def _full_agent_knots_defaults():
+        r'''! Agent-knot dict pre-seeded with default actions at every decision knot.
+
+                Returns {knot_t: (ecrh_W, nbi_W)} for every t in RL_DECISION_TIMES, with
+                values from the default schedule. Seeding all knot times up front keeps the
+                merged heating-schedule arrays a constant length across every cold-start
+                segment, so the jitted TORAX step_fn keeps a stable input shape and compiles
+                once instead of recompiling each segment.
+
+                This does not change results: within a segment integrating [0, t_seg_end],
+                every still-undecided knot sits at a time strictly greater than t_seg_end
+                (the next decision's knot), so TORAX never interpolates it inside the
+                integrated window. As decisions are made the corresponding entries are
+                overwritten with the actor's actions, and the final [0, t_final] run has all
+                knots decided.
+
+                @return Mapping knot time (s) -> (ecrh_W, nbi_W) for all decision knots.
+
+        '''
+        knots = {}
+        for t_dec in RL_DECISION_TIMES:
+            knot_t = TokaMaker_TORAX._rl_knot_time_for_decision(t_dec)
+            knots[knot_t] = tuple(TokaMaker_TORAX._rl_default_action_w_at_time(knot_t))
+        return knots
+
+    @staticmethod
     def _rl_action_record(decision_t, knot_t, action_w):
         r'''! RL action log row with watts internally and MW for presentation.'''
         ecrh_w = float(action_w[0])
@@ -2291,7 +2317,12 @@ class TokaMaker_TORAX:
             self._print('  TORAX RL: baseline heating fallback (no trained actor)')
 
         self._rl_actions_history = []
-        agent_knots = {}
+        # Pre-seed every decision knot with default actions so the merged heating
+        # schedule keeps a constant length across all cold-start segments (TORAX
+        # compiles once instead of recompiling per segment). Undecided future knots
+        # lie beyond each segment's t_end and so do not affect its result; they are
+        # overwritten as the actor makes decisions. See _full_agent_knots_defaults.
+        agent_knots = self._full_agent_knots_defaults()
         t_final = float(self._t_final)
 
         ecrh, nbi = self._merge_rl_heating_schedules(agent_knots)
@@ -3660,13 +3691,33 @@ class TokaMaker_TORAX:
         self._loop0_tm_stride = 2 if self._fly_loop0 else 1
         self._loop0_tx_face_points = int(DEFAULT_LOOP0_TX_FACE_POINTS)
 
-        # Disable JAX's persistent XLA compilation cache before any TORAX/JAX JIT
-        # compilation occurs, was causing semaphore leaks.
+        # Configure JAX's persistent XLA compilation cache before any TORAX/JAX JIT
+        # compilation occurs. The RL cold-start loop uses a fixed-length heating
+        # schedule (see _full_agent_knots_defaults), so every segment compiles to an
+        # identical XLA executable; TORAX re-jits per run_simulation call, so without
+        # a cache each segment recompiles from scratch (~tens of seconds each). The
+        # persistent cache lets the first compile be written once and every later
+        # segment (and other processes/runs, e.g. batch eval workers) load it from
+        # disk instead of recompiling.
+        #
+        # The cache was previously disabled because it could leak semaphores under
+        # heavy multiprocessing; those warnings are emitted by the resource_tracker
+        # at interpreter exit and are avoided by callers that os._exit (collect and
+        # batch eval already do). Opt out with OFT_DISABLE_JAX_COMPILE_CACHE=1.
         try:
             import jax
-            jax.config.update('jax_enable_compilation_cache', False)
+            if os.environ.get('OFT_DISABLE_JAX_COMPILE_CACHE', '0') == '1':
+                jax.config.update('jax_enable_compilation_cache', False)
+            else:
+                _jax_cache_dir = os.environ.get('JAX_COMPILATION_CACHE_DIR') or \
+                    os.path.join(os.getcwd(), '.jax_cache')
+                jax.config.update('jax_enable_compilation_cache', True)
+                jax.config.update('jax_compilation_cache_dir', _jax_cache_dir)
+                # Cache even fast compiles / small entries so every segment is reused.
+                jax.config.update('jax_persistent_cache_min_compile_time_secs', 0.0)
+                jax.config.update('jax_persistent_cache_min_entry_size_bytes', 0)
         except Exception:
-            pass  # older JAX versions may not have this config key
+            pass  # older JAX versions may not have these config keys
 
         if output_mode is True:
             output_mode = 'normal'

@@ -1,172 +1,194 @@
-# TokaMaker/TORAX Run Scripts
+# TokaMaker/TORAX RL Pipeline
 
-Quick reference for launching trajectory collection from the
-`ITER_TokaMaker_TORAX` example directory.
+Pipeline for training an offline RL (IQL) policy to control plasma heating in
+a TORAX/TokaMaker coupled simulation.
 
-## Standard Run
+```
+collect trajectories  →  materialize replay cache  →  train IQL  →  evaluate
+```
 
-Use the CPU array submit helper for production runs:
+All scripts are run from the project root (`ITER_TokaMaker_TORAX/`).
+
+---
+
+## Scripts and Python Files
+
+| File | Purpose |
+|---|---|
+| `submit_collect_trajectories_cpu_array.sh` | **Main launcher.** Submits collection + optional dependent jobs |
+| `collect_trajectories_cpu_array.sh` | Slurm array worker: runs trajectory chunks on `john` (CPU) |
+| `collect_trajectories_cpu.sh` | Single CPU collection job (diagnostics only) |
+| `collect_trajectories_gpu.sh` | Single GPU collection job (`jag-standard`, benchmarking only) |
+| `collect_initial_relax_cache_cpu.sh` | Builds the shared TORAX initial-relax cache on `john` |
+| `collect_initial_relax_cache_gpu.sh` | Builds the shared TORAX initial-relax cache on GPU |
+| `grid_search_baseline.sh` | Ranks completed trajectories by return; writes leaderboard |
+| `materialize_replay_cache.sh` | Aggregates trajectory shards into a flat IQL replay cache |
+| `train_iql.sh` | Trains an IQL actor on the replay cache |
+| `eval_iql_actor_cpu.sh` | Evaluates **one** IQL checkpoint in closed-loop on `john` (CPU) |
+| `eval_iql_actor_cpu_batch.sh` | Evaluates **multiple** checkpoints in parallel on `john` (CPU) |
+| `eval_iql_actor.sh` | Evaluates one IQL checkpoint on `jag-standard` (GPU; use CPU scripts instead) |
+
+Python entry points: `collect_trajectories_delta.py`, `IQL.py`,
+`materialize_replay_cache.py`, `rl/eval.py`, `rl/eval_batch.py`.
+
+---
+
+## Run the Full Pipeline
 
 ```bash
-N_TRAJECTORIES=1000 START_IDX=600 END_IDX=1000 \
-N_WORKERS=1 CHUNK_SIZE=1 ARRAY_CONCURRENCY=16 SLURM_MAX_ARRAY_SIZE=1001 \
-CPUS_PER_TASK=4 MEM_PER_NODE=128G \
-USE_INITIAL_RELAX_CACHE=0 OUTPUT_BASE_DIR=./rl_dataset_delta_sampling_run \
+# 1. Collect trajectories + grid-search baseline + replay cache + IQL training
+N_TRAJECTORIES=1000 START_IDX=0 END_IDX=1000 \
+CPUS_PER_TASK=4 MEM_PER_NODE=128G ARRAY_CONCURRENCY=16 \
+OUTPUT_BASE_DIR=./run_$(date +%Y%m%d) \
+DRY_RUN=0 SUBMIT_GRID_SEARCH=1 SUBMIT_REPLAY_CACHE=1 SUBMIT_IQL=1 \
+  ./run_scripts/submit_collect_trajectories_cpu_array.sh
+
+# 2. Evaluate the trained actor (after train_iql.sh finishes)
+ACTOR_CHECKPOINT=./run_<date>/iql/iql_weights.pt \
+  sbatch run_scripts/eval_iql_actor_cpu.sh
+```
+
+Common parameters to tune:
+- `MAX_LOOP=2` — TORAX/TokaMaker coupling passes per trajectory (higher = slower, more accurate)
+- `GRID_SIZE=51` — radial grid resolution (11 for smoke tests, 51 for production)
+- `ARRAY_CONCURRENCY=16` — max parallel Slurm tasks (× `CPUS_PER_TASK` = total CPUs used)
+- `N_TRAJECTORIES` / `START_IDX` / `END_IDX` — trajectory index range to collect
+
+---
+
+## Run Just Parts
+
+### Collect only (no IQL)
+
+```bash
+N_TRAJECTORIES=1000 START_IDX=0 END_IDX=1000 \
+ARRAY_CONCURRENCY=16 \
+OUTPUT_BASE_DIR=./my_dataset \
 DRY_RUN=0 SUBMIT_GRID_SEARCH=1 SUBMIT_REPLAY_CACHE=1 SUBMIT_IQL=0 \
-GRID_SEARCH_CPUS=1 GRID_SEARCH_MEM=128G \
-REPLAY_CACHE_CPUS=8 REPLAY_CACHE_MEM=128G \
   ./run_scripts/submit_collect_trajectories_cpu_array.sh
 ```
 
-Shell wrappers intentionally do not assign run defaults. Collection defaults
-live in `collect_trajectories_delta.py` argparse; set an env var only when the
-wrapper needs it for Slurm shape/dependencies or when overriding argparse.
-
-The command above runs trajectories `600..999` on `john` with:
-
-- `1` trajectory worker per Slurm task
-- `4` CPUs and `128G` RAM per task
-- argparse defaults for omitted collection knobs like `MAX_LOOP`, `GRID_SIZE`,
-  seed, timeout, and save formats
-- no shared initial relax cache because `USE_INITIAL_RELAX_CACHE=0` is explicit
-- at most `16` tasks running at once, for `64` total allocated CPUs
-- one shared `run_manifest.json` and `all_actions.npy` for the whole dataset
-- compact per-trajectory `replay_shards/trajectory_<run_id>.npz` outputs from
-  the argparse save-format default
-- a dependent `john` job that writes the best-observed grid-search baseline
-  under `<OUTPUT_BASE_DIR>/grid_search/`
-- a dependent `john` job that builds `<OUTPUT_BASE_DIR>/replay_cache/` for IQL
-
-For future full production runs targeting 64 total CPUs, keep the same
-`ARRAY_CONCURRENCY=16` and `CPUS_PER_TASK=4` shape. The submit helper derives
-the array range from `START_IDX`, `END_IDX`, and `CHUNK_SIZE`.
-
-Keep `N_WORKERS=1`; scale with Slurm array concurrency instead.
-The cluster reports `MaxArraySize=1001`, so valid array task IDs are `0..1000`.
-If a run would need more than 1001 array tasks, increase `CHUNK_SIZE` or split
-the range into multiple submissions.
-
-## Useful Overrides
+### Train IQL only (replay cache already exists)
 
 ```bash
-MAX_LOOP=3                         # extra TORAX/TokaMaker coupling pass
-TRAJECTORY_TIMEOUT_SECONDS=14400    # per-trajectory wall-time limit
-USE_INITIAL_RELAX_CACHE=1           # opt into cache build + dependency
-SUBMIT_GRID_SEARCH=0                # skip best-observed baseline ranking
-GRID_SEARCH_MEM=128G                # RAM for grid-search baseline job (default 128G)
-GRID_SEARCH_CPUS=1                  # CPUs for grid-search baseline job (default 1)
-GRID_SEARCH_OUTPUT_DIR=./my_grid    # override baseline output directory
-GRID_SEARCH_TOP_K=20                # number of top trajectories in summary
-RUN_LOG_DIR=logs/my_dataset_run     # override grouped Slurm log directory
-SUBMIT_REPLAY_CACHE=0               # skip compact IQL replay-cache build
-SAVE_REPLAY_SHARD=1                 # write compact per-trajectory .npz shards
-SAVE_FULL_ZARR=1                    # also write rich full TORAX Zarr traces
-SAVE_JSON=1                         # also write legacy compact JSON files
-REPLAY_CACHE_MEM=128G               # RAM for replay-cache materialization (default 128G)
-REPLAY_CACHE_CPUS=8                 # parallel Zarr readers for replay cache (default 8)
-REPLAY_CACHE_WORKERS=8              # override reader count independently
-REPLAY_CACHE_WORKER_BACKEND=process # process or thread workers
-REPLAY_CACHE_PROGRESS=0             # disable tqdm progress in replay-cache logs
-SUBMIT_IQL=1                        # train IQL after replay cache is ready
-DRY_RUN=1                           # print derived array shape without submitting
+DATASET_DIR=./my_dataset \
+  sbatch run_scripts/train_iql.sh
 ```
 
-Example small diagnostic:
+### Evaluate only (checkpoint already exists)
+
+Single checkpoint:
+```bash
+ACTOR_CHECKPOINT=./my_run/iql/iql_weights.pt \
+DATASET_DIR=./my_dataset \
+  sbatch run_scripts/eval_iql_actor_cpu.sh
+```
+
+Multiple checkpoints in parallel (one process per checkpoint, `john` CPU):
+```bash
+ACTOR_CHECKPOINTS="run_a/iql_weights.pt run_b/checkpoint_step_50000.pt" \
+N_WORKERS=2 \
+  sbatch run_scripts/eval_iql_actor_cpu_batch.sh
+```
+
+Or from a file (`#` lines are comments):
+```bash
+CHECKPOINTS_FILE=my_checkpoints.txt N_WORKERS=4 \
+  sbatch run_scripts/eval_iql_actor_cpu_batch.sh
+```
+
+### Changed the reward metric — what to re-run
+
+Rewards are computed by `compute_reward()` in `collect_trajectories_delta.py`
+and **baked into `replay_shards/*.npz` at collection time**. The replay cache
+materializer only aggregates those saved values; it does not recompute them.
+
+**You must recollect trajectories** to apply a new reward function.
+If you saved full Zarr traces (`SAVE_FULL_ZARR=1`), you can recompute rewards
+from those without re-running the simulator — but that requires a custom
+extraction step (not yet scripted).
+
+```bash
+# 1. Recollect (or recompute from Zarr) with the new reward logic
+N_TRAJECTORIES=1000 START_IDX=0 END_IDX=1000 \
+ARRAY_CONCURRENCY=16 \
+OUTPUT_BASE_DIR=./my_dataset_new_reward \
+DRY_RUN=0 SUBMIT_REPLAY_CACHE=1 SUBMIT_IQL=1 \
+  ./run_scripts/submit_collect_trajectories_cpu_array.sh
+
+# 2. (If replay cache was not auto-submitted) Materialize it:
+DATASET_DIR=./my_dataset_new_reward OVERWRITE_REPLAY_CACHE=1 \
+  sbatch run_scripts/materialize_replay_cache.sh
+
+# 3. Retrain IQL
+DATASET_DIR=./my_dataset_new_reward \
+  sbatch run_scripts/train_iql.sh
+
+# 4. Re-evaluate
+ACTOR_CHECKPOINT=./my_dataset_new_reward/iql/iql_weights.pt \
+  sbatch run_scripts/eval_iql_actor_cpu.sh
+```
+
+### Smoke test (5 trajectories, quick end-to-end check)
 
 ```bash
 N_TRAJECTORIES=5 START_IDX=0 END_IDX=5 \
-N_WORKERS=1 CHUNK_SIZE=1 ARRAY_CONCURRENCY=5 SLURM_MAX_ARRAY_SIZE=1001 \
-CPUS_PER_TASK=4 MEM_PER_NODE=128G \
-USE_INITIAL_RELAX_CACHE=0 OUTPUT_BASE_DIR=./rl_dataset_smoke_5 \
+CPUS_PER_TASK=4 MEM_PER_NODE=128G ARRAY_CONCURRENCY=5 \
+GRID_SIZE=11 MAX_LOOP=1 \
+OUTPUT_BASE_DIR=./smoke_test \
 DRY_RUN=0 SUBMIT_GRID_SEARCH=1 SUBMIT_REPLAY_CACHE=1 SUBMIT_IQL=1 \
-GRID_SEARCH_CPUS=1 GRID_SEARCH_MEM=128G \
-REPLAY_CACHE_CPUS=4 REPLAY_CACHE_MEM=128G \
   ./run_scripts/submit_collect_trajectories_cpu_array.sh
 ```
 
-## Outputs And Logs
+---
 
-The submit helper prints `OUTPUT_BASE_DIR`. Chunk outputs land under:
+## Outputs
 
-```text
-<OUTPUT_BASE_DIR>/replay_shards/trajectory_<run_id>.npz
+### Collection (`submit_collect_trajectories_cpu_array.sh`)
+
+```
+<OUTPUT_BASE_DIR>/
+  run_manifest.json              # dataset metadata (seed, grid, MAX_LOOP)
+  replay_shards/*.npz            # per-trajectory data (states, actions, rewards)
+  grid_search/                   # best-observed baseline (SUBMIT_GRID_SEARCH=1)
+    grid_search_leaderboard.csv
+    best_trajectory.json
+  replay_cache/                  # flat IQL training data (SUBMIT_REPLAY_CACHE=1)
+    states/actions/rewards/...npy
+  failures/failed_run_*.json     # error details for any failed trajectories
+  full_trajectories/*.zarr       # rich TORAX traces (SAVE_FULL_ZARR=1 only)
 ```
 
-The dataset root also contains:
+### IQL Training (`train_iql.sh`)
 
-```text
-<OUTPUT_BASE_DIR>/run_manifest.json
-<OUTPUT_BASE_DIR>/all_actions.npy
-<OUTPUT_BASE_DIR>/replay_shards/trajectory_<run_id>.npz
-<OUTPUT_BASE_DIR>/full_trajectories/trajectory_<run_id>.zarr   # only with SAVE_FULL_ZARR=1
-<OUTPUT_BASE_DIR>/trajectories/trajectory_<run_id>.json        # only with SAVE_JSON=1
-<OUTPUT_BASE_DIR>/failures/failed_run_<run_id>.json
-<OUTPUT_BASE_DIR>/chunks/chunk_<task>_<start>_<end>/task_status.json
-<OUTPUT_BASE_DIR>/chunks/chunk_<task>_<start>_<end>/tokamaker_torax_logs/
-<OUTPUT_BASE_DIR>/grid_search/grid_search_leaderboard.csv
-<OUTPUT_BASE_DIR>/grid_search/best_trajectory.json
-<OUTPUT_BASE_DIR>/grid_search/grid_search_summary.json
-<OUTPUT_BASE_DIR>/replay_cache/{states,actions,next_states,rewards,dones}.npy
-<OUTPUT_BASE_DIR>/replay_cache/replay_manifest.json
+```
+<DATASET_DIR>/iql/
+  iql_weights.pt                 # final trained actor
+  checkpoint_step_*.pt           # periodic checkpoints
 ```
 
-Array workers validate `run_manifest.json` and `all_actions.npy` before doing
-simulation work. If a worker sees a seed, trajectory count, sampler, grid, or
-`MAX_LOOP` mismatch, it exits nonzero immediately.
+Also logged to wandb (`iql-training` project by default).
 
-Slurm logs for a submit-helper run land together under `RUN_LOG_DIR`, which
-defaults to `logs/<basename-of-OUTPUT_BASE_DIR>/`:
+### Evaluation (`eval_iql_actor_cpu.sh` / `eval_iql_actor_cpu_batch.sh`)
 
-```text
-logs/<run>/collect_trajectories-<array_job>_<task>.out
-logs/<run>/collect_trajectories-<array_job>_<task>.err
-logs/<run>/grid_search_baseline-<job>.out
-logs/<run>/materialize_replay_cache-<job>.out
-logs/<run>/train_iql-<job>.out
+```
+<OUTPUT_DIR>/
+  eval_results.json              # per-loop metrics (Ip, Q_fusion, beta_N, ...)
+  actions_history.json           # RL action sequence chosen by the actor
+  tokamaker_torax_logs/          # TORAX solver output
 ```
 
-## Grid Search Baseline
+Batch eval also writes `<OUTPUT_ROOT>/batch_eval_summary.json` with status and
+elapsed time for every checkpoint.
 
-The submit helper can launch a dependent `john` job after collection with
-`SUBMIT_GRID_SEARCH=1`. The baseline ranks completed trajectories by
-`return_sum` and reads the current compact replay shards, plus legacy JSON or
-full Zarr datasets.
+Results are logged to wandb alongside collection and training.
 
-Run it manually with:
-
-```bash
-DATASET_DIR=rl_dataset_delta_sampling_run \
-  sbatch run_scripts/grid_search_baseline.sh
-```
-
-## Replay Cache For IQL
-
-IQL prefers a compact replay cache when `<dataset>/replay_cache/` exists. Build
-or rebuild it manually with:
-
-```bash
-uv run python materialize_replay_cache.py \
-  rl_dataset_delta_sampling_maxloop=2_grid_51_full_zarr_2000_20260527_123853 \
-  --overwrite \
-  --max_workers 8 \
-  --worker_backend process
-```
-
-For Slurm, use:
-
-```bash
-DATASET_DIR=rl_dataset_delta_sampling_maxloop=2_grid_51_full_zarr_2000_20260527_123853 \
-  OVERWRITE_REPLAY_CACHE=1 \
-  sbatch run_scripts/materialize_replay_cache.sh
-```
-
-The cache is a derived training artifact. The preferred source is the compact
-per-trajectory replay shards, which avoids reopening full Zarr stores for IQL.
-Use `SAVE_FULL_ZARR=1` on selected runs when you also need the rich archival or
-debug traces.
+---
 
 ## More Details
 
-- [Script roles](docs/script_roles.md)
-- [Optional shared relax cache and GPU wrappers](docs/cache_and_gpu.md)
+- [Script roles and when to use each](docs/script_roles.md)
+- [Collection options and full output tree](docs/collection_options.md)
+- [Eval performance: compile-once, cache, CPU, batch](docs/eval_performance.md)
+- [Shared relax cache and GPU wrappers](docs/cache_and_gpu.md)
 - [Architecture-specific OFT builds](docs/oft_builds.md)

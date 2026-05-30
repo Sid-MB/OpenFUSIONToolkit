@@ -1,6 +1,7 @@
 /logs/
 /rl_dataset/
 /rl_dataset_*/
+/checkpoints_*.txt
 /initial_relax_cache/
 /*.prof
 /*.log
@@ -8,3 +9,5 @@
 /wandb/
 
 /timing_test*/
+slurm-*.out
+/.jax_cache/
