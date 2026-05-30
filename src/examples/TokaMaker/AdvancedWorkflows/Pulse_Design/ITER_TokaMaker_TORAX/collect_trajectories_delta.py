@@ -72,13 +72,11 @@ def sample_actions_lhs(n_trajectories, seed=42):
 
     max_delta controls the maximum change per 20s step in watts.
     """
-    ECRH_DEFAULT = 20.0e6  # starting value at t=100 (end of fixed ramp-up)
-    NBI_DEFAULT  = 33.0e6
+    ECRH_DEFAULT = 20.0e6
+    NBI_DEFAULT  = 16.5e6  # moved from 33 MW to midpoint
 
-    # Max change per step — tune these to control smoothness
-    # 2 MW per 20s step means at most 40 MW total swing over flattop
-    ECRH_DELTA_MAX = 2.0e6
-    NBI_DELTA_MAX  = 2.0e6
+    ECRH_DELTA_MAX = 8.0e6   # was 2.0e6
+    NBI_DELTA_MAX  = 8.0e6   # was 2.0e6
 
     n_decision = len(DECISION_TIMES)  # 21
     n_params = n_decision * 2
