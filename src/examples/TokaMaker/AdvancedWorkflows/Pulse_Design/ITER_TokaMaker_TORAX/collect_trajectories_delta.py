@@ -19,6 +19,7 @@ Usage:
 Output layout:
     output_dir/run_manifest.json
     output_dir/all_actions.npy
+    output_dir/replay_shards/trajectory_<run_id>.npz
     output_dir/full_trajectories/trajectory_<run_id>.zarr
     output_dir/trajectories/trajectory_<run_id>.json  # optional, with --save_json
     output_dir/failures/failed_run_<run_id>.json
@@ -51,8 +52,10 @@ from dataloader import (
     require_dataset,
     save_failure_atomic,
     save_full_trajectory_zarr_atomic,
+    save_replay_shard_atomic,
     save_trajectory_atomic,
     full_trajectory_zarr_path,
+    replay_shard_path,
     trajectory_path,
 )
 
@@ -148,8 +151,8 @@ def resolve_seed_eqdsk_paths(cwd):
     )
 
 
-def preflight_required_inputs(cwd, eqdsk_list, initial_relax_cache=None,
-                              require_initial_relax_cache=False):
+def preflight_required_inputs(cwd, eqdsk_list, initial_relax_cache,
+                              require_initial_relax_cache):
     require_readable_file(os.path.join(cwd, 'ITER_mesh.h5'), 'TokaMaker mesh')
     for i, eqdsk_path in enumerate(eqdsk_list):
         require_readable_file(eqdsk_path, f'seed EQDSK i={i}')
@@ -206,7 +209,7 @@ def nvidia_gpu_visible():
     return result.returncode == 0 and 'GPU ' in result.stdout
 
 
-def validate_jax_backend(require_cuda_on_gpu=True):
+def validate_jax_backend(require_cuda_on_gpu):
     """
     Fail fast on GPU nodes if JAX only initialized a CPU backend.
 
@@ -250,7 +253,7 @@ def worker_init(cwd, require_cuda_on_gpu):
 
 # ── Latin Hypercube Sampling ──────────────────────────────────────────────────
 
-def sample_actions_lhs(n_trajectories, seed=42):
+def sample_actions_lhs(n_trajectories, seed):
     """
     LHS samples delta (change per step) rather than absolute values.
     This enforces smoothness — large jumps between steps are impossible
@@ -491,7 +494,7 @@ def extract_state(tmtx, t_start, t_end, current_action):
 
 # ── Reward computation ────────────────────────────────────────────────────────
 
-def compute_reward(tmtx, t_start, t_end, is_terminal=False):
+def compute_reward(tmtx, t_start, t_end, is_terminal):
     """
     Compute reward for the interval [t_start, t_end].
 
@@ -541,7 +544,7 @@ def compute_reward(tmtx, t_start, t_end, is_terminal=False):
     return reward
 
 
-def iter_numeric_values(value, path='value'):
+def iter_numeric_values(value, path):
     """Yield (path, value) for numeric leaves in nested lists/dicts."""
     if isinstance(value, dict):
         for key, item in value.items():
@@ -660,7 +663,7 @@ def setup_tokamaker(cwd):
 
 
 def configure_tmtx(mygs, action_row, eqdsk_list, eqtimes, coil_bounds, x_points,
-                   Ip_targets, ne_init, Te_init, psi_sample, grid_size=51):
+                   Ip_targets, ne_init, Te_init, psi_sample, grid_size):
     """Configure one TokaMaker_TORAX object for a trajectory."""
     from OpenFUSIONToolkit.TokaMaker.pulse_design import TokaMaker_TORAX
     import numpy as np
@@ -725,7 +728,7 @@ def configure_tmtx(mygs, action_row, eqdsk_list, eqtimes, coil_bounds, x_points,
 
 def build_initial_relax_cache(mygs, action_row, cache_path, eqdsk_list, eqtimes,
                               coil_bounds, x_points, Ip_targets, ne_init,
-                              Te_init, psi_sample, log_dir=None, grid_size=51):
+                              Te_init, psi_sample, log_dir, grid_size):
     """Run the shared initial TORAX relax once and save it for all trajectories."""
     if os.path.exists(cache_path):
         print(f'Using existing initial relax cache: {cache_path}')
@@ -773,9 +776,9 @@ def patch_initial_relax_cache_loader(tmtx):
 def run_single_trajectory(mygs, action_row, run_id, cwd, eqdsk_list, eqtimes,
                            coil_bounds, x_points, diverted_isoflux_pts,
                            Ip_targets, ne_init, Te_init, psi_sample,
-                           initial_relax_cache=None, log_dir=None,
-                           max_loop=2, grid_size=51,
-                           trajectory_timeout_seconds=0):
+                           initial_relax_cache, log_dir,
+                           max_loop, grid_size,
+                           trajectory_timeout_seconds):
     """
     Configure and run one TokaMaker_TORAX simulation with the given action_row.
     Returns (transitions, summary, data_tree), or (None, None, None) if simulation failed.
@@ -855,8 +858,13 @@ def save_trajectory(transitions, summary, action_row, run_id, dataset_dir):
 
 
 def save_trajectory_outputs(transitions, summary, action_row, run_id, dataset_dir,
-                            data_tree=None, save_full_zarr=True, save_json=False):
+                            data_tree, save_replay_shard,
+                            save_full_zarr, save_json):
     payload = trajectory_payload(transitions, summary, action_row, run_id)
+    shard_path = None
+    if save_replay_shard:
+        shard_path = save_replay_shard_atomic(dataset_dir, payload)
+
     json_path = None
     if save_json:
         json_path = save_trajectory_atomic(dataset_dir, payload)
@@ -872,7 +880,7 @@ def save_trajectory_outputs(transitions, summary, action_row, run_id, dataset_di
             json_path=json_path,
         )
 
-    paths = [str(path) for path in (json_path, zarr_path) if path is not None]
+    paths = [str(path) for path in (shard_path, json_path, zarr_path) if path is not None]
     if not paths:
         raise ValueError('At least one trajectory output format must be enabled')
     return ' | '.join(paths)
@@ -881,12 +889,19 @@ def save_trajectory_outputs(transitions, summary, action_row, run_id, dataset_di
 def worker_fn(run_id, all_actions, eqdsk_list, eqtimes, coil_bounds,
               x_points, diverted_isoflux_pts, Ip_targets, ne_init, Te_init,
               psi_sample, dataset_dir, initial_relax_cache, log_dir,
-              max_loop, grid_size, trajectory_timeout_seconds, save_full_zarr,
-              save_json):
+              max_loop, grid_size, trajectory_timeout_seconds, save_replay_shard,
+              save_full_zarr, save_json):
     """Run and save one trajectory using this worker's initialized TokaMaker."""
     global _mygs
+    worker_t0 = time.time()
 
     try:
+        if save_replay_shard:
+            existing_shard_path = replay_shard_path(dataset_dir, run_id)
+            if existing_shard_path.exists():
+                raise FileExistsError(
+                    f'replay shard output already exists before run starts: {existing_shard_path}'
+                )
         if save_json:
             existing_path = trajectory_path(dataset_dir, run_id)
             if existing_path.exists():
@@ -903,6 +918,7 @@ def worker_fn(run_id, all_actions, eqdsk_list, eqtimes, coil_bounds,
         action_row = all_actions[run_id]
         cwd = os.getcwd()
 
+        sim_t0 = time.time()
         transitions, summary, data_tree = run_single_trajectory(
             _mygs, action_row, run_id, cwd, eqdsk_list, eqtimes,
             coil_bounds, x_points, diverted_isoflux_pts,
@@ -913,22 +929,41 @@ def worker_fn(run_id, all_actions, eqdsk_list, eqtimes, coil_bounds,
             grid_size=grid_size,
             trajectory_timeout_seconds=trajectory_timeout_seconds,
         )
+        sim_elapsed = time.time() - sim_t0
 
         if transitions is not None:
+            save_t0 = time.time()
             path = save_trajectory_outputs(
                 transitions, summary, action_row, run_id, dataset_dir,
                 data_tree=data_tree,
+                save_replay_shard=save_replay_shard,
                 save_full_zarr=save_full_zarr,
                 save_json=save_json,
             )
-            return run_id, True, path
+            save_elapsed = time.time() - save_t0
+            return run_id, True, {
+                'path': path,
+                'simulation_elapsed_s': sim_elapsed,
+                'save_elapsed_s': save_elapsed,
+                'total_elapsed_s': time.time() - worker_t0,
+            }
 
-        return run_id, False, 'simulation returned None'
+        return run_id, False, {
+            'error': 'simulation returned None',
+            'simulation_elapsed_s': sim_elapsed,
+            'save_elapsed_s': 0.0,
+            'total_elapsed_s': time.time() - worker_t0,
+        }
 
     except FATAL_EXCEPTIONS:
         raise
     except Exception as e:
-        return run_id, False, str(e)
+        return run_id, False, {
+            'error': str(e),
+            'simulation_elapsed_s': None,
+            'save_elapsed_s': None,
+            'total_elapsed_s': time.time() - worker_t0,
+        }
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
@@ -964,11 +999,16 @@ if __name__ == '__main__':
                         help='TORAX radial grid size passed to set_TORAX_grid')
     parser.add_argument('--trajectory_timeout_seconds', type=int, default=0,
                         help='Abort a single trajectory after this many seconds; 0 disables timeout')
-    parser.add_argument('--save_full_zarr', dest='save_full_zarr', action='store_true',
+    parser.add_argument('--save_replay_shard', dest='save_replay_shard', action='store_true',
                         default=True,
-                        help='Save full TORAX scalars/profiles and reward components as one Zarr store per trajectory (default)')
+                        help='Save compact per-trajectory replay_shards/trajectory_*.npz output (default)')
+    parser.add_argument('--no_save_replay_shard', dest='save_replay_shard', action='store_false',
+                        help='Disable compact replay shard output')
+    parser.add_argument('--save_full_zarr', dest='save_full_zarr', action='store_true',
+                        default=False,
+                        help='Also save full TORAX scalars/profiles as one Zarr store per trajectory')
     parser.add_argument('--no_save_full_zarr', dest='save_full_zarr', action='store_false',
-                        help='Disable per-trajectory full Zarr output')
+                        help='Disable per-trajectory full Zarr output (default)')
     parser.add_argument('--save_json', dest='save_json', action='store_true',
                         default=False,
                         help='Also save compact trajectory JSON files; disabled by default')
@@ -978,7 +1018,7 @@ if __name__ == '__main__':
 
     if args.n_workers < 1:
         raise ValueError('--n_workers must be >= 1')
-    if not args.save_full_zarr and not args.save_json:
+    if not args.save_replay_shard and not args.save_full_zarr and not args.save_json:
         raise ValueError('At least one output format must be enabled')
 
     cwd = os.getcwd()
@@ -1048,7 +1088,12 @@ if __name__ == '__main__':
                         0.23, 0.20, 0.18, 0.16, 0.15, 0.13, 0.12, 0.11, 0.10])
 
     if args.init_dataset_only:
-        preflight_required_inputs(cwd, eqdsk_list)
+        preflight_required_inputs(
+            cwd,
+            eqdsk_list,
+            initial_relax_cache=None,
+            require_initial_relax_cache=False,
+        )
         print(f'Seed EQDSKs: {os.path.dirname(eqdsk_list[0])}')
         print(f'Dataset initialized: {os.path.abspath(args.output_dir)}')
         sys.exit(0)
@@ -1103,6 +1148,8 @@ if __name__ == '__main__':
             'output_dir': os.path.abspath(args.output_dir),
             'trajectories_dir': str(dataset_paths(args.output_dir)['trajectories']),
             'full_trajectories_dir': str(dataset_paths(args.output_dir)['full_trajectories']),
+            'replay_shards_dir': str(dataset_paths(args.output_dir)['replay_shards']),
+            'save_replay_shard': bool(args.save_replay_shard),
             'save_full_zarr': bool(args.save_full_zarr),
             'save_json': bool(args.save_json),
         },
@@ -1127,10 +1174,17 @@ if __name__ == '__main__':
 
     t_start_total = time.time()
     success_count, fail_count = 0, 0
+    trajectory_timings = []
 
     if args.n_workers == 1:
         # ── Serial run loop ───────────────────────────────────────────────────
         for run_id in run_ids:
+            if args.save_replay_shard:
+                existing_shard_path = replay_shard_path(args.output_dir, run_id)
+                if existing_shard_path.exists():
+                    raise FileExistsError(
+                        f'replay shard output already exists before run starts: {existing_shard_path}'
+                    )
             if args.save_json:
                 existing_path = trajectory_path(args.output_dir, run_id)
                 if existing_path.exists():
@@ -1147,7 +1201,7 @@ if __name__ == '__main__':
             action_row = all_actions[run_id]
 
             print(f'\n[{run_id + 1}/{args.n_trajectories}] Running trajectory {run_id}...')
-            t0 = time.time()
+            sim_t0 = time.time()
 
             transitions, summary, data_tree = run_single_trajectory(
                 mygs, action_row, run_id, cwd, eqdsk_list, eqtimes,
@@ -1160,17 +1214,34 @@ if __name__ == '__main__':
                 trajectory_timeout_seconds=args.trajectory_timeout_seconds,
             )
 
-            elapsed = time.time() - t0
+            simulation_elapsed = time.time() - sim_t0
 
             if transitions is not None:
+                save_t0 = time.time()
                 path = save_trajectory_outputs(
                     transitions, summary, action_row, run_id, args.output_dir,
                     data_tree=data_tree,
+                    save_replay_shard=args.save_replay_shard,
                     save_full_zarr=args.save_full_zarr,
                     save_json=args.save_json,
                 )
+                save_elapsed = time.time() - save_t0
+                total_trajectory_elapsed = simulation_elapsed + save_elapsed
                 success_count += 1
-                print(f'  Saved to {path} ({elapsed:.1f}s)')
+                trajectory_timings.append({
+                    'run_id': int(run_id),
+                    'status': 'ok',
+                    'path': path,
+                    'simulation_elapsed_s': float(simulation_elapsed),
+                    'save_elapsed_s': float(save_elapsed),
+                    'total_elapsed_s': float(total_trajectory_elapsed),
+                })
+                print(
+                    f'  Saved to {path} '
+                    f'(simulation={simulation_elapsed:.1f}s, '
+                    f'save={save_elapsed:.1f}s, '
+                    f'total={total_trajectory_elapsed:.1f}s)'
+                )
             else:
                 fail_count += 1
                 fail_path = save_failure_atomic(
@@ -1179,7 +1250,19 @@ if __name__ == '__main__':
                     'simulation returned None',
                     chunk_dir=chunk_dir,
                 )
-                print(f'  Failed run logged to {fail_path} ({elapsed:.1f}s)')
+                trajectory_timings.append({
+                    'run_id': int(run_id),
+                    'status': 'failed',
+                    'error': 'simulation returned None',
+                    'failure_path': fail_path,
+                    'simulation_elapsed_s': float(simulation_elapsed),
+                    'save_elapsed_s': 0.0,
+                    'total_elapsed_s': float(simulation_elapsed),
+                })
+                print(
+                    f'  Failed run logged to {fail_path} '
+                    f'(simulation={simulation_elapsed:.1f}s)'
+                )
 
             elapsed_total = time.time() - t_start_total
             done = success_count + fail_count
@@ -1205,6 +1288,7 @@ if __name__ == '__main__':
             max_loop=args.max_loop,
             grid_size=args.grid_size,
             trajectory_timeout_seconds=args.trajectory_timeout_seconds,
+            save_replay_shard=args.save_replay_shard,
             save_full_zarr=args.save_full_zarr,
             save_json=args.save_json,
         )
@@ -1222,16 +1306,55 @@ if __name__ == '__main__':
 
                 if ok:
                     success_count += 1
-                    print(f'  [{run_id}] OK -> {result}')
+                    trajectory_timings.append({
+                        'run_id': int(run_id),
+                        'status': 'ok',
+                        'path': result['path'],
+                        'simulation_elapsed_s': float(result['simulation_elapsed_s']),
+                        'save_elapsed_s': float(result['save_elapsed_s']),
+                        'total_elapsed_s': float(result['total_elapsed_s']),
+                    })
+                    print(
+                        f'  [{run_id}] OK -> {result["path"]} '
+                        f'(simulation={result["simulation_elapsed_s"]:.1f}s, '
+                        f'save={result["save_elapsed_s"]:.1f}s, '
+                        f'total={result["total_elapsed_s"]:.1f}s)'
+                    )
                 else:
                     fail_count += 1
+                    error = result.get('error', str(result)) if isinstance(result, dict) else str(result)
                     fail_path = save_failure_atomic(
                         args.output_dir,
                         run_id,
-                        result,
+                        error,
                         chunk_dir=chunk_dir,
                     )
-                    print(f'  [{run_id}] FAILED: {result}; logged to {fail_path}')
+                    timing_record = {
+                        'run_id': int(run_id),
+                        'status': 'failed',
+                        'error': error,
+                        'failure_path': fail_path,
+                    }
+                    if isinstance(result, dict):
+                        timing_record.update({
+                            'simulation_elapsed_s': result.get('simulation_elapsed_s'),
+                            'save_elapsed_s': result.get('save_elapsed_s'),
+                            'total_elapsed_s': result.get('total_elapsed_s'),
+                        })
+                    trajectory_timings.append(timing_record)
+                    if isinstance(result, dict) and result.get('simulation_elapsed_s') is not None:
+                        print(
+                            f'  [{run_id}] FAILED: {error}; logged to {fail_path} '
+                            f'(simulation={result["simulation_elapsed_s"]:.1f}s, '
+                            f'total={result["total_elapsed_s"]:.1f}s)'
+                        )
+                    elif isinstance(result, dict):
+                        print(
+                            f'  [{run_id}] FAILED: {error}; logged to {fail_path} '
+                            f'(total={result["total_elapsed_s"]:.1f}s)'
+                        )
+                    else:
+                        print(f'  [{run_id}] FAILED: {error}; logged to {fail_path}')
 
                 eta = (elapsed_total / done) * (len(run_ids) - done) / 60 if done else 0.0
                 print(f'  Progress: {success_count} ok, {fail_count} failed | '
@@ -1254,8 +1377,11 @@ if __name__ == '__main__':
             'output_dir': os.path.abspath(args.output_dir),
             'trajectories_dir': str(dataset_paths(args.output_dir)['trajectories']),
             'full_trajectories_dir': str(dataset_paths(args.output_dir)['full_trajectories']),
+            'replay_shards_dir': str(dataset_paths(args.output_dir)['replay_shards']),
+            'save_replay_shard': bool(args.save_replay_shard),
             'save_full_zarr': bool(args.save_full_zarr),
             'save_json': bool(args.save_json),
+            'trajectory_timings': trajectory_timings,
         },
     )
 

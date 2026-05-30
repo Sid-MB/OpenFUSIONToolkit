@@ -2,6 +2,7 @@ import itertools
 import argparse
 import json
 import os
+import sys
 from pathlib import Path
 
 import modal
@@ -12,7 +13,7 @@ import torch.nn.functional as F
 import wandb
 from torch.utils.data import Dataset, DataLoader
 
-from dataloader import describe_dataset, load_d4rl_dataset
+from dataloader import describe_dataset_with_replay_cache, load_d4rl_dataset
 from log import get_logger
 
 app = modal.App("iql-training")
@@ -275,7 +276,11 @@ def normalize_buffer(buffer):
         reward_std = 1.0
     buffer.rewards[:buffer.size] = (buffer.rewards[:buffer.size] - buffer.rewards[:buffer.size].mean()) / reward_std
 
-    return action_max
+    return {
+        "state_mean": state_mean.astype(np.float32),
+        "state_std": state_std.astype(np.float32),
+        "action_max": action_max.astype(np.float32),
+    }
 
 def buffer_stats(buffer):
     states = buffer.states[:buffer.size]
@@ -294,7 +299,7 @@ def buffer_stats(buffer):
         "dataset/done_fraction": float(dones.mean()),
     }
 
-def make_eval_batch(buffer, eval_batch_size, seed=0, device=None):
+def make_eval_batch(buffer, eval_batch_size, seed, device):
     if eval_batch_size <= 0 or buffer.size == 0:
         return None
     rng = np.random.default_rng(seed)
@@ -315,7 +320,7 @@ def tensor_stats(prefix, value):
         f"{prefix}/max": flat.max().item(),
     }
 
-def evaluate_iql(iql, batch, include_histograms=False):
+def evaluate_iql(iql, batch, include_histograms):
     if batch is None:
         return {}
     states, actions, next_states, rewards, dones = (
@@ -362,15 +367,16 @@ def evaluate_iql(iql, batch, include_histograms=False):
 def train_iql(
     iql,
     buffer,
-    batch_size=128,
-    num_steps=1000000,
-    checkpoint_dir='/data',
-    resume_from=None,
-    checkpoint_interval=5000,
-    log_interval=100,
-    eval_batch=None,
-    eval_interval=1000,
-    eval_histogram_interval=5000,
+    batch_size,
+    num_steps,
+    checkpoint_dir,
+    resume_from,
+    checkpoint_interval,
+    log_interval,
+    eval_batch,
+    eval_interval,
+    eval_histogram_interval,
+    normalizers,
 ):
     dataloader = DataLoader(buffer, batch_size=batch_size, shuffle=True)
     
@@ -418,6 +424,7 @@ def train_iql(
                 'action_max': iql.actor.action_max.cpu(),
                 'state_dim': iql.state_dim,
                 'action_dim': iql.action_dim,
+                **(normalizers or {}),
             }, f'{checkpoint_dir}/checkpoint_step_{step}.pt')
             logger.info("Saved checkpoint at step %s", step)
 
@@ -430,25 +437,36 @@ def latest_checkpoint(checkpoint_dir):
 def train_from_config(
     dataset_dir,
     output_dir,
-    batch_size=128,
-    num_steps=100000,
-    project='iql-training',
-    run_name=None,
-    resume_from='auto',
-    wandb_mode=None,
-    checkpoint_interval=5000,
-    log_interval=100,
-    tau=0.7,
-    beta=3.0,
-    gamma=0.99,
-    lr=1e-4,
-    hidden_dim=256,
-    use_wandb_run_subdir=False,
-    eval_interval=1000,
-    eval_batch_size=2048,
-    eval_histogram_interval=5000,
-    eval_seed=0,
-    device="auto",
+    batch_size,
+    num_steps,
+    project,
+    run_name,
+    resume_from,
+    wandb_mode,
+    checkpoint_interval,
+    log_interval,
+    tau,
+    beta,
+    gamma,
+    lr,
+    hidden_dim,
+    use_wandb_run_subdir,
+    eval_interval,
+    eval_batch_size,
+    eval_histogram_interval,
+    eval_seed,
+    device,
+    replay_cache_dir,
+    prefer_replay_cache,
+    run_actor_eval,
+    actor_eval_output_dir,
+    actor_eval_project,
+    actor_eval_run_name,
+    actor_eval_wandb_mode,
+    actor_eval_initial_relax_state,
+    actor_eval_max_loop,
+    actor_eval_grid_size,
+    actor_eval_device,
 ):
     base_config = {
         "dataset_dir": str(dataset_dir),
@@ -469,6 +487,17 @@ def train_from_config(
         "eval_histogram_interval": eval_histogram_interval,
         "eval_seed": eval_seed,
         "device": device,
+        "replay_cache_dir": None if replay_cache_dir is None else str(replay_cache_dir),
+        "prefer_replay_cache": prefer_replay_cache,
+        "run_actor_eval": run_actor_eval,
+        "actor_eval_output_dir": actor_eval_output_dir,
+        "actor_eval_project": actor_eval_project,
+        "actor_eval_run_name": actor_eval_run_name,
+        "actor_eval_wandb_mode": actor_eval_wandb_mode,
+        "actor_eval_initial_relax_state": actor_eval_initial_relax_state,
+        "actor_eval_max_loop": actor_eval_max_loop,
+        "actor_eval_grid_size": actor_eval_grid_size,
+        "actor_eval_device": actor_eval_device,
     }
     wandb_init_kwargs = {"project": project, "config": base_config}
     if run_name:
@@ -489,10 +518,16 @@ def train_from_config(
     logger.info("IQL dataset_dir=%s", dataset_dir)
     logger.info("IQL output_dir=%s", output_dir)
 
-    specs = describe_dataset(dataset_dir)
+    specs = describe_dataset_with_replay_cache(
+        dataset_dir,
+        cache_dir=config.get("replay_cache_dir"),
+        prefer_cache=bool(config.get("prefer_replay_cache", True)),
+    )
     logger.info(
-        "IQL dataset selected_format=%s zarr_store_count=%s json_file_count=%s num_trajectories=%s num_transitions=%s state_dim=%s action_dim=%s explicit_next_state=%s zarr_explicit_next_state_store_count=%s",
+        "IQL dataset selected_format=%s replay_cache_used=%s replay_cache_dir=%s zarr_store_count=%s json_file_count=%s num_trajectories=%s num_transitions=%s state_dim=%s action_dim=%s explicit_next_state=%s zarr_explicit_next_state_store_count=%s",
         specs["selected_format"],
+        specs.get("replay_cache_used", False),
+        specs.get("replay_cache_dir"),
         specs["zarr_store_count"],
         specs["json_file_count"],
         specs["num_trajectories"],
@@ -518,6 +553,8 @@ def train_from_config(
         "dataset_zarr_takes_precedence": specs["zarr_takes_precedence"],
         "dataset_has_explicit_next_state": specs["dataset_has_explicit_next_state"],
         "dataset_zarr_explicit_next_state_store_count": specs["zarr_explicit_next_state_store_count"],
+        "dataset_replay_cache_used": specs.get("replay_cache_used", False),
+        "dataset_replay_cache_dir": specs.get("replay_cache_dir"),
         "state_keys": specs["state_keys"],
     }
     run.config.update(dataset_config, allow_val_change=True)
@@ -529,12 +566,19 @@ def train_from_config(
     action_dim = specs["action_dim"]
     dataset_size = specs["num_transitions"]
     buffer = ReplayBuffer(state_dim, action_dim, dataset_size)
-    load_d4rl_dataset(str(dataset_dir), buffer, specs["state_keys"])
+    load_d4rl_dataset(
+        str(dataset_dir),
+        buffer,
+        specs["state_keys"],
+        cache_dir=config.get("replay_cache_dir"),
+        prefer_cache=bool(config.get("prefer_replay_cache", True)),
+    )
     logger.info("IQL replay transitions_loaded=%s", buffer.size)
     run.config.update({"transitions_loaded": buffer.size}, allow_val_change=True)
     raw_stats = {f"raw_{key}": value for key, value in buffer_stats(buffer).items()}
 
-    action_max = normalize_buffer(buffer)
+    normalizers = normalize_buffer(buffer)
+    action_max = normalizers["action_max"]
     normalized_stats = buffer_stats(buffer)
     run.log({**raw_stats, **normalized_stats}, step=0)
     run.summary.update({**raw_stats, **normalized_stats})
@@ -597,6 +641,10 @@ def train_from_config(
         eval_batch=eval_batch,
         eval_interval=int(config["eval_interval"]),
         eval_histogram_interval=int(config["eval_histogram_interval"]),
+        normalizers={
+            "state_mean": torch.as_tensor(normalizers["state_mean"]),
+            "state_std": torch.as_tensor(normalizers["state_std"]),
+        },
     )
 
     weights_path = output_dir / 'iql_weights.pt'
@@ -608,13 +656,35 @@ def train_from_config(
         'q1_target': iql_agent.q1_target.state_dict(),
         'q2_target': iql_agent.q2_target.state_dict(),
         'action_max': torch.as_tensor(action_max),
+        'state_mean': torch.as_tensor(normalizers["state_mean"]),
+        'state_std': torch.as_tensor(normalizers["state_std"]),
         'state_keys': specs["state_keys"],
         'state_dim': state_dim,
         'action_dim': action_dim,
         'config': config,
     }, weights_path)
     logger.info("Saved final weights to %s", weights_path)
-    wandb.finish()
+    if config.get("run_actor_eval"):
+        wandb.finish()
+        from rl.eval import run_actor_eval_from_config
+
+        eval_output_dir = config.get("actor_eval_output_dir") or str(output_dir / "actor_eval")
+        eval_project = config.get("actor_eval_project") or project
+        eval_run_name = config.get("actor_eval_run_name") or f"{run.name or run.id}-actor-eval"
+        run_actor_eval_from_config(
+            actor_checkpoint=weights_path,
+            dataset_dir=dataset_dir,
+            output_dir=eval_output_dir,
+            project=eval_project,
+            run_name=eval_run_name,
+            wandb_mode=config.get("actor_eval_wandb_mode") or wandb_mode,
+            initial_relax_state=config.get("actor_eval_initial_relax_state"),
+            max_loop=int(config.get("actor_eval_max_loop", 0)),
+            grid_size=int(config.get("actor_eval_grid_size", 51)),
+            device=config.get("actor_eval_device"),
+        )
+    else:
+        wandb.finish()
 
 @app.function(
     image=image,
@@ -623,23 +693,25 @@ def train_from_config(
     timeout=86400
 )
 def train_modal():
-    train_from_config(
-        dataset_dir='/data/rl_dataset_delta_sampling_maxloop=2_grid_51_preprocessed',
-        output_dir='/data',
-        batch_size=128,
-        num_steps=100000,
-    )
+    args = parse_args([
+        "--dataset_dir",
+        "/data/rl_dataset_delta_sampling_maxloop=2_grid_51_preprocessed",
+        "--output_dir",
+        "/data",
+        "--no-use_wandb_run_subdir",
+    ])
+    train_from_config(**train_kwargs_from_args(args))
 
 @app.local_entrypoint()
 def modal_main():
     train_modal.remote()
 
-def parse_args():
+def parse_args(argv):
     parser = argparse.ArgumentParser(description="Train IQL on a collected TORAX trajectory dataset.")
     parser.add_argument("--dataset_dir", required=True, help="Collected dataset root containing trajectories/")
-    parser.add_argument("--output_dir", required=True, help="Directory for checkpoints, config, and final weights")
+    parser.add_argument("--output_dir", default=None, help="Directory for checkpoints, config, and final weights")
     parser.add_argument("--batch_size", type=int, default=128)
-    parser.add_argument("--num_steps", type=int, default=100000)
+    parser.add_argument("--num_steps", type=int, default=20000)
     parser.add_argument("--project", default=os.environ.get("WANDB_PROJECT", "iql-training"))
     parser.add_argument("--run_name", default=None)
     parser.add_argument("--resume_from", default="auto", help="Checkpoint path, 'auto', or empty string to disable resume")
@@ -651,7 +723,11 @@ def parse_args():
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--hidden_dim", type=int, default=256)
-    parser.add_argument("--use_wandb_run_subdir", action="store_true")
+    parser.add_argument(
+        "--use_wandb_run_subdir",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
     parser.add_argument("--eval_interval", type=int, default=1000)
     parser.add_argument("--eval_batch_size", type=int, default=2048)
     parser.add_argument("--eval_histogram_interval", type=int, default=5000)
@@ -661,33 +737,76 @@ def parse_args():
         default=os.environ.get("IQL_DEVICE", "auto"),
         help="Training device: auto, cpu, cuda, cuda:0, etc.",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--replay_cache_dir",
+        default=None,
+        help="Optional compact replay cache directory. Defaults to <dataset_dir>/replay_cache.",
+    )
+    parser.add_argument(
+        "--use_replay_cache",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use a compact replay cache when available.",
+    )
+    parser.add_argument(
+        "--run_actor_eval",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Run a full TokaMaker_TORAX eval with fly(use_rl_actor=True) after training.",
+    )
+    parser.add_argument("--actor_eval_output_dir", default=None)
+    parser.add_argument("--actor_eval_project", default=None)
+    parser.add_argument("--actor_eval_run_name", default=None)
+    parser.add_argument("--actor_eval_wandb_mode", default=os.environ.get("ACTOR_EVAL_WANDB_MODE"))
+    parser.add_argument("--actor_eval_initial_relax_state", default=None)
+    parser.add_argument("--actor_eval_max_loop", type=int, default=2)
+    parser.add_argument("--actor_eval_grid_size", type=int, default=51)
+    parser.add_argument("--actor_eval_device", default=None)
+    return parser.parse_args(argv)
+
+def train_kwargs_from_args(args):
+    dataset_dir = Path(args.dataset_dir)
+    output_dir = args.output_dir
+    if output_dir is None:
+        output_dir = Path("out") / "iql" / dataset_dir.name
+    return {
+        "dataset_dir": dataset_dir,
+        "output_dir": output_dir,
+        "batch_size": args.batch_size,
+        "num_steps": args.num_steps,
+        "project": args.project,
+        "run_name": args.run_name,
+        "resume_from": args.resume_from,
+        "wandb_mode": args.wandb_mode,
+        "checkpoint_interval": args.checkpoint_interval,
+        "log_interval": args.log_interval,
+        "tau": args.tau,
+        "beta": args.beta,
+        "gamma": args.gamma,
+        "lr": args.lr,
+        "hidden_dim": args.hidden_dim,
+        "use_wandb_run_subdir": args.use_wandb_run_subdir,
+        "eval_interval": args.eval_interval,
+        "eval_batch_size": args.eval_batch_size,
+        "eval_histogram_interval": args.eval_histogram_interval,
+        "eval_seed": args.eval_seed,
+        "device": args.device,
+        "replay_cache_dir": args.replay_cache_dir,
+        "prefer_replay_cache": args.use_replay_cache,
+        "run_actor_eval": args.run_actor_eval,
+        "actor_eval_output_dir": args.actor_eval_output_dir,
+        "actor_eval_project": args.actor_eval_project,
+        "actor_eval_run_name": args.actor_eval_run_name,
+        "actor_eval_wandb_mode": args.actor_eval_wandb_mode,
+        "actor_eval_initial_relax_state": args.actor_eval_initial_relax_state,
+        "actor_eval_max_loop": args.actor_eval_max_loop,
+        "actor_eval_grid_size": args.actor_eval_grid_size,
+        "actor_eval_device": args.actor_eval_device,
+    }
 
 def main():
-    args = parse_args()
-    train_from_config(
-        dataset_dir=args.dataset_dir,
-        output_dir=args.output_dir,
-        batch_size=args.batch_size,
-        num_steps=args.num_steps,
-        project=args.project,
-        run_name=args.run_name,
-        resume_from=args.resume_from,
-        wandb_mode=args.wandb_mode,
-        checkpoint_interval=args.checkpoint_interval,
-        log_interval=args.log_interval,
-        tau=args.tau,
-        beta=args.beta,
-        gamma=args.gamma,
-        lr=args.lr,
-        hidden_dim=args.hidden_dim,
-        use_wandb_run_subdir=args.use_wandb_run_subdir,
-        eval_interval=args.eval_interval,
-        eval_batch_size=args.eval_batch_size,
-        eval_histogram_interval=args.eval_histogram_interval,
-        eval_seed=args.eval_seed,
-        device=args.device,
-    )
+    args = parse_args(sys.argv[1:])
+    train_from_config(**train_kwargs_from_args(args))
 
 if __name__ == "__main__":
     main()

@@ -103,6 +103,7 @@ def _rl_state_feature_keys():
     keys = [f'tx_{name}' for name in _RL_TORAX_SCALAR_VARS]
     keys.extend([
         'ecrh', 'nbi', 'P_LH_margin', 'T_e_peaking', 'T_i_peaking', 'n_e_peaking',
+        'step_reward', 'penalty_q95', 'penalty_betaN', 'penalty_fgw',
     ])
     for var in _RL_PROFILE_VARS:
         for rho in _RL_RHO_POINTS:
@@ -894,8 +895,8 @@ class TokaMaker_TORAX:
         r'''! RL observation dict (collect_trajectories.extract_state).
         
                 Scalars and profiles at t_start; current_action is [ecrh_MW, nbi_MW].
-                t_end is accepted for API compatibility (interval rewards use
-                compute_reward separately). Safety penalties are not in the state.
+                reward and safety fields are computed over [t_start, t_end],
+                matching collect_trajectories.extract_state.
         
                 @param t_start Observation time (s).
                 @param t_end End of control interval (s); unused for features.
@@ -932,6 +933,26 @@ class TokaMaker_TORAX:
         state['T_i_peaking'] = t_i_core / ti_vol if ti_vol > 0 else float('nan')
         state['n_e_peaking'] = n_e_core / ne_vol if ne_vol > 0 else float('nan')
 
+        torax_times = data_tree.scalars.coords['time'].values
+        mask = (torax_times >= t_start) & (torax_times <= float(t_end))
+        if not np.any(mask):
+            state['step_reward'] = 0.0
+        else:
+            q_vals = data_tree.scalars['Q_fusion'].values[mask]
+            state['step_reward'] = np.log(float(np.nanmean(q_vals)) + 1)
+
+        try:
+            q95_vals = data_tree.scalars['q95'].values[mask]
+            beta_n_vals = data_tree.scalars['beta_N'].values[mask]
+            fgw_vals = data_tree.scalars['fgw_n_e_line_avg'].values[mask]
+            state['penalty_q95'] = float(np.sum(np.maximum(RLRewardConfig.q95_min - q95_vals, 0)))
+            state['penalty_betaN'] = float(np.sum(np.maximum(beta_n_vals - RLRewardConfig.beta_n_max, 0)))
+            state['penalty_fgw'] = float(np.sum(np.maximum(fgw_vals - RLRewardConfig.fgw_max, 0)))
+        except Exception:
+            state['penalty_q95'] = 0.0
+            state['penalty_betaN'] = 0.0
+            state['penalty_fgw'] = 0.0
+
         for var in _RL_PROFILE_VARS:
             vals = self._rl_profile_at_rho(data_tree, var, rho_points, t_start)
             for rho, val in zip(rho_points, vals):
@@ -940,7 +961,7 @@ class TokaMaker_TORAX:
         return state
 
     def _extract_rl_state_vector(self, t_start, t_end, current_action, data_tree=None):
-        r'''! RL observation as float vector of length RL_STATE_DIM (45).'''
+        r'''! RL observation as float vector of length RL_STATE_DIM.'''
         state = self._extract_rl_state(t_start, t_end, current_action, data_tree=data_tree)
         return np.array([state[k] for k in RL_STATE_KEYS], dtype=np.float64)
     
@@ -2083,9 +2104,9 @@ class TokaMaker_TORAX:
                     nn.Linear(hidden_dim, hidden_dim),
                     nn.ReLU(),
                     nn.Linear(hidden_dim, action_dim),
-                    nn.Tanh(),
+                    nn.Sigmoid(),
                 )
-                self.action_max = torch.as_tensor(action_max, dtype=torch.float32)
+                self.register_buffer("action_max", torch.as_tensor(action_max, dtype=torch.float32))
 
             def act(self, state):
                 return self.net(state) * self.action_max
@@ -2098,6 +2119,7 @@ class TokaMaker_TORAX:
         action_max = np.asarray(ckpt['action_max'], dtype=np.float64).reshape(-1)
         state_mean = np.asarray(ckpt['state_mean'], dtype=np.float64).reshape(-1)
         state_std = np.asarray(ckpt['state_std'], dtype=np.float64).reshape(-1)
+        state_std[state_std < 1e-8] = 1.0
         if state_mean.shape[0] != RL_STATE_DIM:
             raise ValueError(
                 f'Checkpoint state_dim {state_mean.shape[0]} != RL_STATE_DIM {RL_STATE_DIM}'

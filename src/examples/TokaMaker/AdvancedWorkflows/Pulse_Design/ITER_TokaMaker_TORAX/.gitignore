@@ -3,5 +3,6 @@
 /*.prof
 /*.log
 /visualize/out/
+/wandb/
 
 /timing_test*/

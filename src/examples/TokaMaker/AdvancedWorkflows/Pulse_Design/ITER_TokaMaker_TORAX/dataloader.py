@@ -3,6 +3,7 @@ import json
 import os
 import shutil
 import tempfile
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -15,8 +16,11 @@ MANIFEST_FILENAME = 'run_manifest.json'
 ACTIONS_FILENAME = 'all_actions.npy'
 TRAJECTORIES_DIRNAME = 'trajectories'
 FULL_TRAJECTORIES_DIRNAME = 'full_trajectories'
+REPLAY_SHARDS_DIRNAME = 'replay_shards'
 FAILURES_DIRNAME = 'failures'
 CHUNKS_DIRNAME = 'chunks'
+REPLAY_CACHE_DIRNAME = 'replay_cache'
+REPLAY_CACHE_VERSION = 1
 
 
 class DatasetMismatchError(RuntimeError):
@@ -35,8 +39,10 @@ def dataset_paths(dataset_dir):
         'actions': root / ACTIONS_FILENAME,
         'trajectories': root / TRAJECTORIES_DIRNAME,
         'full_trajectories': root / FULL_TRAJECTORIES_DIRNAME,
+        'replay_shards': root / REPLAY_SHARDS_DIRNAME,
         'failures': root / FAILURES_DIRNAME,
         'chunks': root / CHUNKS_DIRNAME,
+        'replay_cache': root / REPLAY_CACHE_DIRNAME,
     }
 
 
@@ -45,6 +51,7 @@ def ensure_dataset_dirs(dataset_dir):
     paths['root'].mkdir(parents=True, exist_ok=True)
     paths['trajectories'].mkdir(parents=True, exist_ok=True)
     paths['full_trajectories'].mkdir(parents=True, exist_ok=True)
+    paths['replay_shards'].mkdir(parents=True, exist_ok=True)
     paths['failures'].mkdir(parents=True, exist_ok=True)
     paths['chunks'].mkdir(parents=True, exist_ok=True)
     return paths
@@ -145,6 +152,30 @@ def atomic_save_npy_once(path, array):
             pass
 
 
+def atomic_save_npz_once(path, **arrays):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f'.{path.name}.',
+        suffix=f'.tmp.{os.getpid()}',
+        dir=str(path.parent),
+    )
+    try:
+        with os.fdopen(fd, 'wb') as handle:
+            np.savez(handle, **arrays)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(tmp_name, path)
+        except FileExistsError as exc:
+            raise FileExistsError(f'File already exists: {path}') from exc
+    finally:
+        try:
+            os.unlink(tmp_name)
+        except FileNotFoundError:
+            pass
+
+
 def load_json(path):
     with open(path, 'r') as handle:
         return json.load(handle)
@@ -172,6 +203,7 @@ def create_run_manifest(*, n_trajectories, seed, max_loop, grid_size,
             'actions': ACTIONS_FILENAME,
             'trajectories': TRAJECTORIES_DIRNAME,
             'full_trajectories': FULL_TRAJECTORIES_DIRNAME,
+            'replay_shards': REPLAY_SHARDS_DIRNAME,
             'failures': FAILURES_DIRNAME,
             'chunks': CHUNKS_DIRNAME,
         },
@@ -284,6 +316,10 @@ def full_trajectory_zarr_path(dataset_dir, run_id):
     return dataset_paths(dataset_dir)['full_trajectories'] / f'trajectory_{int(run_id):04d}.zarr'
 
 
+def replay_shard_path(dataset_dir, run_id):
+    return dataset_paths(dataset_dir)['replay_shards'] / f'trajectory_{int(run_id):04d}.npz'
+
+
 def failure_path(dataset_dir, run_id):
     return dataset_paths(dataset_dir)['failures'] / f'failed_run_{int(run_id):04d}.json'
 
@@ -354,6 +390,75 @@ def build_reward_components_dataset(transitions):
         },
     )
     return dataset
+
+
+def transition_block_from_transitions(transitions, state_keys=None):
+    if not transitions:
+        keys = [] if state_keys is None else list(state_keys)
+        return {
+            'state_keys': keys,
+            'has_explicit_next_state': True,
+            'states': np.empty((0, len(keys)), dtype=np.float32),
+            'actions': np.empty((0, 0), dtype=np.float32),
+            'next_states': np.empty((0, len(keys)), dtype=np.float32),
+            'rewards': np.empty((0, 1), dtype=np.float32),
+            'dones': np.empty((0, 1), dtype=np.float32),
+        }
+
+    keys = list(state_keys) if state_keys is not None else list(transitions[0]['s'].keys())
+    states = np.stack([load_state(transition['s'], keys) for transition in transitions])
+    actions = np.asarray([transition['a'] for transition in transitions], dtype=np.float32)
+    if actions.ndim == 1:
+        actions = actions.reshape(-1, 1)
+    rewards = np.asarray([transition['r'] for transition in transitions], dtype=np.float32).reshape(-1, 1)
+    dones = np.asarray(
+        [
+            transition.get('done', idx == len(transitions) - 1)
+            for idx, transition in enumerate(transitions)
+        ],
+        dtype=np.float32,
+    ).reshape(-1, 1)
+
+    has_explicit_next_state = all('s_next' in transition for transition in transitions)
+    if has_explicit_next_state:
+        next_states = np.stack([load_state(transition['s_next'], keys) for transition in transitions])
+    else:
+        next_states = np.zeros_like(states)
+        if states.shape[0] > 1:
+            not_terminal = dones[:-1, 0] < 0.5
+            next_indices = np.nonzero(not_terminal)[0]
+            next_states[next_indices] = states[next_indices + 1]
+
+    return {
+        'state_keys': keys,
+        'has_explicit_next_state': has_explicit_next_state,
+        'states': np.ascontiguousarray(states, dtype=np.float32),
+        'actions': np.ascontiguousarray(actions, dtype=np.float32),
+        'next_states': np.ascontiguousarray(next_states, dtype=np.float32),
+        'rewards': np.ascontiguousarray(rewards, dtype=np.float32),
+        'dones': np.ascontiguousarray(dones, dtype=np.float32),
+    }
+
+
+def save_replay_shard_atomic(dataset_dir, payload):
+    run_id = int(payload['run_id'])
+    path = replay_shard_path(dataset_dir, run_id)
+    block = transition_block_from_transitions(payload['transitions'])
+    atomic_save_npz_once(
+        path,
+        states=block['states'],
+        actions=block['actions'],
+        next_states=block['next_states'],
+        rewards=block['rewards'],
+        dones=block['dones'],
+        state_keys=np.asarray(block['state_keys'], dtype=np.str_),
+        has_explicit_next_state=np.asarray(block['has_explicit_next_state'], dtype=np.bool_),
+        run_id=np.asarray(run_id, dtype=np.int64),
+        actions_raw_json=np.asarray(json.dumps(payload.get('actions_raw')), dtype=np.str_),
+        summary_json=np.asarray(json.dumps(payload.get('summary') or {}), dtype=np.str_),
+        timestamp=np.asarray(str(payload.get('timestamp') or ''), dtype=np.str_),
+    )
+    return str(path)
 
 
 def save_full_trajectory_zarr_atomic(dataset_dir, payload, data_tree, json_path=None):
@@ -445,6 +550,16 @@ def find_full_trajectory_zarr_stores(dataset_dir):
     return sorted(root.glob('trajectory_*.zarr'))
 
 
+def find_replay_shard_files(dataset_dir):
+    root = Path(dataset_dir)
+    nested = root / REPLAY_SHARDS_DIRNAME
+    if nested.is_dir():
+        files = sorted(nested.glob('trajectory_*.npz'))
+        if files:
+            return files
+    return sorted(root.glob('trajectory_*.npz'))
+
+
 def load_state(state, state_keys=None):
     keys = state_keys if state_keys is not None else state.keys()
     return np.array([state[key] for key in keys], dtype=np.float32)
@@ -470,7 +585,39 @@ def _zarr_has_explicit_next_state(dataset, state_keys=None):
     return bool(keys) and all(f'next_state_{key}' in dataset for key in keys)
 
 
-def infer_zarr_dataset_specs(directory):
+def _inspect_zarr_store_specs(store_path):
+    dataset = _zarr_reward_components_dataset(store_path)
+    try:
+        n_decisions = int(dataset.sizes.get('decision', 0))
+        if n_decisions == 0:
+            return None
+
+        keys = _zarr_state_keys(dataset)
+        if not keys:
+            return None
+
+        return {
+            'num_transitions': n_decisions,
+            'state_keys': keys,
+            'action_dim': int(dataset.sizes['action_dim']),
+            'has_explicit_next_state': _zarr_has_explicit_next_state(dataset, keys),
+        }
+    finally:
+        dataset.close()
+
+
+def _replay_cache_executor(worker_backend):
+    if worker_backend == 'process':
+        return ProcessPoolExecutor
+    if worker_backend == 'thread':
+        return ThreadPoolExecutor
+    raise ValueError(
+        f'Unsupported worker_backend={worker_backend!r}; expected "process" or "thread".'
+    )
+
+
+def infer_zarr_dataset_specs(directory, *, show_progress=False, max_workers=1,
+                             worker_backend='process'):
     zarr_stores = find_full_trajectory_zarr_stores(directory)
     if not zarr_stores:
         raise FileNotFoundError(f'No trajectory_*.zarr stores found in {directory}')
@@ -481,28 +628,61 @@ def infer_zarr_dataset_specs(directory):
     nonempty_count = 0
     explicit_next_state_count = 0
 
-    for store_path in zarr_stores:
-        dataset = _zarr_reward_components_dataset(store_path)
+    if max_workers > 1:
+        executor_cls = _replay_cache_executor(worker_backend)
+        progress = None
+        if show_progress:
+            from tqdm import tqdm
+
+            progress = tqdm(total=len(zarr_stores), desc='scan zarr stores', unit='store')
         try:
-            n_decisions = int(dataset.sizes.get('decision', 0))
-            if n_decisions == 0:
+            with executor_cls(max_workers=max_workers) as executor:
+                futures = [
+                    executor.submit(_inspect_zarr_store_specs, store_path)
+                    for store_path in zarr_stores
+                ]
+                for future in as_completed(futures):
+                    info = future.result()
+                    if progress is not None:
+                        progress.update(1)
+                    if info is None:
+                        continue
+
+                    keys = info['state_keys']
+                    if state_keys is None:
+                        state_keys = keys
+                        action_dim = int(info['action_dim'])
+
+                    if info['has_explicit_next_state']:
+                        explicit_next_state_count += 1
+
+                    total_transitions += int(info['num_transitions'])
+                    nonempty_count += 1
+        finally:
+            if progress is not None:
+                progress.close()
+    else:
+        stores_iter = zarr_stores
+        if show_progress:
+            from tqdm import tqdm
+
+            stores_iter = tqdm(zarr_stores, desc='scan zarr stores', unit='store')
+
+        for store_path in stores_iter:
+            info = _inspect_zarr_store_specs(store_path)
+            if info is None:
                 continue
 
-            keys = _zarr_state_keys(dataset)
-            if not keys:
-                continue
-
+            keys = info['state_keys']
             if state_keys is None:
                 state_keys = keys
-                action_dim = int(dataset.sizes['action_dim'])
+                action_dim = int(info['action_dim'])
 
-            if _zarr_has_explicit_next_state(dataset, keys):
+            if info['has_explicit_next_state']:
                 explicit_next_state_count += 1
 
-            total_transitions += n_decisions
+            total_transitions += int(info['num_transitions'])
             nonempty_count += 1
-        finally:
-            dataset.close()
 
     if state_keys is None or action_dim is None:
         raise ValueError(f'No non-empty Zarr trajectories found in {directory}')
@@ -554,19 +734,107 @@ def infer_json_dataset_specs(directory):
     }
 
 
-def infer_dataset_specs(directory):
+def _load_replay_shard_block(shard_path, state_keys=None):
+    with np.load(shard_path, allow_pickle=False) as data:
+        keys = [str(key) for key in data['state_keys'].tolist()]
+        if state_keys is not None and list(state_keys) != keys:
+            raise ValueError(
+                f'Replay shard state keys do not match requested state keys in {shard_path}: '
+                f'shard={keys!r}, requested={list(state_keys)!r}'
+            )
+        return {
+            'state_keys': keys,
+            'has_explicit_next_state': bool(np.asarray(data['has_explicit_next_state']).item()),
+            'states': np.ascontiguousarray(data['states'], dtype=np.float32),
+            'actions': np.ascontiguousarray(data['actions'], dtype=np.float32),
+            'next_states': np.ascontiguousarray(data['next_states'], dtype=np.float32),
+            'rewards': np.ascontiguousarray(data['rewards'], dtype=np.float32),
+            'dones': np.ascontiguousarray(data['dones'], dtype=np.float32),
+        }
+
+
+def infer_replay_shard_specs(directory):
+    shard_files = find_replay_shard_files(directory)
+    if not shard_files:
+        raise FileNotFoundError(f'No trajectory_*.npz replay shards found in {directory}')
+
+    total_transitions = 0
+    state_keys = None
+    action_dim = None
+    nonempty_count = 0
+    explicit_next_state_count = 0
+    for shard_path in shard_files:
+        block = _load_replay_shard_block(shard_path)
+        keys = list(block['state_keys'])
+        if state_keys is None:
+            state_keys = keys
+            action_dim = int(block['actions'].shape[1])
+        elif state_keys != keys:
+            raise ValueError(
+                'Replay shard state keys differ within dataset: '
+                f'expected={state_keys!r}, got={keys!r} in {shard_path}'
+            )
+        elif action_dim != int(block['actions'].shape[1]):
+            raise ValueError(
+                'Replay shard action_dim differs within dataset: '
+                f'expected={action_dim}, got={block["actions"].shape[1]} in {shard_path}'
+            )
+
+        block_size = int(block['states'].shape[0])
+        if block_size == 0:
+            continue
+        total_transitions += block_size
+        nonempty_count += 1
+        if block.get('has_explicit_next_state', False):
+            explicit_next_state_count += 1
+
+    if state_keys is None or action_dim is None:
+        raise ValueError(f'No non-empty replay shards found in {directory}')
+
+    return {
+        'num_trajectories': nonempty_count,
+        'num_transitions': total_transitions,
+        'state_dim': len(state_keys),
+        'action_dim': action_dim,
+        'state_keys': state_keys,
+        'format': 'replay_shards',
+        'explicit_next_state_store_count': explicit_next_state_count,
+        'has_explicit_next_state': explicit_next_state_count == nonempty_count,
+    }
+
+
+def infer_dataset_specs(directory, *, show_progress=False, max_workers=1,
+                        worker_backend='process'):
+    replay_shards = find_replay_shard_files(directory)
+    if replay_shards:
+        return infer_replay_shard_specs(directory)
     zarr_stores = find_full_trajectory_zarr_stores(directory)
     if zarr_stores:
-        return infer_zarr_dataset_specs(directory)
+        return infer_zarr_dataset_specs(
+            directory,
+            show_progress=show_progress,
+            max_workers=max_workers,
+            worker_backend=worker_backend,
+        )
     return infer_json_dataset_specs(directory)
 
 
-def describe_dataset(directory):
+def describe_dataset(directory, *, show_progress=False, max_workers=1,
+                     worker_backend='process'):
+    replay_shards = find_replay_shard_files(directory)
     zarr_stores = find_full_trajectory_zarr_stores(directory)
     json_files = find_trajectory_files(directory)
 
-    if zarr_stores:
-        specs = infer_zarr_dataset_specs(directory)
+    if replay_shards:
+        specs = infer_replay_shard_specs(directory)
+        selected_format = 'replay_shards'
+    elif zarr_stores:
+        specs = infer_zarr_dataset_specs(
+            directory,
+            show_progress=show_progress,
+            max_workers=max_workers,
+            worker_backend=worker_backend,
+        )
         selected_format = 'zarr'
     elif json_files:
         specs = infer_json_dataset_specs(directory)
@@ -574,6 +842,7 @@ def describe_dataset(directory):
     else:
         raise FileNotFoundError(
             f'No trajectory data found in {directory}: expected '
+            f'{REPLAY_SHARDS_DIRNAME}/trajectory_*.npz, '
             f'{FULL_TRAJECTORIES_DIRNAME}/trajectory_*.zarr or '
             f'{TRAJECTORIES_DIRNAME}/trajectory_*.json'
         )
@@ -581,6 +850,7 @@ def describe_dataset(directory):
     description = dict(specs)
     description.update({
         'selected_format': selected_format,
+        'replay_shard_count': len(replay_shards),
         'zarr_store_count': len(zarr_stores),
         'json_file_count': len(json_files),
         'zarr_takes_precedence': bool(zarr_stores and json_files),
@@ -610,58 +880,617 @@ def iter_json_d4rl_transitions(directory, state_keys=None):
 
 def iter_zarr_d4rl_transitions(directory, state_keys=None):
     for store_path in find_full_trajectory_zarr_stores(directory):
-        dataset = _zarr_reward_components_dataset(store_path)
-        try:
-            keys = list(state_keys) if state_keys is not None else _zarr_state_keys(dataset)
-            state_arrays = []
-            for key in keys:
-                var_name = f'state_{key}'
-                if var_name not in dataset:
-                    raise KeyError(f'Missing Zarr state variable {var_name!r} in {store_path}')
-                state_arrays.append(np.asarray(dataset[var_name].values, dtype=np.float32))
+        block = _load_zarr_transition_block(store_path, state_keys=state_keys)
+        for idx in range(block['states'].shape[0]):
+            yield (
+                block['states'][idx],
+                block['actions'][idx],
+                block['next_states'][idx],
+                block['rewards'][idx],
+                block['dones'][idx],
+            )
 
-            if not state_arrays:
-                continue
 
-            states = np.stack(state_arrays, axis=1).astype(np.float32)
-            next_state_arrays = []
-            has_explicit_next_state = _zarr_has_explicit_next_state(dataset, keys)
-            if has_explicit_next_state:
-                for key in keys:
-                    next_state_arrays.append(
-                        np.asarray(dataset[f'next_state_{key}'].values, dtype=np.float32)
-                    )
-                next_states = np.stack(next_state_arrays, axis=1).astype(np.float32)
-
-            actions = np.asarray(dataset['action'].values, dtype=np.float32)
-            rewards = np.asarray(dataset['reward'].values, dtype=np.float32)
-            dones = np.asarray(dataset['done'].values, dtype=np.float32)
-
-            for idx in range(states.shape[0]):
-                if has_explicit_next_state:
-                    next_state = next_states[idx]
-                elif idx < states.shape[0] - 1 and dones[idx] < 0.5:
-                    next_state = states[idx + 1]
-                else:
-                    next_state = np.zeros_like(states[idx])
-                yield (
-                    states[idx],
-                    actions[idx],
-                    next_state,
-                    np.array([rewards[idx]], dtype=np.float32),
-                    np.array([dones[idx]], dtype=np.float32),
-                )
-        finally:
-            dataset.close()
+def iter_replay_shard_d4rl_transitions(directory, state_keys=None):
+    for shard_path in find_replay_shard_files(directory):
+        block = _load_replay_shard_block(shard_path, state_keys=state_keys)
+        for idx in range(block['states'].shape[0]):
+            yield (
+                block['states'][idx],
+                block['actions'][idx],
+                block['next_states'][idx],
+                block['rewards'][idx],
+                block['dones'][idx],
+            )
 
 
 def iter_d4rl_transitions(directory, state_keys=None):
-    if find_full_trajectory_zarr_stores(directory):
+    if find_replay_shard_files(directory):
+        yield from iter_replay_shard_d4rl_transitions(directory, state_keys)
+    elif find_full_trajectory_zarr_stores(directory):
         yield from iter_zarr_d4rl_transitions(directory, state_keys)
     else:
         yield from iter_json_d4rl_transitions(directory, state_keys)
 
 
-def load_d4rl_dataset(directory, buffer, state_keys=None):
+def load_d4rl_dataset(directory, buffer, state_keys=None, cache_dir=None, prefer_cache=True):
+    cache_dir = replay_cache_path(directory, cache_dir=cache_dir)
+    if prefer_cache and replay_cache_exists(cache_dir):
+        load_replay_cache_into_buffer(cache_dir, buffer, state_keys=state_keys)
+        return
+
     for state, action, next_state, reward, done in iter_d4rl_transitions(directory, state_keys):
         buffer.add(state, action, next_state, reward, done)
+
+
+def replay_cache_path(dataset_dir, cache_dir=None):
+    if cache_dir is not None:
+        return Path(cache_dir).resolve()
+    return dataset_paths(dataset_dir)['replay_cache']
+
+
+def replay_cache_files(cache_dir):
+    cache_dir = Path(cache_dir)
+    return {
+        'manifest': cache_dir / 'replay_manifest.json',
+        'states': cache_dir / 'states.npy',
+        'actions': cache_dir / 'actions.npy',
+        'next_states': cache_dir / 'next_states.npy',
+        'rewards': cache_dir / 'rewards.npy',
+        'dones': cache_dir / 'dones.npy',
+    }
+
+
+def replay_cache_exists(cache_dir):
+    files = replay_cache_files(cache_dir)
+    return all(path.is_file() for path in files.values())
+
+
+def load_replay_cache_manifest(cache_dir):
+    files = replay_cache_files(cache_dir)
+    if not files['manifest'].is_file():
+        raise FileNotFoundError(f'Replay cache manifest missing: {files["manifest"]}')
+    return load_json(files['manifest'])
+
+
+def infer_replay_cache_specs(cache_dir):
+    manifest = load_replay_cache_manifest(cache_dir)
+    state_keys = list(manifest['state_keys'])
+    return {
+        'num_trajectories': int(manifest.get('num_trajectories', 0)),
+        'num_transitions': int(manifest['num_transitions']),
+        'state_dim': int(manifest['state_dim']),
+        'action_dim': int(manifest['action_dim']),
+        'state_keys': state_keys,
+        'format': 'replay_cache',
+        'cache_dir': str(Path(cache_dir).resolve()),
+        'source_dataset_dir': manifest.get('source_dataset_dir'),
+        'source_format': manifest.get('source_format'),
+        'materialize_max_workers': manifest.get('materialize_max_workers'),
+        'materialize_worker_backend': manifest.get('materialize_worker_backend'),
+        'explicit_next_state_store_count': int(manifest.get('explicit_next_state_store_count', 0)),
+        'has_explicit_next_state': bool(manifest.get('has_explicit_next_state', False)),
+    }
+
+
+def load_replay_cache_arrays(cache_dir, mmap_mode=None):
+    files = replay_cache_files(cache_dir)
+    missing = [str(path) for path in files.values() if not path.is_file()]
+    if missing:
+        raise FileNotFoundError(f'Replay cache is incomplete at {cache_dir}: missing {missing}')
+    manifest = load_json(files['manifest'])
+    arrays = {
+        'states': np.load(files['states'], mmap_mode=mmap_mode),
+        'actions': np.load(files['actions'], mmap_mode=mmap_mode),
+        'next_states': np.load(files['next_states'], mmap_mode=mmap_mode),
+        'rewards': np.load(files['rewards'], mmap_mode=mmap_mode),
+        'dones': np.load(files['dones'], mmap_mode=mmap_mode),
+    }
+    validate_replay_cache_arrays(manifest, arrays, cache_dir)
+    return manifest, arrays
+
+
+def validate_replay_cache_arrays(manifest, arrays, cache_dir):
+    num_transitions = int(manifest['num_transitions'])
+    state_dim = int(manifest['state_dim'])
+    action_dim = int(manifest['action_dim'])
+    expected_shapes = {
+        'states': (num_transitions, state_dim),
+        'actions': (num_transitions, action_dim),
+        'next_states': (num_transitions, state_dim),
+        'rewards': (num_transitions, 1),
+        'dones': (num_transitions, 1),
+    }
+    for name, expected_shape in expected_shapes.items():
+        actual_shape = tuple(arrays[name].shape)
+        if actual_shape != expected_shape:
+            raise ValueError(
+                f'Replay cache array {name!r} at {cache_dir} has shape '
+                f'{actual_shape}, expected {expected_shape}.'
+            )
+
+
+def load_replay_cache_into_buffer(cache_dir, buffer, state_keys=None):
+    manifest, arrays = load_replay_cache_arrays(cache_dir)
+    cache_state_keys = list(manifest['state_keys'])
+    if state_keys is not None and list(state_keys) != cache_state_keys:
+        raise ValueError(
+            'Replay cache state keys do not match requested state keys: '
+            f'cache={cache_state_keys!r}, requested={list(state_keys)!r}'
+        )
+    if arrays['states'].shape[1] != buffer.states.shape[1]:
+        raise ValueError(
+            f'Replay cache state_dim={arrays["states"].shape[1]} does not match '
+            f'buffer state_dim={buffer.states.shape[1]}'
+        )
+    if arrays['actions'].shape[1] != buffer.actions.shape[1]:
+        raise ValueError(
+            f'Replay cache action_dim={arrays["actions"].shape[1]} does not match '
+            f'buffer action_dim={buffer.actions.shape[1]}'
+        )
+    num_transitions = arrays['states'].shape[0]
+    if num_transitions > buffer.max_size:
+        raise ValueError(
+            f'Replay cache has {num_transitions} transitions but buffer capacity is {buffer.max_size}'
+        )
+
+    buffer.states[:num_transitions] = arrays['states']
+    buffer.actions[:num_transitions] = arrays['actions']
+    buffer.next_states[:num_transitions] = arrays['next_states']
+    buffer.rewards[:num_transitions] = arrays['rewards']
+    buffer.dones[:num_transitions] = arrays['dones']
+    buffer.ptr = num_transitions % buffer.max_size
+    buffer.size = num_transitions
+
+
+def describe_dataset_with_replay_cache(directory, cache_dir=None, prefer_cache=True,
+                                       show_progress=False, max_workers=1,
+                                       worker_backend='process'):
+    cache_path = replay_cache_path(directory, cache_dir=cache_dir)
+    if prefer_cache and replay_cache_exists(cache_path):
+        specs = infer_replay_cache_specs(cache_path)
+        description = dict(specs)
+        description.update({
+            'selected_format': 'replay_cache',
+            'replay_shard_count': 0,
+            'zarr_store_count': 0,
+            'json_file_count': 0,
+            'zarr_takes_precedence': False,
+            'dataset_has_explicit_next_state': specs.get('has_explicit_next_state', False),
+            'zarr_explicit_next_state_store_count': specs.get('explicit_next_state_store_count', 0),
+            'replay_cache_dir': str(cache_path),
+            'replay_cache_used': True,
+        })
+        return description
+
+    description = describe_dataset(
+        directory,
+        show_progress=show_progress,
+        max_workers=max_workers,
+        worker_backend=worker_backend,
+    )
+    description.update({
+        'replay_cache_dir': str(cache_path),
+        'replay_cache_used': False,
+    })
+    return description
+
+
+def _progress_iter(iterable, *, total=None, desc=None, enabled=True):
+    if not enabled:
+        return iterable
+    from tqdm import tqdm
+
+    return tqdm(iterable, total=total, desc=desc, unit='transition')
+
+
+def _load_zarr_transition_block(store_path, state_keys=None):
+    dataset = _zarr_reward_components_dataset(store_path)
+    try:
+        keys = list(state_keys) if state_keys is not None else _zarr_state_keys(dataset)
+        state_arrays = []
+        for key in keys:
+            var_name = f'state_{key}'
+            if var_name not in dataset:
+                raise KeyError(f'Missing Zarr state variable {var_name!r} in {store_path}')
+            state_arrays.append(np.asarray(dataset[var_name].values, dtype=np.float32))
+
+        if not state_arrays:
+            state_dim = len(keys)
+            action_dim = int(dataset.sizes.get('action_dim', 0))
+            return {
+                'state_keys': keys,
+                'has_explicit_next_state': False,
+                'states': np.empty((0, state_dim), dtype=np.float32),
+                'actions': np.empty((0, action_dim), dtype=np.float32),
+                'next_states': np.empty((0, state_dim), dtype=np.float32),
+                'rewards': np.empty((0, 1), dtype=np.float32),
+                'dones': np.empty((0, 1), dtype=np.float32),
+            }
+
+        states = np.ascontiguousarray(np.stack(state_arrays, axis=1), dtype=np.float32)
+        has_explicit_next_state = _zarr_has_explicit_next_state(dataset, keys)
+        if has_explicit_next_state:
+            next_state_arrays = [
+                np.asarray(dataset[f'next_state_{key}'].values, dtype=np.float32)
+                for key in keys
+            ]
+            next_states = np.ascontiguousarray(
+                np.stack(next_state_arrays, axis=1),
+                dtype=np.float32,
+            )
+        else:
+            next_states = np.zeros_like(states)
+            if states.shape[0] > 1:
+                dones = np.asarray(dataset['done'].values, dtype=np.float32)
+                not_terminal = dones[:-1] < 0.5
+                next_indices = np.nonzero(not_terminal)[0]
+                next_states[next_indices] = states[next_indices + 1]
+
+        actions = np.asarray(dataset['action'].values, dtype=np.float32)
+        if actions.ndim == 1:
+            actions = actions.reshape(-1, 1)
+
+        rewards = np.asarray(dataset['reward'].values, dtype=np.float32).reshape(-1, 1)
+        dones = np.asarray(dataset['done'].values, dtype=np.float32).reshape(-1, 1)
+
+        return {
+            'state_keys': keys,
+            'has_explicit_next_state': has_explicit_next_state,
+            'states': states,
+            'actions': np.ascontiguousarray(actions, dtype=np.float32),
+            'next_states': next_states,
+            'rewards': np.ascontiguousarray(rewards, dtype=np.float32),
+            'dones': np.ascontiguousarray(dones, dtype=np.float32),
+        }
+    finally:
+        dataset.close()
+
+
+def _fill_replay_arrays_from_transitions(directory, state_keys, arrays, *, total=None,
+                                         show_progress=True):
+    write_idx = 0
+    transitions = _progress_iter(
+        iter_d4rl_transitions(directory, state_keys),
+        total=total,
+        desc='materialize replay cache',
+        enabled=show_progress,
+    )
+    for state, action, next_state, reward, done in transitions:
+        arrays['states'][write_idx] = state
+        arrays['actions'][write_idx] = action
+        arrays['next_states'][write_idx] = next_state
+        arrays['rewards'][write_idx] = reward
+        arrays['dones'][write_idx] = done
+        write_idx += 1
+    return write_idx
+
+
+def _fill_replay_arrays_from_zarr_parallel(directory, state_keys, arrays, *,
+                                           total=None, max_workers=4,
+                                           show_progress=True,
+                                           worker_backend='process'):
+    stores = find_full_trajectory_zarr_stores(directory)
+    if max_workers <= 1 or not stores:
+        return _fill_replay_arrays_from_transitions(
+            directory,
+            state_keys,
+            arrays,
+            total=total,
+            show_progress=show_progress,
+        )
+
+    blocks = [None] * len(stores)
+    executor_cls = _replay_cache_executor(worker_backend)
+    progress = None
+    if show_progress:
+        from tqdm import tqdm
+
+        progress = tqdm(total=total, desc='read zarr replay blocks', unit='transition')
+
+    try:
+        with executor_cls(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(_load_zarr_transition_block, store_path, state_keys): idx
+                for idx, store_path in enumerate(stores)
+            }
+            for future in as_completed(futures):
+                idx = futures[future]
+                block = future.result()
+                blocks[idx] = block
+                if show_progress:
+                    progress.update(block['states'].shape[0])
+    finally:
+        if show_progress:
+            progress.close()
+
+    write_idx = 0
+    write_iter = blocks
+    if show_progress:
+        from tqdm import tqdm
+
+        write_iter = tqdm(blocks, desc='write replay cache', unit='trajectory')
+
+    for block in write_iter:
+        if block is None:
+            continue
+        block_size = block['states'].shape[0]
+        if block_size == 0:
+            continue
+        end_idx = write_idx + block_size
+        arrays['states'][write_idx:end_idx] = block['states']
+        arrays['actions'][write_idx:end_idx] = block['actions']
+        arrays['next_states'][write_idx:end_idx] = block['next_states']
+        arrays['rewards'][write_idx:end_idx] = block['rewards']
+        arrays['dones'][write_idx:end_idx] = block['dones']
+        write_idx = end_idx
+    return write_idx
+
+
+def _load_zarr_replay_blocks(directory, state_keys=None, *, max_workers=4,
+                             show_progress=True, worker_backend='process'):
+    stores = find_full_trajectory_zarr_stores(directory)
+    if not stores:
+        raise FileNotFoundError(f'No trajectory_*.zarr stores found in {directory}')
+
+    blocks = [None] * len(stores)
+    executor_cls = _replay_cache_executor(worker_backend)
+    progress = None
+    if show_progress:
+        from tqdm import tqdm
+
+        progress = tqdm(total=len(stores), desc='load zarr replay blocks', unit='store')
+
+    try:
+        if max_workers > 1:
+            with executor_cls(max_workers=max_workers) as executor:
+                futures = {
+                    executor.submit(_load_zarr_transition_block, store_path, state_keys): idx
+                    for idx, store_path in enumerate(stores)
+                }
+                for future in as_completed(futures):
+                    idx = futures[future]
+                    blocks[idx] = future.result()
+                    if progress is not None:
+                        progress.update(1)
+        else:
+            for idx, store_path in enumerate(stores):
+                blocks[idx] = _load_zarr_transition_block(store_path, state_keys)
+                if progress is not None:
+                    progress.update(1)
+    finally:
+        if progress is not None:
+            progress.close()
+
+    return blocks
+
+
+def _load_replay_shard_blocks(directory, state_keys=None, *, show_progress=True):
+    shard_files = find_replay_shard_files(directory)
+    if not shard_files:
+        raise FileNotFoundError(f'No trajectory_*.npz replay shards found in {directory}')
+
+    shard_iter = shard_files
+    if show_progress:
+        from tqdm import tqdm
+
+        shard_iter = tqdm(shard_files, desc='load replay shards', unit='shard')
+    return [
+        _load_replay_shard_block(shard_path, state_keys=state_keys)
+        for shard_path in shard_iter
+    ]
+
+
+def _replay_specs_from_zarr_blocks(blocks):
+    state_keys = None
+    action_dim = None
+    total_transitions = 0
+    nonempty_count = 0
+    explicit_next_state_count = 0
+
+    for block in blocks:
+        if block is None:
+            continue
+        block_state_keys = list(block['state_keys'])
+        block_action_dim = int(block['actions'].shape[1])
+        if state_keys is None:
+            state_keys = block_state_keys
+            action_dim = block_action_dim
+        elif state_keys != block_state_keys:
+            raise ValueError(
+                'Zarr replay block state keys differ within dataset: '
+                f'expected={state_keys!r}, got={block_state_keys!r}'
+            )
+        elif action_dim != block_action_dim:
+            raise ValueError(
+                'Zarr replay block action_dim differs within dataset: '
+                f'expected={action_dim}, got={block_action_dim}'
+            )
+
+        block_size = int(block['states'].shape[0])
+        if block_size == 0:
+            continue
+        total_transitions += block_size
+        nonempty_count += 1
+        if block.get('has_explicit_next_state', False):
+            explicit_next_state_count += 1
+
+    if state_keys is None or action_dim is None:
+        raise ValueError('No non-empty Zarr replay blocks found.')
+
+    return {
+        'selected_format': 'zarr',
+        'num_trajectories': nonempty_count,
+        'num_transitions': total_transitions,
+        'state_dim': len(state_keys),
+        'action_dim': action_dim,
+        'state_keys': state_keys,
+        'zarr_explicit_next_state_store_count': explicit_next_state_count,
+        'dataset_has_explicit_next_state': explicit_next_state_count == nonempty_count,
+    }
+
+
+def _write_replay_arrays_from_blocks(blocks, arrays, *, show_progress=True):
+    write_idx = 0
+    write_iter = blocks
+    if show_progress:
+        from tqdm import tqdm
+
+        write_iter = tqdm(blocks, desc='write replay cache', unit='trajectory')
+
+    for block in write_iter:
+        if block is None:
+            continue
+        block_size = block['states'].shape[0]
+        if block_size == 0:
+            continue
+        end_idx = write_idx + block_size
+        arrays['states'][write_idx:end_idx] = block['states']
+        arrays['actions'][write_idx:end_idx] = block['actions']
+        arrays['next_states'][write_idx:end_idx] = block['next_states']
+        arrays['rewards'][write_idx:end_idx] = block['rewards']
+        arrays['dones'][write_idx:end_idx] = block['dones']
+        write_idx = end_idx
+    return write_idx
+
+
+def _open_replay_memmaps(files, num_transitions, state_dim, action_dim):
+    return {
+        'states': np.lib.format.open_memmap(
+            files['states'], mode='w+', dtype=np.float32, shape=(num_transitions, state_dim)
+        ),
+        'actions': np.lib.format.open_memmap(
+            files['actions'], mode='w+', dtype=np.float32, shape=(num_transitions, action_dim)
+        ),
+        'next_states': np.lib.format.open_memmap(
+            files['next_states'], mode='w+', dtype=np.float32, shape=(num_transitions, state_dim)
+        ),
+        'rewards': np.lib.format.open_memmap(
+            files['rewards'], mode='w+', dtype=np.float32, shape=(num_transitions, 1)
+        ),
+        'dones': np.lib.format.open_memmap(
+            files['dones'], mode='w+', dtype=np.float32, shape=(num_transitions, 1)
+        ),
+    }
+
+
+def materialize_replay_cache(dataset_dir, cache_dir=None, *, overwrite=False,
+                             show_progress=True, max_workers=None,
+                             worker_backend=None):
+    """Materialize a compact IQL replay cache from replay-shard/JSON/Zarr outputs."""
+    dataset_dir = Path(dataset_dir).resolve()
+    if max_workers is None:
+        max_workers = int(
+            os.environ.get(
+                'REPLAY_CACHE_WORKERS',
+                os.environ.get('SLURM_CPUS_PER_TASK', os.cpu_count() or 1),
+            )
+        )
+    if worker_backend is None:
+        worker_backend = os.environ.get('REPLAY_CACHE_WORKER_BACKEND', 'process')
+    max_workers = max(1, int(max_workers))
+    final_cache_dir = replay_cache_path(dataset_dir, cache_dir=cache_dir)
+    if final_cache_dir.exists():
+        if not overwrite:
+            raise FileExistsError(
+                f'Replay cache already exists: {final_cache_dir}. '
+                'Pass overwrite=True to rebuild it.'
+            )
+
+    replay_shards = find_replay_shard_files(dataset_dir)
+    zarr_stores = find_full_trajectory_zarr_stores(dataset_dir)
+    blocks = None
+    if replay_shards:
+        blocks = _load_replay_shard_blocks(
+            dataset_dir,
+            show_progress=show_progress,
+        )
+        specs = _replay_specs_from_zarr_blocks(blocks)
+        specs['selected_format'] = 'replay_shards'
+    elif zarr_stores:
+        blocks = _load_zarr_replay_blocks(
+            dataset_dir,
+            max_workers=max_workers,
+            show_progress=show_progress,
+            worker_backend=worker_backend,
+        )
+        specs = _replay_specs_from_zarr_blocks(blocks)
+    else:
+        specs = describe_dataset(
+            dataset_dir,
+            show_progress=show_progress,
+            max_workers=max_workers,
+            worker_backend=worker_backend,
+        )
+    state_keys = list(specs['state_keys'])
+    num_transitions = int(specs['num_transitions'])
+    state_dim = int(specs['state_dim'])
+    action_dim = int(specs['action_dim'])
+
+    tmp_dir = final_cache_dir.with_name(
+        f'.{final_cache_dir.name}.tmp.{os.getpid()}'
+    )
+    if tmp_dir.exists():
+        shutil.rmtree(tmp_dir)
+    tmp_dir.mkdir(parents=True)
+    files = replay_cache_files(tmp_dir)
+
+    arrays = _open_replay_memmaps(files, num_transitions, state_dim, action_dim)
+
+    try:
+        if blocks is not None:
+            written = _write_replay_arrays_from_blocks(
+                blocks,
+                arrays,
+                show_progress=show_progress,
+            )
+        else:
+            written = _fill_replay_arrays_from_transitions(
+                dataset_dir,
+                state_keys,
+                arrays,
+                total=num_transitions,
+                show_progress=show_progress,
+            )
+        for array in arrays.values():
+            array.flush()
+        del arrays
+        if written != num_transitions:
+            raise ValueError(
+                f'Expected to write {num_transitions} transitions, wrote {written}.'
+            )
+
+        manifest = {
+            'schema_version': REPLAY_CACHE_VERSION,
+            'created_at': utc_now_iso(),
+            'source_dataset_dir': str(dataset_dir),
+            'source_format': specs['selected_format'],
+            'materialize_max_workers': int(max_workers),
+            'materialize_worker_backend': worker_backend,
+            'num_trajectories': int(specs['num_trajectories']),
+            'num_transitions': num_transitions,
+            'state_dim': state_dim,
+            'action_dim': action_dim,
+            'state_keys': state_keys,
+            'explicit_next_state_store_count': int(
+                specs.get('zarr_explicit_next_state_store_count', 0)
+            ),
+            'has_explicit_next_state': bool(
+                specs.get('dataset_has_explicit_next_state', False)
+            ),
+            'files': {
+                key: path.name
+                for key, path in files.items()
+                if key != 'manifest'
+            },
+        }
+        atomic_write_json(files['manifest'], manifest)
+        if final_cache_dir.exists():
+            shutil.rmtree(final_cache_dir)
+        os.replace(tmp_dir, final_cache_dir)
+    except Exception:
+        if tmp_dir.exists():
+            shutil.rmtree(tmp_dir)
+        raise
+
+    return load_replay_cache_manifest(final_cache_dir)

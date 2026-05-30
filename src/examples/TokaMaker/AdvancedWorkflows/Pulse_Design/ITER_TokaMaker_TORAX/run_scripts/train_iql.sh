@@ -40,6 +40,8 @@ EVAL_BATCH_SIZE="${EVAL_BATCH_SIZE:-2048}"
 EVAL_HISTOGRAM_INTERVAL="${EVAL_HISTOGRAM_INTERVAL:-5000}"
 EVAL_SEED="${EVAL_SEED:-0}"
 IQL_DEVICE="${IQL_DEVICE:-cuda}"
+REPLAY_CACHE_DIR="${REPLAY_CACHE_DIR:-}"
+USE_REPLAY_CACHE="${USE_REPLAY_CACHE:-1}"
 
 export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-4}"
@@ -68,11 +70,21 @@ echo "EVAL_BATCH_SIZE=${EVAL_BATCH_SIZE}"
 echo "EVAL_HISTOGRAM_INTERVAL=${EVAL_HISTOGRAM_INTERVAL}"
 echo "EVAL_SEED=${EVAL_SEED}"
 echo "IQL_DEVICE=${IQL_DEVICE}"
+echo "REPLAY_CACHE_DIR=${REPLAY_CACHE_DIR}"
+echo "USE_REPLAY_CACHE=${USE_REPLAY_CACHE}"
 nvidia-smi || true
 
 WANDB_SUBDIR_ARGS=()
 if [ "${USE_WANDB_RUN_SUBDIR}" != "0" ]; then
   WANDB_SUBDIR_ARGS=(--use_wandb_run_subdir)
+fi
+
+REPLAY_CACHE_ARGS=()
+if [ -n "${REPLAY_CACHE_DIR}" ]; then
+  REPLAY_CACHE_ARGS+=(--replay_cache_dir "${REPLAY_CACHE_DIR}")
+fi
+if [ "${USE_REPLAY_CACHE}" = "0" ]; then
+  REPLAY_CACHE_ARGS+=(--no_replay_cache)
 fi
 
 uv run python IQL.py \
@@ -95,4 +107,5 @@ uv run python IQL.py \
   --eval_histogram_interval "${EVAL_HISTOGRAM_INTERVAL}" \
   --eval_seed "${EVAL_SEED}" \
   --device "${IQL_DEVICE}" \
+  "${REPLAY_CACHE_ARGS[@]}" \
   "${WANDB_SUBDIR_ARGS[@]}"

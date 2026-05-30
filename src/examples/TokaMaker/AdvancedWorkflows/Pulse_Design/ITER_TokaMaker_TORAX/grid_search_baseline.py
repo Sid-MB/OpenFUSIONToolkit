@@ -4,13 +4,17 @@ import json
 import os
 import re
 from pathlib import Path
-from datetime import datetime
 
-from dataloader import find_trajectory_files
+import numpy as np
+
+from dataloader import (
+    find_full_trajectory_zarr_stores,
+    find_replay_shard_files,
+    find_trajectory_files,
+)
 
 
 DEFAULT_DATASET_DIR = "rl_dataset_delta_sampling_maxloop=2_grid_51_preprocessed"
-DEFAULT_OUTPUT_ROOT = Path("out/grid_search")
 RANKING_METRIC = "return_sum"
 
 
@@ -23,15 +27,16 @@ def parse_args():
         type=Path,
         default=Path(DEFAULT_DATASET_DIR),
         help=(
-            "Dataset root containing trajectories/trajectory_*.json, or an old "
-            f"flat trajectory_*.json directory. Default: {DEFAULT_DATASET_DIR}"
+            "Dataset root containing replay_shards/trajectory_*.npz, "
+            "trajectories/trajectory_*.json, full_trajectories/trajectory_*.zarr, "
+            f"or an old flat trajectory directory. Default: {DEFAULT_DATASET_DIR}"
         ),
     )
     parser.add_argument(
         "--output-dir",
         type=Path,
         default=None,
-        help="Directory for baseline output files. Default: out/grid_search/<dataset-name>_<timestamp>_<slurm-job-id>",
+        help="Directory for baseline output files. Default: <dataset-dir>/grid_search",
     )
     parser.add_argument(
         "--gamma",
@@ -59,10 +64,7 @@ def get_slurm_job_id():
 
 
 def default_output_dir(dataset_dir):
-    dataset_name = slugify(dataset_dir.resolve().name)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    slurm_job_id = slugify(get_slurm_job_id())
-    return DEFAULT_OUTPUT_ROOT / f"{dataset_name}_{timestamp}_{slurm_job_id}"
+    return dataset_dir / "grid_search"
 
 
 def resolve_output_dir(args):
@@ -71,7 +73,73 @@ def resolve_output_dir(args):
     return default_output_dir(args.dataset_dir)
 
 
-def load_trajectory(path):
+def to_jsonable(value):
+    if hasattr(value, "item"):
+        return value.item()
+    if isinstance(value, dict):
+        return {str(key): to_jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [to_jsonable(item) for item in value]
+    return value
+
+
+def find_trajectory_inputs(dataset_dir):
+    replay_shards = find_replay_shard_files(dataset_dir)
+    if replay_shards:
+        return "replay_shards", replay_shards
+
+    json_files = find_trajectory_files(dataset_dir)
+    if json_files:
+        return "json", json_files
+
+    zarr_stores = find_full_trajectory_zarr_stores(dataset_dir)
+    if zarr_stores:
+        return "zarr", zarr_stores
+
+    return None, []
+
+
+def load_replay_shard_trajectory(path):
+    try:
+        with np.load(path, allow_pickle=False) as data:
+            rewards = [float(value) for value in np.asarray(data["rewards"]).reshape(-1)]
+            actions = to_jsonable(np.asarray(data["actions"]).tolist())
+            run_id = int(np.asarray(data["run_id"]).item()) if "run_id" in data else None
+            summary_json = str(np.asarray(data["summary_json"]).item()) if "summary_json" in data else "{}"
+            actions_raw_json = (
+                str(np.asarray(data["actions_raw_json"]).item())
+                if "actions_raw_json" in data
+                else None
+            )
+    except Exception as exc:
+        raise ValueError(f"{path}: failed to open replay shard: {exc}") from exc
+
+    try:
+        summary = json.loads(summary_json) if summary_json else {}
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{path}: malformed summary_json: {exc}") from exc
+    if not isinstance(summary, dict):
+        raise ValueError(f"{path}: summary_json must decode to an object")
+
+    if actions_raw_json:
+        try:
+            actions_raw = json.loads(actions_raw_json)
+        except json.JSONDecodeError:
+            actions_raw = None
+        if actions_raw is not None:
+            actions = actions_raw
+
+    return {
+        "path": path,
+        "run_id": run_id,
+        "rewards": rewards,
+        "actions": actions,
+        "intervals": [{"t": None, "t_next": None} for _ in rewards],
+        "summary": summary,
+    }
+
+
+def load_json_trajectory(path):
     try:
         with path.open("r") as f:
             trajectory = json.load(f)
@@ -109,6 +177,68 @@ def load_trajectory(path):
         "intervals": intervals,
         "summary": summary,
     }
+
+
+def load_zarr_trajectory(path):
+    import xarray as xr
+    import zarr
+
+    try:
+        root = zarr.open_group(str(path), mode="r")
+        attrs = dict(root.attrs)
+        dataset = xr.open_zarr(path, group="reward_components", consolidated=False)
+    except Exception as exc:
+        raise ValueError(f"{path}: failed to open Zarr trajectory: {exc}") from exc
+
+    try:
+        if "reward" not in dataset:
+            raise ValueError(f"{path}: reward_components missing 'reward'")
+        if "action" not in dataset:
+            raise ValueError(f"{path}: reward_components missing 'action'")
+
+        rewards = [float(value) for value in dataset["reward"].values]
+        actions = to_jsonable(dataset["action"].values.tolist())
+
+        decision_t = dataset.coords.get("decision_t")
+        t_next = dataset.coords.get("t_next")
+        if decision_t is None:
+            t_values = [None] * len(rewards)
+        else:
+            t_values = to_jsonable(decision_t.values.tolist())
+        if t_next is None:
+            t_next_values = [None] * len(rewards)
+        else:
+            t_next_values = to_jsonable(t_next.values.tolist())
+
+        intervals = [
+            {"t": t_value, "t_next": t_next_value}
+            for t_value, t_next_value in zip(t_values, t_next_values)
+        ]
+
+        summary = attrs.get("summary") or {}
+        if not isinstance(summary, dict):
+            raise ValueError(f"{path}: root attr 'summary' must be an object when present")
+
+        return {
+            "path": path,
+            "run_id": attrs.get("run_id"),
+            "rewards": rewards,
+            "actions": actions,
+            "intervals": intervals,
+            "summary": to_jsonable(summary),
+        }
+    finally:
+        dataset.close()
+
+
+def load_trajectory(path, input_format):
+    if input_format == "replay_shards":
+        return load_replay_shard_trajectory(path)
+    if input_format == "json":
+        return load_json_trajectory(path)
+    if input_format == "zarr":
+        return load_zarr_trajectory(path)
+    raise ValueError(f"Unknown trajectory input format: {input_format}")
 
 
 def score_trajectory(trajectory, gamma):
@@ -173,9 +303,11 @@ def main():
     output_dir = resolve_output_dir(args)
     print(f"Output directory: {output_dir}")
 
-    trajectory_files = find_trajectory_files(args.dataset_dir)
+    input_format, trajectory_files = find_trajectory_inputs(args.dataset_dir)
     if not trajectory_files:
-        raise SystemExit(f"No trajectory_*.json files found in {args.dataset_dir}")
+        raise SystemExit(
+            f"No trajectory_*.json files or trajectory_*.zarr stores found in {args.dataset_dir}"
+        )
 
     if args.top_k < 1:
         raise SystemExit("--top-k must be at least 1")
@@ -184,7 +316,7 @@ def main():
     trajectories_by_path = {}
     summary_keys = set()
     for path in trajectory_files:
-        trajectory = load_trajectory(path)
+        trajectory = load_trajectory(path, input_format)
         row = score_trajectory(trajectory, args.gamma)
         trajectories_by_path[str(path)] = trajectory
         summary_keys.update(trajectory["summary"].keys())
@@ -211,6 +343,7 @@ def main():
     top_k_rows = scored[: args.top_k]
     summary_payload = {
         "dataset_dir": str(args.dataset_dir),
+        "input_format": input_format,
         "num_trajectories": len(scored),
         "ranking_metric": RANKING_METRIC,
         "gamma": args.gamma,
@@ -246,7 +379,7 @@ def main():
         json.dump(summary_payload, f, indent=2)
         f.write("\n")
 
-    print(f"Scanned {len(scored)} trajectories from {args.dataset_dir}")
+    print(f"Scanned {len(scored)} {input_format} trajectories from {args.dataset_dir}")
     print(f"Best path: {best_row['path']}")
     print(f"Best run_id: {best_row['run_id']}")
     print(f"return_sum: {best_row['return_sum']:.6f}")

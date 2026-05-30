@@ -7,7 +7,8 @@ set -euo pipefail
 #   changes to the example directory, chooses a timestamped output folder,
 #   initializes the shared dataset manifest/action table, optionally submits the
 #   initial relax cache job, and submits the john Slurm array that runs
-#   collect_trajectories_cpu_array.sh.
+#   collect_trajectories_cpu_array.sh. By default, it also submits a dependent
+#   john CPU job that materializes a compact replay cache for IQL.
 #
 # Should you call this directly?
 #   Yes. For the standard full run, paste the example below into your shell.
@@ -41,6 +42,14 @@ MAX_LOOP="${MAX_LOOP:-2}"
 GRID_SIZE="${GRID_SIZE:-51}"
 TRAJECTORY_TIMEOUT_SECONDS="${TRAJECTORY_TIMEOUT_SECONDS:-7200}"
 DRY_RUN="${DRY_RUN:-0}"
+SUBMIT_REPLAY_CACHE="${SUBMIT_REPLAY_CACHE:-1}"
+SUBMIT_IQL="${SUBMIT_IQL:-0}"
+REPLAY_CACHE_MEM="${REPLAY_CACHE_MEM:-120G}"
+REPLAY_CACHE_CPUS="${REPLAY_CACHE_CPUS:-8}"
+REPLAY_CACHE_WORKERS="${REPLAY_CACHE_WORKERS:-${REPLAY_CACHE_CPUS}}"
+REPLAY_CACHE_WORKER_BACKEND="${REPLAY_CACHE_WORKER_BACKEND:-process}"
+OVERWRITE_REPLAY_CACHE="${OVERWRITE_REPLAY_CACHE:-0}"
+REPLAY_CACHE_DIR="${REPLAY_CACHE_DIR:-}"
 OUTPUT_BASE_DIR="${OUTPUT_BASE_DIR:-./rl_dataset_delta_sampling_maxloop=2_grid_51_cpu_array_$(date +%Y%m%d_%H%M%S)}"
 INITIAL_RELAX_CACHE="${INITIAL_RELAX_CACHE:-${OUTPUT_BASE_DIR}/initial_relax_state.json}"
 
@@ -91,6 +100,14 @@ echo "USE_INITIAL_RELAX_CACHE=${USE_INITIAL_RELAX_CACHE}"
 echo "MAX_LOOP=${MAX_LOOP}"
 echo "GRID_SIZE=${GRID_SIZE}"
 echo "TRAJECTORY_TIMEOUT_SECONDS=${TRAJECTORY_TIMEOUT_SECONDS}"
+echo "SUBMIT_REPLAY_CACHE=${SUBMIT_REPLAY_CACHE}"
+echo "REPLAY_CACHE_MEM=${REPLAY_CACHE_MEM}"
+echo "REPLAY_CACHE_CPUS=${REPLAY_CACHE_CPUS}"
+echo "REPLAY_CACHE_WORKERS=${REPLAY_CACHE_WORKERS}"
+echo "REPLAY_CACHE_WORKER_BACKEND=${REPLAY_CACHE_WORKER_BACKEND}"
+echo "OVERWRITE_REPLAY_CACHE=${OVERWRITE_REPLAY_CACHE}"
+echo "REPLAY_CACHE_DIR=${REPLAY_CACHE_DIR}"
+echo "SUBMIT_IQL=${SUBMIT_IQL}"
 echo "DRY_RUN=${DRY_RUN}"
 
 if [ "${DRY_RUN}" != "0" ]; then
@@ -133,3 +150,34 @@ array_jid="$(
     "${SCRIPT_DIR}/collect_trajectories_cpu_array.sh"
 )"
 echo "array_jid=${array_jid}"
+
+replay_cache_jid=""
+if [ "${SUBMIT_REPLAY_CACHE}" != "0" ]; then
+  echo "Submitting dependent replay-cache materialization job..."
+  replay_cache_jid="$(
+    sbatch --parsable \
+      --dependency=afterok:${array_jid} \
+      --cpus-per-task="${REPLAY_CACHE_CPUS}" \
+      --mem="${REPLAY_CACHE_MEM}" \
+      --export=ALL,DATASET_DIR="${OUTPUT_BASE_DIR}",REPLAY_CACHE_DIR="${REPLAY_CACHE_DIR}",OVERWRITE_REPLAY_CACHE="${OVERWRITE_REPLAY_CACHE}",REPLAY_CACHE_WORKERS="${REPLAY_CACHE_WORKERS}",REPLAY_CACHE_WORKER_BACKEND="${REPLAY_CACHE_WORKER_BACKEND}" \
+      "${SCRIPT_DIR}/materialize_replay_cache.sh"
+  )"
+  echo "replay_cache_jid=${replay_cache_jid}"
+else
+  echo "Skipping replay-cache materialization submission."
+fi
+
+if [ "${SUBMIT_IQL}" != "0" ]; then
+  iql_dependency="${array_jid}"
+  if [ -n "${replay_cache_jid}" ]; then
+    iql_dependency="${replay_cache_jid}"
+  fi
+  echo "Submitting dependent IQL training job..."
+  iql_jid="$(
+    sbatch --parsable \
+      --dependency=afterok:${iql_dependency} \
+      --export=ALL,DATASET_DIR="${OUTPUT_BASE_DIR}",REPLAY_CACHE_DIR="${REPLAY_CACHE_DIR}" \
+      "${SCRIPT_DIR}/train_iql.sh"
+  )"
+  echo "iql_jid=${iql_jid}"
+fi
