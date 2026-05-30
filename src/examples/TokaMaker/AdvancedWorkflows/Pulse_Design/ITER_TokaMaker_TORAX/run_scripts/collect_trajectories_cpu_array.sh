@@ -2,7 +2,7 @@
 
 #SBATCH --account=nlp
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=16G
+#SBATCH --mem=128G
 #SBATCH --partition=john
 #SBATCH --array=0-399%16
 #SBATCH --output=logs/%x-%A_%a.out
@@ -26,7 +26,7 @@
 #     --output_dir "${OUTPUT_BASE_DIR}" --max_loop "${MAX_LOOP}" \
 #     --grid_size "${GRID_SIZE}" --init_dataset_only
 #   START_IDX=600 END_IDX=1000 USE_INITIAL_RELAX_CACHE=0 N_WORKERS=1 CHUNK_SIZE=1 \
-#     sbatch --cpus-per-task=4 --mem=16G --array=0-399%16 \
+#     sbatch --cpus-per-task=4 --mem=128G --array=0-399%16 \
 #       run_scripts/collect_trajectories_cpu_array.sh
 #
 # Slurm array syntax:
@@ -196,7 +196,13 @@ add_bool_output_arg SAVE_FULL_ZARR --save_full_zarr --no_save_full_zarr
 add_bool_output_arg SAVE_JSON --save_json --no_save_json
 
 if [ "${USE_INITIAL_RELAX_CACHE}" != "0" ]; then
-  require_env INITIAL_RELAX_CACHE
+  # INITIAL_RELAX_CACHE is normally exported by the submit helper; resolve the
+  # keyed path here too so direct invocations work.
+  if [ -z "${INITIAL_RELAX_CACHE:-}" ]; then
+    INITIAL_RELAX_CACHE="$(uv run python collect_trajectories_delta.py \
+      --print_initial_relax_cache_path --grid_size "${GRID_SIZE:-51}" \
+      ${INITIAL_RELAX_CACHE_DIR:+--initial_relax_cache_dir "${INITIAL_RELAX_CACHE_DIR}"})"
+  fi
   if [ ! -s "${INITIAL_RELAX_CACHE}" ]; then
     echo "ERROR: shared initial relax cache is missing: ${INITIAL_RELAX_CACHE}" >&2
     echo "Submit collect_initial_relax_cache_cpu.sh first and submit this array with --dependency=afterok:<cache_job_id>." >&2

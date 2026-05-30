@@ -464,6 +464,7 @@ def train_from_config(
     actor_eval_run_name,
     actor_eval_wandb_mode,
     actor_eval_initial_relax_state,
+    actor_eval_initial_relax_cache_dir,
     actor_eval_max_loop,
     actor_eval_grid_size,
     actor_eval_device,
@@ -495,6 +496,7 @@ def train_from_config(
         "actor_eval_run_name": actor_eval_run_name,
         "actor_eval_wandb_mode": actor_eval_wandb_mode,
         "actor_eval_initial_relax_state": actor_eval_initial_relax_state,
+        "actor_eval_initial_relax_cache_dir": actor_eval_initial_relax_cache_dir,
         "actor_eval_max_loop": actor_eval_max_loop,
         "actor_eval_grid_size": actor_eval_grid_size,
         "actor_eval_device": actor_eval_device,
@@ -679,6 +681,7 @@ def train_from_config(
             run_name=eval_run_name,
             wandb_mode=config.get("actor_eval_wandb_mode") or wandb_mode,
             initial_relax_state=config.get("actor_eval_initial_relax_state"),
+            initial_relax_cache_dir=config.get("actor_eval_initial_relax_cache_dir"),
             max_loop=int(config.get("actor_eval_max_loop", 0)),
             grid_size=int(config.get("actor_eval_grid_size", 51)),
             device=config.get("actor_eval_device"),
@@ -759,6 +762,7 @@ def parse_args(argv):
     parser.add_argument("--actor_eval_run_name", default=None)
     parser.add_argument("--actor_eval_wandb_mode", default=os.environ.get("ACTOR_EVAL_WANDB_MODE"))
     parser.add_argument("--actor_eval_initial_relax_state", default=None)
+    parser.add_argument("--actor_eval_initial_relax_cache_dir", default=None)
     parser.add_argument("--actor_eval_max_loop", type=int, default=2)
     parser.add_argument("--actor_eval_grid_size", type=int, default=51)
     parser.add_argument("--actor_eval_device", default=None)
@@ -799,6 +803,7 @@ def train_kwargs_from_args(args):
         "actor_eval_run_name": args.actor_eval_run_name,
         "actor_eval_wandb_mode": args.actor_eval_wandb_mode,
         "actor_eval_initial_relax_state": args.actor_eval_initial_relax_state,
+        "actor_eval_initial_relax_cache_dir": args.actor_eval_initial_relax_cache_dir,
         "actor_eval_max_loop": args.actor_eval_max_loop,
         "actor_eval_grid_size": args.actor_eval_grid_size,
         "actor_eval_device": args.actor_eval_device,

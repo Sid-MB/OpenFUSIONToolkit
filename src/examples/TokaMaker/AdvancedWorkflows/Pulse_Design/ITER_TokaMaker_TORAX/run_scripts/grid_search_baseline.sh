@@ -2,7 +2,7 @@
 
 #SBATCH --account=nlp
 #SBATCH --cpus-per-task=1
-#SBATCH --mem=8G
+#SBATCH --mem=128G
 #SBATCH --partition=john
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err

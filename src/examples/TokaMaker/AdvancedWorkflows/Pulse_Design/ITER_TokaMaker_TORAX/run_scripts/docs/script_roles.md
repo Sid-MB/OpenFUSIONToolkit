@@ -28,11 +28,12 @@ Use `submit_collect_trajectories_cpu_array.sh` for normal production runs.
 ## Cache Builders
 
 - `collect_initial_relax_cache_cpu.sh`
-  - Builds only `initial_relax_state.json` on `john`.
+  - Builds only the keyed initial-relax cache (`initial_relax_<key>.json`) on `john`.
+  - Resolves the path from `INITIAL_RELAX_CACHE_DIR` (or `INITIAL_RELAX_CACHE` override).
   - Usually called through the submit helper with `USE_INITIAL_RELAX_CACHE=1`.
 
 - `collect_initial_relax_cache_gpu.sh`
-  - Builds only `initial_relax_state.json` on `jag-standard`.
+  - Builds only the keyed initial-relax cache (`initial_relax_<key>.json`) on `jag-standard`.
   - Use only when intentionally benchmarking a GPU-built cache.
 
 ## Setup

@@ -1,5 +1,7 @@
 /logs/
+/rl_dataset/
 /rl_dataset_*/
+/initial_relax_cache/
 /*.prof
 /*.log
 /visualize/out/

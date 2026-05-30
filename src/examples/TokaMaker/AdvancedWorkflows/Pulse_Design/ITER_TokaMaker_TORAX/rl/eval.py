@@ -38,8 +38,8 @@ def _default_action_row():
     actions = []
     for decision_t in DECISION_TIMES:
         knot_t = decision_t + 20
-        ecrh_mw, nbi_mw = TokaMaker_TORAX._rl_default_action_mw_at_time(knot_t)
-        actions.append([ecrh_mw * 1e6, nbi_mw * 1e6])
+        ecrh_w, nbi_w = TokaMaker_TORAX._rl_default_action_w_at_time(knot_t)
+        actions.append([ecrh_w, nbi_w])
     return np.asarray(actions, dtype=np.float64)
 
 
@@ -114,18 +114,24 @@ def run_actor_eval_from_config(
     run_name=None,
     wandb_mode=None,
     initial_relax_state=None,
+    initial_relax_cache_dir=None,
     max_loop=2,
     grid_size=51,
     device=None,
     replay_cache_dir=None,
     prefer_replay_cache=True,
     allow_cpu_jax_on_gpu=False,
+    rl_segment_timeout_seconds=1800,
+    rl_max_action_power_w=150.0e6,
 ):
     from collect_trajectories_delta import (
         build_initial_relax_cache,
         configure_tmtx,
+        default_initial_relax_cache_dir,
+        default_relax_geometry,
         patch_initial_relax_cache_loader,
         preflight_required_inputs,
+        resolve_initial_relax_cache_path,
         resolve_seed_eqdsk_paths,
         setup_tokamaker,
         validate_jax_backend,
@@ -141,20 +147,44 @@ def run_actor_eval_from_config(
         prefer_replay_cache=prefer_replay_cache,
     )
 
-    if initial_relax_state is None and dataset_dir is not None:
-        candidate = Path(dataset_dir) / "initial_relax_state.json"
-        if candidate.is_file():
-            initial_relax_state = str(candidate)
     if device is not None:
         os.environ["CUDA_VISIBLE_DEVICES"] = str(device)
 
     cwd = Path.cwd()
     eqdsk_list = resolve_seed_eqdsk_paths(str(cwd))
+
+    action_row = _default_action_row()
+    geom = default_relax_geometry()
+    coil_bounds = geom["coil_bounds"]
+    eqtimes = geom["eqtimes"]
+    x_points = geom["x_points"]
+    psi_sample = geom["psi_sample"]
+    ip_targets = geom["Ip_targets"]
+    ne_init = geom["ne_init"]
+    te_init = geom["Te_init"]
+
+    # Resolve the shared initial-relax cache. Explicit path wins; otherwise reuse
+    # a dataset's legacy cache if present; otherwise use a keyed file in the
+    # shared cache dir (built on demand below).
+    relax_cache_params = None
+    if initial_relax_state is None:
+        legacy = None if dataset_dir is None else Path(dataset_dir) / "initial_relax_state.json"
+        if legacy is not None and legacy.is_file():
+            initial_relax_state = str(legacy)
+        else:
+            cache_dir = initial_relax_cache_dir or default_initial_relax_cache_dir()
+            initial_relax_state, relax_key, relax_cache_params = resolve_initial_relax_cache_path(
+                cache_dir, grid_size, ne_init, te_init, psi_sample,
+                eqtimes, ip_targets, coil_bounds, x_points, eqdsk_list,
+            )
+            logger.info("Keyed initial relax cache: %s (key=%s)", initial_relax_state, relax_key)
+
+    relax_cache_exists = initial_relax_state is not None and os.path.exists(initial_relax_state)
     preflight_required_inputs(
         str(cwd),
         eqdsk_list,
         initial_relax_cache=initial_relax_state,
-        require_initial_relax_cache=initial_relax_state is not None,
+        require_initial_relax_cache=relax_cache_exists,
     )
     validate_jax_backend(require_cuda_on_gpu=not allow_cpu_jax_on_gpu)
 
@@ -171,6 +201,8 @@ def run_actor_eval_from_config(
         "action_dim": int(ckpt.get("action_dim", 2)),
         "state_keys": ckpt.get("state_keys"),
         "dataset_specs": dataset_specs,
+        "rl_segment_timeout_seconds": rl_segment_timeout_seconds,
+        "rl_max_action_power_w": rl_max_action_power_w,
     }
     wandb_kwargs = {"project": project, "config": _plain(config), "reinit": True}
     if run_name:
@@ -181,34 +213,27 @@ def run_actor_eval_from_config(
 
     log_dir = output_dir / "tokamaker_torax_logs"
     log_dir.mkdir(parents=True, exist_ok=True)
-    action_row = _default_action_row()
 
-    coil_bounds = {key: [-50.0e6, 50.0e6] for key in [
-        "CS3U", "CS2U", "CS1U", "CS1L", "CS2L", "CS3L",
-        "PF1", "PF2", "PF3", "PF4", "PF5", "PF6", "VS",
-    ]}
-    eqtimes = [0, 30, 80, 500, 600]
-    x_points = np.array([[5.125, -3.4]])
-    psi_sample = np.linspace(0.0, 1.0, 25)
-    ip_targets = [1.5e6, 5e6, 15e6, 15e6, 1.5e6]
-    ne_init = np.array([
-        3.00e19, 2.73e19, 2.49e19, 2.28e19, 2.09e19,
-        1.92e19, 1.78e19, 1.65e19, 1.54e19, 1.44e19,
-        1.35e19, 1.27e19, 1.20e19, 1.14e19, 1.09e19,
-        1.04e19, 9.98e18, 9.61e18, 9.29e18, 9.00e18,
-        8.75e18, 8.52e18, 8.33e18, 8.15e18, 8.00e18,
-    ])
-    te_init = np.array([
-        1.50, 1.33, 1.17, 1.04, 0.92, 0.82, 0.72, 0.64,
-        0.57, 0.50, 0.45, 0.40, 0.36, 0.32, 0.28, 0.25,
-        0.23, 0.20, 0.18, 0.16, 0.15, 0.13, 0.12, 0.11, 0.10,
-    ])
+    def log_rl_event(event):
+        if event.get("event") != "decision":
+            return
+        try:
+            wandb.log({
+                "actor_eval_live/decision_index": int(event["decision_index"]),
+                "actor_eval_live/decision_t": float(event["decision_t"]),
+                "actor_eval_live/knot_t": float(event["knot_t"]),
+                "actor_eval_live/ecrh_W": float(event["ecrh_W"]),
+                "actor_eval_live/nbi_W": float(event["nbi_W"]),
+                "actor_eval_live/ecrh_MW": float(event["ecrh_MW"]),
+                "actor_eval_live/nbi_MW": float(event["nbi_MW"]),
+            })
+        except Exception as exc:
+            logger.warning("Could not stream RL event to wandb: %s", exc)
 
     started = datetime.now().isoformat()
     try:
         mygs, _, _, _ = setup_tokamaker(str(cwd))
-        if initial_relax_state is None:
-            initial_relax_state = str(output_dir / "initial_relax_state.json")
+        if not os.path.exists(initial_relax_state):
             build_initial_relax_cache(
                 mygs,
                 action_row,
@@ -223,6 +248,7 @@ def run_actor_eval_from_config(
                 psi_sample,
                 log_dir=str(log_dir),
                 grid_size=grid_size,
+                params=relax_cache_params,
             )
 
         tmtx = configure_tmtx(
@@ -251,6 +277,9 @@ def run_actor_eval_from_config(
             log_dir=str(log_dir),
             use_rl_actor=True,
             actor_checkpoint=str(actor_path),
+            rl_event_callback=log_rl_event,
+            rl_segment_timeout_seconds=rl_segment_timeout_seconds,
+            rl_max_action_power_w=rl_max_action_power_w,
         )
 
         with redirect_stdout(io.StringIO()):
@@ -275,12 +304,10 @@ def run_actor_eval_from_config(
             if key in summary:
                 metrics[f"actor_eval/{key}"] = float(summary[key])
 
+        action_columns = ["decision_t", "knot_t", "ecrh_W", "nbi_W", "ecrh_MW", "nbi_MW"]
         action_table = wandb.Table(
-            columns=["decision_t", "knot_t", "ecrh_MW", "nbi_MW"],
-            data=[
-                [row["decision_t"], row["knot_t"], row["ecrh_MW"], row["nbi_MW"]]
-                for row in actions
-            ],
+            columns=action_columns,
+            data=[[row[column] for column in action_columns] for row in actions],
         )
         reward_table = wandb.Table(
             columns=["decision_index", "reward"],
@@ -325,13 +352,31 @@ def parse_args():
     parser.add_argument("--project", default=os.environ.get("WANDB_PROJECT", "iql-training"))
     parser.add_argument("--run_name", default=None)
     parser.add_argument("--wandb_mode", default=os.environ.get("WANDB_MODE"))
-    parser.add_argument("--initial_relax_state", default=None)
+    parser.add_argument("--initial_relax_state", default=None,
+                        help="Explicit initial-relax cache path (legacy/override). When "
+                             "omitted, a keyed file in --initial_relax_cache_dir is used.")
+    parser.add_argument("--initial_relax_cache_dir", default=None,
+                        help="Shared directory for initial-relax caches keyed by "
+                             "(grid_size, initial profiles, equilibrium). Defaults to the "
+                             "INITIAL_RELAX_CACHE_DIR env var or <repo>/initial_relax_cache.")
     parser.add_argument("--max_loop", type=int, default=2)
     parser.add_argument("--grid_size", type=int, default=51)
     parser.add_argument("--device", default=None)
     parser.add_argument("--replay_cache_dir", default=None)
     parser.add_argument("--no_replay_cache", action="store_true")
     parser.add_argument("--allow_cpu_jax_on_gpu", action="store_true")
+    parser.add_argument(
+        "--rl_segment_timeout_seconds",
+        type=float,
+        default=float(os.environ.get("RL_SEGMENT_TIMEOUT_SECONDS", "1800")),
+        help="Wall-clock timeout per RL TORAX segment; <=0 disables.",
+    )
+    parser.add_argument(
+        "--rl_max_action_power_w",
+        type=float,
+        default=float(os.environ.get("RL_MAX_ACTION_POWER_W", "150000000")),
+        help="Per-actuator RL action cap in watts; <=0 disables.",
+    )
     return parser.parse_args()
 
 
@@ -349,12 +394,15 @@ def main():
         run_name=args.run_name,
         wandb_mode=args.wandb_mode,
         initial_relax_state=args.initial_relax_state,
+        initial_relax_cache_dir=args.initial_relax_cache_dir,
         max_loop=args.max_loop,
         grid_size=args.grid_size,
         device=args.device,
         replay_cache_dir=args.replay_cache_dir,
         prefer_replay_cache=not args.no_replay_cache,
         allow_cpu_jax_on_gpu=args.allow_cpu_jax_on_gpu,
+        rl_segment_timeout_seconds=args.rl_segment_timeout_seconds,
+        rl_max_action_power_w=args.rl_max_action_power_w,
     )
 
 

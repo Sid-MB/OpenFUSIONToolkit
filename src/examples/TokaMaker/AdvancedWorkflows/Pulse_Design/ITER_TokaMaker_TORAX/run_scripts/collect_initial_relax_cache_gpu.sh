@@ -43,11 +43,20 @@ MAX_LOOP="${MAX_LOOP:-2}"
 GRID_SIZE="${GRID_SIZE:-51}"
 RUN_ID="${SLURM_JOB_ID:-$(date +%Y%m%d_%H%M%S)}"
 OUTPUT_BASE_DIR="${OUTPUT_BASE_DIR:-./rl_dataset_delta_sampling_maxloop=2_grid_51_gpu_cache_cpu_array_${RUN_ID}}"
-INITIAL_RELAX_CACHE="${INITIAL_RELAX_CACHE:-${OUTPUT_BASE_DIR}/initial_relax_state.json}"
+# Shared keyed initial-relax cache. INITIAL_RELAX_CACHE (explicit path) overrides;
+# otherwise a keyed file in INITIAL_RELAX_CACHE_DIR is used (resolved below).
+INITIAL_RELAX_CACHE="${INITIAL_RELAX_CACHE:-}"
+INITIAL_RELAX_CACHE_DIR="${INITIAL_RELAX_CACHE_DIR:-}"
 
 export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-4}"
 export OFT_NUM_THREADS="${SLURM_CPUS_PER_TASK:-4}"
+
+if [ -z "${INITIAL_RELAX_CACHE}" ]; then
+  INITIAL_RELAX_CACHE="$(uv run --extra cuda13 python collect_trajectories_delta.py \
+    --print_initial_relax_cache_path --grid_size "${GRID_SIZE}" \
+    ${INITIAL_RELAX_CACHE_DIR:+--initial_relax_cache_dir "${INITIAL_RELAX_CACHE_DIR}"})"
+fi
 
 echo "Running on host: $(hostname)"
 echo "N_TRAJECTORIES=${N_TRAJECTORIES}"
@@ -60,6 +69,7 @@ echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}"
 echo "OFT_SELECTED_FLAVOR=${OFT_SELECTED_FLAVOR}"
 echo "OFT_SELECTED_INSTALL=${OFT_SELECTED_INSTALL}"
 echo "OUTPUT_BASE_DIR=${OUTPUT_BASE_DIR}"
+echo "INITIAL_RELAX_CACHE_DIR=${INITIAL_RELAX_CACHE_DIR:-<default>}"
 echo "INITIAL_RELAX_CACHE=${INITIAL_RELAX_CACHE}"
 
 mkdir -p "${OUTPUT_BASE_DIR}"

@@ -30,6 +30,8 @@ import os
 import sys
 import time
 import argparse
+import hashlib
+import json
 import multiprocessing as mp
 import signal
 import copy
@@ -716,9 +718,122 @@ def configure_tmtx(mygs, action_row, eqdsk_list, eqtimes, coil_bounds, x_points,
     return tmtx
 
 
+def default_relax_geometry():
+    """Single source of truth for the fixed initial conditions / equilibrium that
+    determine the shared initial TORAX relax state.
+
+    Both trajectory collection and actor eval consume this so they compute
+    identical initial-relax cache keys. Changing any value here changes the
+    cache key (and therefore the cache filename) for every caller at once."""
+    coil_bounds = {key: [-50.e6, 50.e6] for key in [
+        'CS3U', 'CS2U', 'CS1U', 'CS1L', 'CS2L', 'CS3L',
+        'PF1', 'PF2', 'PF3', 'PF4', 'PF5', 'PF6', 'VS',
+    ]}
+    return {
+        'coil_bounds': coil_bounds,
+        'Ip_targets': [1.5e6, 5e6, 15e6, 15e6, 1.5e6],
+        'eqtimes': [0, 30, 80, 500, 600],
+        'x_points': np.array([[5.125, -3.4]]),
+        'psi_sample': np.linspace(0.0, 1.0, 25),
+        'ne_init': np.array([3.00e+19, 2.73e+19, 2.49e+19, 2.28e+19, 2.09e+19,
+                             1.92e+19, 1.78e+19, 1.65e+19, 1.54e+19, 1.44e+19,
+                             1.35e+19, 1.27e+19, 1.20e+19, 1.14e+19, 1.09e+19,
+                             1.04e+19, 9.98e+18, 9.61e+18, 9.29e+18, 9.00e+18,
+                             8.75e+18, 8.52e+18, 8.33e+18, 8.15e+18, 8.00e+18]),
+        'Te_init': np.array([1.50, 1.33, 1.17, 1.04, 0.92, 0.82, 0.72, 0.64,
+                             0.57, 0.50, 0.45, 0.40, 0.36, 0.32, 0.28, 0.25,
+                             0.23, 0.20, 0.18, 0.16, 0.15, 0.13, 0.12, 0.11, 0.10]),
+    }
+
+
+# ── Keyed initial-relax cache ────────────────────────────────────────────────
+# The shared initial TORAX relax happens at t=0, before any RL decision, so it
+# depends only on the fixed initial conditions / equilibrium (NOT on the heating
+# action or the policy). We therefore key cache files by a hash of those inputs
+# so that every distinct (grid_size, initial profiles, equilibrium) combination
+# gets its own file under a shared cache directory, and identical combinations
+# transparently reuse the same file.
+INITIAL_RELAX_CACHE_KEY_VERSION = 1
+DEFAULT_INITIAL_RELAX_CACHE_DIRNAME = 'initial_relax_cache'
+
+
+def canonical_initial_relax_params(grid_size, ne_init, Te_init, psi_sample,
+                                   eqtimes, Ip_targets, coil_bounds,
+                                   x_points, eqdsk_list):
+    """Canonical, JSON-serializable description of everything that determines
+    the shared initial relax state. Must stay identical across collection and
+    eval so they share cache files."""
+    def _round_list(arr):
+        return [round(float(v), 12) for v in np.asarray(arr, dtype=float).ravel()]
+
+    return {
+        'version': INITIAL_RELAX_CACHE_KEY_VERSION,
+        'grid_size': int(grid_size),
+        'ne_init': _round_list(ne_init),
+        'Te_init': _round_list(Te_init),
+        'psi_sample': _round_list(psi_sample),
+        'eqtimes': _round_list(eqtimes),
+        'Ip_targets': _round_list(Ip_targets),
+        'x_points': _round_list(x_points),
+        'coil_bounds': {k: _round_list(v) for k, v in sorted(coil_bounds.items())},
+        'eqdsk': [os.path.basename(str(p)) for p in (eqdsk_list or [])],
+    }
+
+
+def initial_relax_cache_key(grid_size, ne_init, Te_init, psi_sample, eqtimes,
+                            Ip_targets, coil_bounds, x_points, eqdsk_list):
+    """Return (key, params) where key is a short stable hash of the inputs."""
+    params = canonical_initial_relax_params(
+        grid_size, ne_init, Te_init, psi_sample, eqtimes, Ip_targets,
+        coil_bounds, x_points, eqdsk_list,
+    )
+    blob = json.dumps(params, sort_keys=True, separators=(',', ':'))
+    key = hashlib.sha1(blob.encode('utf-8')).hexdigest()[:16]
+    return key, params
+
+
+def default_initial_relax_cache_dir():
+    """Shared cache directory for keyed initial-relax states.
+
+    Overridable via the INITIAL_RELAX_CACHE_DIR env var; defaults to
+    ``<this_dir>/initial_relax_cache``."""
+    env = os.environ.get('INITIAL_RELAX_CACHE_DIR')
+    if env:
+        return os.path.abspath(env)
+    return os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        DEFAULT_INITIAL_RELAX_CACHE_DIRNAME,
+    )
+
+
+def resolve_initial_relax_cache_path(cache_dir, grid_size, ne_init, Te_init,
+                                     psi_sample, eqtimes, Ip_targets,
+                                     coil_bounds, x_points, eqdsk_list):
+    """Resolve the keyed cache file path inside ``cache_dir``.
+
+    Returns (cache_path, key, params)."""
+    key, params = initial_relax_cache_key(
+        grid_size, ne_init, Te_init, psi_sample, eqtimes, Ip_targets,
+        coil_bounds, x_points, eqdsk_list,
+    )
+    cache_path = os.path.join(os.path.abspath(cache_dir), f'initial_relax_{key}.json')
+    return cache_path, key, params
+
+
+def write_initial_relax_cache_params(cache_path, params):
+    """Write a human-readable sidecar describing the cache's key params."""
+    sidecar = os.path.splitext(cache_path)[0] + '.params.json'
+    try:
+        with open(sidecar, 'w') as fh:
+            json.dump(params, fh, indent=2, sort_keys=True)
+    except OSError:
+        pass
+
+
 def build_initial_relax_cache(mygs, action_row, cache_path, eqdsk_list, eqtimes,
                               coil_bounds, x_points, Ip_targets, ne_init,
-                              Te_init, psi_sample, log_dir, grid_size):
+                              Te_init, psi_sample, log_dir, grid_size,
+                              params=None):
     """Run the shared initial TORAX relax once and save it for all trajectories."""
     if os.path.exists(cache_path):
         print(f'Using existing initial relax cache: {cache_path}')
@@ -740,6 +855,12 @@ def build_initial_relax_cache(mygs, action_row, cache_path, eqdsk_list, eqtimes,
         save_initial_relax_state=cache_path,
         log_dir=log_dir,
     )
+    if params is None:
+        _, params = initial_relax_cache_key(
+            grid_size, ne_init, Te_init, psi_sample, eqtimes, Ip_targets,
+            coil_bounds, x_points, eqdsk_list,
+        )
+    write_initial_relax_cache_params(cache_path, params)
     return cache_path
 
 
@@ -970,7 +1091,15 @@ if __name__ == '__main__':
     parser.add_argument('--end_idx',        type=int, default=None,
                         help='Exclusive end trajectory index; defaults to n_trajectories')
     parser.add_argument('--initial_relax_cache', type=str, default=None,
-                        help='Path for shared initial TORAX relax cache; defaults inside output_dir')
+                        help='Explicit path for the initial TORAX relax cache (legacy/override). '
+                             'When omitted, a keyed file inside --initial_relax_cache_dir is used.')
+    parser.add_argument('--initial_relax_cache_dir', type=str, default=None,
+                        help='Shared directory holding initial-relax caches keyed by '
+                             '(grid_size, initial profiles, equilibrium). Defaults to the '
+                             'INITIAL_RELAX_CACHE_DIR env var or <script_dir>/initial_relax_cache.')
+    parser.add_argument('--print_initial_relax_cache_path', action='store_true',
+                        help='Print the resolved keyed initial-relax cache path and exit '
+                             '(no TokaMaker/JAX initialization).')
     parser.add_argument('--no_initial_relax_cache', action='store_true',
                         help='Disable shared initial relax cache and run initial relax per trajectory')
     parser.add_argument('--build_initial_relax_cache_only', action='store_true',
@@ -1014,6 +1143,23 @@ if __name__ == '__main__':
     cwd = os.getcwd()
     require_cuda_on_gpu = not args.allow_cpu_jax_on_gpu
 
+    # Resolve and print the keyed cache path without any dataset side effects.
+    if args.print_initial_relax_cache_path:
+        if args.no_initial_relax_cache:
+            print('')
+        elif args.initial_relax_cache is not None:
+            print(os.path.abspath(args.initial_relax_cache))
+        else:
+            geom = default_relax_geometry()
+            cache_dir = args.initial_relax_cache_dir or default_initial_relax_cache_dir()
+            cache_path, _, _ = resolve_initial_relax_cache_path(
+                cache_dir, args.grid_size, geom['ne_init'], geom['Te_init'],
+                geom['psi_sample'], geom['eqtimes'], geom['Ip_targets'],
+                geom['coil_bounds'], geom['x_points'], resolve_seed_eqdsk_paths(cwd),
+            )
+            print(cache_path)
+        sys.exit(0)
+
     paths = ensure_dataset_dirs(args.output_dir)
     chunk_dir = None
     if args.chunk_dir is not None:
@@ -1053,29 +1199,36 @@ if __name__ == '__main__':
     print(f'Action matrix ready: {paths["actions"]}; shape {all_actions.shape}')
 
     # ── Fixed simulation parameters ───────────────────────────────────────────
-    coil_bounds = {key: [-50.e6, 50.e6] for key in [
-        'CS3U', 'CS2U', 'CS1U', 'CS1L', 'CS2L', 'CS3L',
-        'PF1', 'PF2', 'PF3', 'PF4', 'PF5', 'PF6', 'VS'
-    ]}
-
-    Ip_targets = [1.5e6, 5e6, 15e6, 15e6, 1.5e6]
-    eqdsk_list = resolve_seed_eqdsk_paths(cwd)
-    eqtimes    = [0, 30, 80, 500, 600]
-    x_points   = np.array([[5.125, -3.4]])
+    geom = default_relax_geometry()
+    coil_bounds = geom['coil_bounds']
+    Ip_targets  = geom['Ip_targets']
+    eqdsk_list  = resolve_seed_eqdsk_paths(cwd)
+    eqtimes     = geom['eqtimes']
+    x_points    = geom['x_points']
     diverted_isoflux_pts = np.array([
         [8.20, 0.41], [8.06, 1.46], [7.51, 2.62], [6.14, 3.78],
         [5.10, 3.72], [4.51, 3.02], [4.26, 1.33], [4.28, 0.08],
         [4.49, -1.34], [7.28, -1.89], [8.00, -0.68]
     ])
-    psi_sample = np.linspace(0.0, 1.0, 25)
-    ne_init = np.array([3.00e+19, 2.73e+19, 2.49e+19, 2.28e+19, 2.09e+19,
-                        1.92e+19, 1.78e+19, 1.65e+19, 1.54e+19, 1.44e+19,
-                        1.35e+19, 1.27e+19, 1.20e+19, 1.14e+19, 1.09e+19,
-                        1.04e+19, 9.98e+18, 9.61e+18, 9.29e+18, 9.00e+18,
-                        8.75e+18, 8.52e+18, 8.33e+18, 8.15e+18, 8.00e+18])
-    Te_init = np.array([1.50, 1.33, 1.17, 1.04, 0.92, 0.82, 0.72, 0.64,
-                        0.57, 0.50, 0.45, 0.40, 0.36, 0.32, 0.28, 0.25,
-                        0.23, 0.20, 0.18, 0.16, 0.15, 0.13, 0.12, 0.11, 0.10])
+    psi_sample = geom['psi_sample']
+    ne_init    = geom['ne_init']
+    Te_init    = geom['Te_init']
+
+    # ── Resolve the shared initial-relax cache path (keyed by inputs) ─────────
+    initial_relax_cache = None
+    relax_cache_params = None
+    if not args.no_initial_relax_cache:
+        if args.initial_relax_cache is not None:
+            initial_relax_cache = os.path.abspath(args.initial_relax_cache)
+        else:
+            cache_dir = args.initial_relax_cache_dir or default_initial_relax_cache_dir()
+            initial_relax_cache, relax_cache_key, relax_cache_params = (
+                resolve_initial_relax_cache_path(
+                    cache_dir, args.grid_size, ne_init, Te_init, psi_sample,
+                    eqtimes, Ip_targets, coil_bounds, x_points, eqdsk_list,
+                )
+            )
+            print(f'Keyed initial relax cache: {initial_relax_cache} (key={relax_cache_key})')
 
     if args.init_dataset_only:
         preflight_required_inputs(
@@ -1089,13 +1242,6 @@ if __name__ == '__main__':
         sys.exit(0)
 
     validate_jax_backend(require_cuda_on_gpu=require_cuda_on_gpu)
-
-    initial_relax_cache = None
-    if not args.no_initial_relax_cache:
-        initial_relax_cache = args.initial_relax_cache
-        if initial_relax_cache is None:
-            initial_relax_cache = os.path.join(args.output_dir, 'initial_relax_state.json')
-        initial_relax_cache = os.path.abspath(initial_relax_cache)
 
     needs_relax_cache_build = (
         initial_relax_cache is not None
@@ -1153,6 +1299,7 @@ if __name__ == '__main__':
             Ip_targets, ne_init, Te_init, psi_sample,
             log_dir=log_dir,
             grid_size=args.grid_size,
+            params=relax_cache_params,
         )
 
     if args.build_initial_relax_cache_only:

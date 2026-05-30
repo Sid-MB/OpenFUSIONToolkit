@@ -2,7 +2,7 @@
 
 #SBATCH --account=nlp
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=32G
+#SBATCH --mem=128G
 #SBATCH --gres=gpu:1
 #SBATCH --constraint=48G
 #SBATCH --partition=jag-standard
@@ -85,6 +85,7 @@ add_arg ACTOR_EVAL_PROJECT --actor_eval_project
 add_arg ACTOR_EVAL_RUN_NAME --actor_eval_run_name
 add_arg ACTOR_EVAL_WANDB_MODE --actor_eval_wandb_mode
 add_arg ACTOR_EVAL_INITIAL_RELAX_STATE --actor_eval_initial_relax_state
+add_arg ACTOR_EVAL_INITIAL_RELAX_CACHE_DIR --actor_eval_initial_relax_cache_dir
 add_arg ACTOR_EVAL_MAX_LOOP --actor_eval_max_loop
 add_arg ACTOR_EVAL_GRID_SIZE --actor_eval_grid_size
 add_arg ACTOR_EVAL_DEVICE --actor_eval_device

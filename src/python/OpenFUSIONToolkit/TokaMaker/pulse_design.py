@@ -702,6 +702,9 @@ class TokaMaker_TORAX:
         self._rl_state_std = None
         self._rl_action_max = None
         self._rl_actions_history = []
+        self._rl_event_callback = None
+        self._rl_segment_timeout_seconds = None
+        self._rl_max_action_power_w = None
 
     # ─── Static Utilities ───────────────────────────────────────────────────────
 
@@ -894,13 +897,13 @@ class TokaMaker_TORAX:
     def _extract_rl_state(self, t_start, t_end, current_action, data_tree=None):
         r'''! RL observation dict (collect_trajectories.extract_state).
         
-                Scalars and profiles at t_start; current_action is [ecrh_MW, nbi_MW].
+                Scalars and profiles at t_start; current_action is [ecrh_W, nbi_W].
                 reward and safety fields are computed over [t_start, t_end],
                 matching collect_trajectories.extract_state.
         
                 @param t_start Observation time (s).
                 @param t_end End of control interval (s); unused for features.
-                @param current_action [ecrh_MW, nbi_MW] at t_start.
+                @param current_action [ecrh_W, nbi_W] at t_start.
                 @param data_tree TORAX DataTree; defaults to self._data_tree.
                 
         '''
@@ -2074,7 +2077,15 @@ class TokaMaker_TORAX:
             self._print(f'  TORAX RL run: t=[{t_start:g}, {t_end:g}] s (cold-start) ...')
             self._log(f'TORAX RL run: t=[{t_start:g}, {t_end:g}] s (cold-start)')
             try:
-                data_tree, hist = torax.run_simulation(tx_config, log_timestep_info=False)
+                with self._rl_segment_timeout(t_start, t_end):
+                    data_tree, hist = torax.run_simulation(tx_config, log_timestep_info=False)
+            except TimeoutError as e:
+                message = (
+                    f'TORAX RL run [{t_start:g}, {t_end:g}] exceeded timeout: {e}'
+                )
+                self._print(f'  {message}')
+                self._log(message)
+                raise TimeoutError(message) from e
             except Exception as e:
                 self._print(f'  TORAX RL run [{t_start:g}, {t_end:g}] FAILED — {e}')
                 raise
@@ -2089,6 +2100,32 @@ class TokaMaker_TORAX:
 
             self._log(f'TORAX RL run [{t_start:g}, {t_end:g}] completed.')
             return data_tree, hist
+
+    @contextmanager
+    def _rl_segment_timeout(self, t_start, t_end):
+        r'''! Wall-clock timeout guard for one RL TORAX segment.'''
+        seconds = getattr(self, '_rl_segment_timeout_seconds', None)
+        if seconds is None or float(seconds) <= 0:
+            yield
+            return
+
+        import signal
+
+        seconds = float(seconds)
+
+        def _handle_timeout(signum, frame):
+            raise TimeoutError(
+                f'segment [{float(t_start):g}, {float(t_end):g}] exceeded {seconds:g} seconds'
+            )
+
+        old_handler = signal.getsignal(signal.SIGALRM)
+        signal.signal(signal.SIGALRM, _handle_timeout)
+        signal.setitimer(signal.ITIMER_REAL, seconds)
+        try:
+            yield
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, old_handler)
 
     def _load_rl_actor(self, checkpoint_path):
         r'''! Load IQL actor weights and state normalization from a .pt checkpoint.'''
@@ -2144,8 +2181,8 @@ class TokaMaker_TORAX:
         self._rl_actor_checkpoint = checkpoint_path
         self._log(f'Loaded RL actor from {checkpoint_path}')
 
-    def _rl_select_action_mw(self, state_vector, decision_t=None):
-        r'''! Actor inference; returns [ecrh_MW, nbi_MW].
+    def _rl_select_action_w(self, state_vector, decision_t=None):
+        r'''! Actor inference; returns [ecrh_W, nbi_W].
         
                 If no checkpoint was loaded (self._rl_actor is None), returns baseline
                 schedule power at the knot for decision_t (for closed-loop testing).
@@ -2160,19 +2197,29 @@ class TokaMaker_TORAX:
                     'RL actor not loaded; pass decision_t for baseline fallback or load a checkpoint.'
                 )
             knot_t = self._rl_knot_time_for_decision(decision_t)
-            return np.array(self._rl_default_action_mw_at_time(knot_t), dtype=np.float64)
+            return np.array(self._rl_default_action_w_at_time(knot_t), dtype=np.float64)
 
         import torch
 
         state = np.asarray(state_vector, dtype=np.float64).reshape(-1)
         s_norm = (state - self._rl_state_mean) / (self._rl_state_std + 1e-8)
         with torch.no_grad():
-            action_mw = self._rl_actor.act(torch.FloatTensor(s_norm).unsqueeze(0))
-        return action_mw.cpu().numpy()[0]
+            action_w = self._rl_actor.act(torch.FloatTensor(s_norm).unsqueeze(0))
+        return action_w.cpu().numpy()[0]
+
+    def _rl_select_action_mw(self, state_vector, decision_t=None):
+        r'''! Actor inference in MW for compatibility with old callers.'''
+        return self._rl_select_action_w(state_vector, decision_t=decision_t) / 1e6
 
     @staticmethod
     def _rl_default_action_mw_at_time(t):
         r'''! Default schedule heating (MW) at absolute time t (nearest knot).'''
+        ecrh_w, nbi_w = TokaMaker_TORAX._rl_default_action_w_at_time(t)
+        return ecrh_w / 1e6, nbi_w / 1e6
+
+    @staticmethod
+    def _rl_default_action_w_at_time(t):
+        r'''! Default schedule heating (W) at absolute time t (nearest knot).'''
         t = float(t)
         ecrh_w = float(_BASE_RL_ECRH_POWERS_W.get(t, np.interp(
             t, sorted(_BASE_RL_ECRH_POWERS_W.keys()), list(_BASE_RL_ECRH_POWERS_W.values())
@@ -2180,7 +2227,45 @@ class TokaMaker_TORAX:
         nbi_w = float(_BASE_RL_NBI_POWERS_W.get(t, np.interp(
             t, sorted(_BASE_RL_NBI_POWERS_W.keys()), list(_BASE_RL_NBI_POWERS_W.values())
         )))
-        return ecrh_w / 1e6, nbi_w / 1e6
+        return ecrh_w, nbi_w
+
+    @staticmethod
+    def _rl_action_record(decision_t, knot_t, action_w):
+        r'''! RL action log row with watts internally and MW for presentation.'''
+        ecrh_w = float(action_w[0])
+        nbi_w = float(action_w[1])
+        return {
+            'decision_t': float(decision_t),
+            'knot_t': float(knot_t),
+            'ecrh_W': ecrh_w,
+            'nbi_W': nbi_w,
+            'ecrh_MW': ecrh_w / 1e6,
+            'nbi_MW': nbi_w / 1e6,
+        }
+
+    def _validate_rl_action_w(self, action_w, decision_t):
+        r'''! Validate an RL action before launching another TORAX segment.'''
+        action_w = np.asarray(action_w, dtype=np.float64).reshape(-1)
+        if action_w.shape[0] != 2:
+            raise ValueError(f'RL action_dim {action_w.shape[0]} != expected action_dim 2')
+        if not np.all(np.isfinite(action_w)):
+            raise ValueError(f'RL action at t={float(decision_t):g} contains non-finite values: {action_w}')
+
+        max_power_w = getattr(self, '_rl_max_action_power_w', None)
+        if max_power_w is not None and float(max_power_w) > 0:
+            max_power_w = float(max_power_w)
+            if np.any(action_w > max_power_w):
+                raise ValueError(
+                    f'RL action at t={float(decision_t):g} exceeds RL max action power '
+                    f'{max_power_w:g} W: ecrh={action_w[0]:g} W, nbi={action_w[1]:g} W'
+                )
+        return action_w
+
+    def _emit_rl_event(self, event):
+        r'''! Emit an RL-loop event to an optional caller-supplied callback.'''
+        callback = getattr(self, '_rl_event_callback', None)
+        if callback is not None:
+            callback(event)
 
     def _run_tx_rl_segmented(self):
         r'''! Full pulse TORAX with RL heating (80–480 s decisions, knot at t+20).
@@ -2214,29 +2299,32 @@ class TokaMaker_TORAX:
         self._print(f'  TORAX RL: cold-start t=[0, {t_prescribed_end:g}] s (defaults)')
         data_tree, _ = self._run_tx_segment(0.0, t_prescribed_end, ecrh, nbi)
 
-        last_action_mw = list(self._rl_default_action_mw_at_time(RL_DECISION_T_FIRST))
+        last_action_w = list(self._rl_default_action_w_at_time(RL_DECISION_T_FIRST))
 
-        for t_dec in RL_DECISION_TIMES:
+        for decision_index, t_dec in enumerate(RL_DECISION_TIMES):
             t_seg_end = self._rl_knot_time_for_decision(t_dec)
             state = self._extract_rl_state_vector(
-                t_dec, t_seg_end, last_action_mw, data_tree=data_tree,
+                t_dec, t_seg_end, last_action_w, data_tree=data_tree,
             )
-            action_mw = self._rl_select_action_mw(state, decision_t=t_dec)
-            action_mw = np.maximum(action_mw, 0.0)
+            action_w = self._rl_select_action_w(state, decision_t=t_dec)
+            action_w = np.maximum(action_w, 0.0)
+            action_w = self._validate_rl_action_w(action_w, t_dec)
 
             knot_t = t_seg_end
-            agent_knots[knot_t] = (float(action_mw[0]) * 1e6, float(action_mw[1]) * 1e6)
-            self._rl_actions_history.append({
-                'decision_t': float(t_dec),
-                'knot_t': float(knot_t),
-                'ecrh_MW': float(action_mw[0]),
-                'nbi_MW': float(action_mw[1]),
+            action_record = self._rl_action_record(t_dec, knot_t, action_w)
+            agent_knots[knot_t] = (action_record['ecrh_W'], action_record['nbi_W'])
+            self._rl_actions_history.append(action_record)
+            self._emit_rl_event({
+                'event': 'decision',
+                'decision_index': int(decision_index),
+                **action_record,
             })
             self._log(
                 f'RL decision t={t_dec:g} -> knot t={knot_t:g}: '
-                f'ECRH={action_mw[0]:.2f} MW, NBI={action_mw[1]:.2f} MW'
+                f'ECRH={action_record["ecrh_MW"]:.2f} MW, '
+                f'NBI={action_record["nbi_MW"]:.2f} MW'
             )
-            last_action_mw = action_mw.tolist()
+            last_action_w = [action_record['ecrh_W'], action_record['nbi_W']]
 
             if t_dec < RL_DECISION_T_LAST:
                 ecrh, nbi = self._merge_rl_heating_schedules(agent_knots)
@@ -3472,7 +3560,8 @@ class TokaMaker_TORAX:
             log_dir=None,
             t_ave_toggle='off', t_ave_window=0.5, t_ave_causal=True, t_ave_ignore_start=0.25,
             loop0=False, steady_state_mode=False,
-            use_rl_actor=False, actor_checkpoint=None):
+            use_rl_actor=False, actor_checkpoint=None, rl_event_callback=None,
+            rl_segment_timeout_seconds=None, rl_max_action_power_w=None):
         r'''! Run TokaMaker_TORAX coupled pulse design loop.
         
                 @param convergence_threshold Max fractional change in consumed flux between loops for convergence.
@@ -3532,6 +3621,12 @@ class TokaMaker_TORAX:
                        state_std, action_max). If omitted, baseline heating at each decision knot
                        is used instead (closed-loop test mode). If supplied but unloadable,
                        the run raises instead of falling back.
+                @param rl_event_callback Optional callable receiving RL-loop event dicts as they
+                       happen. Intended for live external logging; ignored when use_rl_actor=False.
+                @param rl_segment_timeout_seconds Optional wall-clock timeout for each RL
+                       TORAX cold-start segment. None or <=0 disables the timeout.
+                @param rl_max_action_power_w Optional per-actuator action cap in watts. If set,
+                       RL actions above this value raise before the next TORAX segment starts.
                        Call set_heating() with ecrh_loc and generic_heat_loc before fly().
                 
         '''
@@ -3544,6 +3639,9 @@ class TokaMaker_TORAX:
 
         self._use_rl_actor = bool(use_rl_actor)
         if self._use_rl_actor:
+            self._rl_event_callback = rl_event_callback
+            self._rl_segment_timeout_seconds = rl_segment_timeout_seconds
+            self._rl_max_action_power_w = rl_max_action_power_w
             if actor_checkpoint is not None:
                 self._rl_actor_checkpoint = os.path.abspath(actor_checkpoint)
             if self._ecrh_loc is None or self._generic_heat_loc is None:

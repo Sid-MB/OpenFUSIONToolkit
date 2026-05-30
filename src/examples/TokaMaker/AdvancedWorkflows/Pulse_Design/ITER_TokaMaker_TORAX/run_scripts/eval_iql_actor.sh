@@ -2,7 +2,7 @@
 
 #SBATCH --account=nlp
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=32G
+#SBATCH --mem=128G
 #SBATCH --gres=gpu:1
 #SBATCH --constraint=48G
 #SBATCH --partition=jag-standard
@@ -28,16 +28,19 @@ OUTPUT_DIR="${OUTPUT_DIR:-out/iql_eval/${RUN_ID}}"
 WANDB_PROJECT="${WANDB_PROJECT:-iql-training}"
 RUN_NAME="${RUN_NAME:-${RUN_ID}}"
 INITIAL_RELAX_STATE="${INITIAL_RELAX_STATE:-}"
+INITIAL_RELAX_CACHE_DIR="${INITIAL_RELAX_CACHE_DIR:-}"
 MAX_LOOP="${MAX_LOOP:-2}"
 GRID_SIZE="${GRID_SIZE:-51}"
 IQL_EVAL_DEVICE="${IQL_EVAL_DEVICE:-}"
 REPLAY_CACHE_DIR="${REPLAY_CACHE_DIR:-}"
 USE_REPLAY_CACHE="${USE_REPLAY_CACHE:-1}"
 ALLOW_CPU_JAX_ON_GPU="${ALLOW_CPU_JAX_ON_GPU:-0}"
+RL_SEGMENT_TIMEOUT_SECONDS="${RL_SEGMENT_TIMEOUT_SECONDS:-1800}"
+RL_MAX_ACTION_POWER_W="${RL_MAX_ACTION_POWER_W:-150000000}"
 
-if [ -z "${INITIAL_RELAX_STATE}" ] && [ -n "${DATASET_DIR}" ] && [ -f "${DATASET_DIR}/initial_relax_state.json" ]; then
-  INITIAL_RELAX_STATE="${DATASET_DIR}/initial_relax_state.json"
-fi
+# Cache selection is delegated to rl.eval: with no explicit INITIAL_RELAX_STATE it
+# reuses a dataset's legacy initial_relax_state.json if present, otherwise a keyed
+# file in INITIAL_RELAX_CACHE_DIR (built on demand).
 
 export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-4}"
@@ -54,12 +57,15 @@ echo "OUTPUT_DIR=${OUTPUT_DIR}"
 echo "WANDB_PROJECT=${WANDB_PROJECT}"
 echo "RUN_NAME=${RUN_NAME}"
 echo "INITIAL_RELAX_STATE=${INITIAL_RELAX_STATE}"
+echo "INITIAL_RELAX_CACHE_DIR=${INITIAL_RELAX_CACHE_DIR:-<default>}"
 echo "MAX_LOOP=${MAX_LOOP}"
 echo "GRID_SIZE=${GRID_SIZE}"
 echo "IQL_EVAL_DEVICE=${IQL_EVAL_DEVICE}"
 echo "REPLAY_CACHE_DIR=${REPLAY_CACHE_DIR}"
 echo "USE_REPLAY_CACHE=${USE_REPLAY_CACHE}"
 echo "ALLOW_CPU_JAX_ON_GPU=${ALLOW_CPU_JAX_ON_GPU}"
+echo "RL_SEGMENT_TIMEOUT_SECONDS=${RL_SEGMENT_TIMEOUT_SECONDS}"
+echo "RL_MAX_ACTION_POWER_W=${RL_MAX_ACTION_POWER_W}"
 nvidia-smi || true
 
 ARGS=(
@@ -69,12 +75,17 @@ ARGS=(
   --run_name "${RUN_NAME}"
   --max_loop "${MAX_LOOP}"
   --grid_size "${GRID_SIZE}"
+  --rl_segment_timeout_seconds "${RL_SEGMENT_TIMEOUT_SECONDS}"
+  --rl_max_action_power_w "${RL_MAX_ACTION_POWER_W}"
 )
 if [ -n "${DATASET_DIR}" ]; then
   ARGS+=(--dataset_dir "${DATASET_DIR}")
 fi
 if [ -n "${INITIAL_RELAX_STATE}" ]; then
   ARGS+=(--initial_relax_state "${INITIAL_RELAX_STATE}")
+fi
+if [ -n "${INITIAL_RELAX_CACHE_DIR}" ]; then
+  ARGS+=(--initial_relax_cache_dir "${INITIAL_RELAX_CACHE_DIR}")
 fi
 if [ -n "${IQL_EVAL_DEVICE}" ]; then
   ARGS+=(--device "${IQL_EVAL_DEVICE}")

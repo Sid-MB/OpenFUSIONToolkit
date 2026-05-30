@@ -10,11 +10,11 @@ Use the CPU array submit helper for production runs:
 ```bash
 N_TRAJECTORIES=1000 START_IDX=600 END_IDX=1000 \
 N_WORKERS=1 CHUNK_SIZE=1 ARRAY_CONCURRENCY=16 SLURM_MAX_ARRAY_SIZE=1001 \
-CPUS_PER_TASK=4 MEM_PER_NODE=16G \
+CPUS_PER_TASK=4 MEM_PER_NODE=128G \
 USE_INITIAL_RELAX_CACHE=0 OUTPUT_BASE_DIR=./rl_dataset_delta_sampling_run \
 DRY_RUN=0 SUBMIT_GRID_SEARCH=1 SUBMIT_REPLAY_CACHE=1 SUBMIT_IQL=0 \
-GRID_SEARCH_CPUS=1 GRID_SEARCH_MEM=8G \
-REPLAY_CACHE_CPUS=8 REPLAY_CACHE_MEM=120G \
+GRID_SEARCH_CPUS=1 GRID_SEARCH_MEM=128G \
+REPLAY_CACHE_CPUS=8 REPLAY_CACHE_MEM=128G \
   ./run_scripts/submit_collect_trajectories_cpu_array.sh
 ```
 
@@ -25,7 +25,7 @@ wrapper needs it for Slurm shape/dependencies or when overriding argparse.
 The command above runs trajectories `600..999` on `john` with:
 
 - `1` trajectory worker per Slurm task
-- `4` CPUs and `16G` RAM per task
+- `4` CPUs and `128G` RAM per task
 - argparse defaults for omitted collection knobs like `MAX_LOOP`, `GRID_SIZE`,
   seed, timeout, and save formats
 - no shared initial relax cache because `USE_INITIAL_RELAX_CACHE=0` is explicit
@@ -53,8 +53,8 @@ MAX_LOOP=3                         # extra TORAX/TokaMaker coupling pass
 TRAJECTORY_TIMEOUT_SECONDS=14400    # per-trajectory wall-time limit
 USE_INITIAL_RELAX_CACHE=1           # opt into cache build + dependency
 SUBMIT_GRID_SEARCH=0                # skip best-observed baseline ranking
-GRID_SEARCH_MEM=8G                  # RAM for grid-search baseline job
-GRID_SEARCH_CPUS=1                  # CPUs for grid-search baseline job
+GRID_SEARCH_MEM=128G                # RAM for grid-search baseline job (default 128G)
+GRID_SEARCH_CPUS=1                  # CPUs for grid-search baseline job (default 1)
 GRID_SEARCH_OUTPUT_DIR=./my_grid    # override baseline output directory
 GRID_SEARCH_TOP_K=20                # number of top trajectories in summary
 RUN_LOG_DIR=logs/my_dataset_run     # override grouped Slurm log directory
@@ -62,8 +62,8 @@ SUBMIT_REPLAY_CACHE=0               # skip compact IQL replay-cache build
 SAVE_REPLAY_SHARD=1                 # write compact per-trajectory .npz shards
 SAVE_FULL_ZARR=1                    # also write rich full TORAX Zarr traces
 SAVE_JSON=1                         # also write legacy compact JSON files
-REPLAY_CACHE_MEM=120G               # RAM for replay-cache materialization
-REPLAY_CACHE_CPUS=8                 # parallel Zarr readers for replay cache
+REPLAY_CACHE_MEM=128G               # RAM for replay-cache materialization (default 128G)
+REPLAY_CACHE_CPUS=8                 # parallel Zarr readers for replay cache (default 8)
 REPLAY_CACHE_WORKERS=8              # override reader count independently
 REPLAY_CACHE_WORKER_BACKEND=process # process or thread workers
 REPLAY_CACHE_PROGRESS=0             # disable tqdm progress in replay-cache logs
@@ -76,11 +76,11 @@ Example small diagnostic:
 ```bash
 N_TRAJECTORIES=5 START_IDX=0 END_IDX=5 \
 N_WORKERS=1 CHUNK_SIZE=1 ARRAY_CONCURRENCY=5 SLURM_MAX_ARRAY_SIZE=1001 \
-CPUS_PER_TASK=4 MEM_PER_NODE=16G \
+CPUS_PER_TASK=4 MEM_PER_NODE=128G \
 USE_INITIAL_RELAX_CACHE=0 OUTPUT_BASE_DIR=./rl_dataset_smoke_5 \
 DRY_RUN=0 SUBMIT_GRID_SEARCH=1 SUBMIT_REPLAY_CACHE=1 SUBMIT_IQL=1 \
-GRID_SEARCH_CPUS=1 GRID_SEARCH_MEM=8G \
-REPLAY_CACHE_CPUS=4 REPLAY_CACHE_MEM=16G \
+GRID_SEARCH_CPUS=1 GRID_SEARCH_MEM=128G \
+REPLAY_CACHE_CPUS=4 REPLAY_CACHE_MEM=128G \
   ./run_scripts/submit_collect_trajectories_cpu_array.sh
 ```
 

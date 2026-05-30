@@ -43,7 +43,10 @@ MAX_LOOP="${MAX_LOOP:-2}"
 GRID_SIZE="${GRID_SIZE:-51}"
 RUN_ID="${SLURM_JOB_ID:-$(date +%Y%m%d_%H%M%S)}"
 OUTPUT_BASE_DIR="${OUTPUT_BASE_DIR:-./rl_dataset_delta_sampling_maxloop=2_grid_51_cpu_array_${RUN_ID}}"
-INITIAL_RELAX_CACHE="${INITIAL_RELAX_CACHE:-${OUTPUT_BASE_DIR}/initial_relax_state.json}"
+# Shared keyed initial-relax cache. INITIAL_RELAX_CACHE (explicit path) overrides;
+# otherwise a keyed file in INITIAL_RELAX_CACHE_DIR is used (resolved below).
+INITIAL_RELAX_CACHE="${INITIAL_RELAX_CACHE:-}"
+INITIAL_RELAX_CACHE_DIR="${INITIAL_RELAX_CACHE_DIR:-}"
 
 # Force the CPU path even if this script is run from a GPU-capable login node.
 export CUDA_VISIBLE_DEVICES=-1
@@ -57,6 +60,12 @@ export OPENBLAS_NUM_THREADS="${THREADS_PER_WORKER}"
 export MKL_NUM_THREADS="${THREADS_PER_WORKER}"
 export NUMEXPR_NUM_THREADS="${THREADS_PER_WORKER}"
 export VECLIB_MAXIMUM_THREADS="${THREADS_PER_WORKER}"
+
+if [ -z "${INITIAL_RELAX_CACHE}" ]; then
+  INITIAL_RELAX_CACHE="$(uv run python collect_trajectories_delta.py \
+    --print_initial_relax_cache_path --grid_size "${GRID_SIZE}" \
+    ${INITIAL_RELAX_CACHE_DIR:+--initial_relax_cache_dir "${INITIAL_RELAX_CACHE_DIR}"})"
+fi
 
 echo "Running on host: $(hostname)"
 echo "TOTAL_CPUS=${TOTAL_CPUS}"
@@ -72,6 +81,7 @@ echo "JAX_PLATFORMS=${JAX_PLATFORMS}"
 echo "OFT_SELECTED_FLAVOR=${OFT_SELECTED_FLAVOR}"
 echo "OFT_SELECTED_INSTALL=${OFT_SELECTED_INSTALL}"
 echo "OUTPUT_BASE_DIR=${OUTPUT_BASE_DIR}"
+echo "INITIAL_RELAX_CACHE_DIR=${INITIAL_RELAX_CACHE_DIR:-<default>}"
 echo "INITIAL_RELAX_CACHE=${INITIAL_RELAX_CACHE}"
 
 mkdir -p "${OUTPUT_BASE_DIR}"

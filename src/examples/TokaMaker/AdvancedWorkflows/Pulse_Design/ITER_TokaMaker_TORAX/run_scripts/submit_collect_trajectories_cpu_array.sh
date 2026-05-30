@@ -16,11 +16,11 @@ set -euo pipefail
 # Explicit full-run example (64 total allocated CPUs: 16 tasks x 4 CPUs):
 #   N_TRAJECTORIES=1000 START_IDX=600 END_IDX=1000 \
 #     N_WORKERS=1 CHUNK_SIZE=1 ARRAY_CONCURRENCY=16 \
-#     SLURM_MAX_ARRAY_SIZE=1001 CPUS_PER_TASK=4 MEM_PER_NODE=16G \
+#     SLURM_MAX_ARRAY_SIZE=1001 CPUS_PER_TASK=4 MEM_PER_NODE=128G \
 #     USE_INITIAL_RELAX_CACHE=0 OUTPUT_BASE_DIR=./my_dataset \
 #     DRY_RUN=0 SUBMIT_GRID_SEARCH=1 SUBMIT_REPLAY_CACHE=1 SUBMIT_IQL=0 \
-#     GRID_SEARCH_CPUS=1 GRID_SEARCH_MEM=8G \
-#     REPLAY_CACHE_CPUS=8 REPLAY_CACHE_MEM=120G \
+#     GRID_SEARCH_CPUS=1 GRID_SEARCH_MEM=128G \
+#     REPLAY_CACHE_CPUS=8 REPLAY_CACHE_MEM=128G \
 #     ./run_scripts/submit_collect_trajectories_cpu_array.sh
 #
 # Shell wrappers intentionally do not assign run defaults. Collection defaults
@@ -88,8 +88,10 @@ require_env N_WORKERS
 require_env CHUNK_SIZE
 require_env ARRAY_CONCURRENCY
 require_env SLURM_MAX_ARRAY_SIZE
-require_env CPUS_PER_TASK
-require_env MEM_PER_NODE
+# CPU and memory requests have defaults that work well; override per job class
+# if needed. Memory defaults to the 128G floor.
+CPUS_PER_TASK="${CPUS_PER_TASK:-4}"
+MEM_PER_NODE="${MEM_PER_NODE:-128G}"
 require_env USE_INITIAL_RELAX_CACHE
 require_env OUTPUT_BASE_DIR
 
@@ -103,16 +105,18 @@ require_env SUBMIT_GRID_SEARCH
 require_env SUBMIT_REPLAY_CACHE
 require_env SUBMIT_IQL
 
-if [ "${USE_INITIAL_RELAX_CACHE}" != "0" ]; then
-  require_env INITIAL_RELAX_CACHE
-fi
+# When the shared cache is enabled, either an explicit INITIAL_RELAX_CACHE path
+# or a keyed INITIAL_RELAX_CACHE_DIR may be provided. Both are optional: child
+# jobs resolve the keyed path themselves (and agree, since the key is derived
+# from grid_size + initial profiles + equilibrium). We just forward whatever is
+# set so every job uses the same cache file.
 if [ "${SUBMIT_GRID_SEARCH}" != "0" ]; then
-  require_env GRID_SEARCH_CPUS
-  require_env GRID_SEARCH_MEM
+  GRID_SEARCH_CPUS="${GRID_SEARCH_CPUS:-1}"
+  GRID_SEARCH_MEM="${GRID_SEARCH_MEM:-128G}"
 fi
 if [ "${SUBMIT_REPLAY_CACHE}" != "0" ]; then
-  require_env REPLAY_CACHE_CPUS
-  require_env REPLAY_CACHE_MEM
+  REPLAY_CACHE_CPUS="${REPLAY_CACHE_CPUS:-8}"
+  REPLAY_CACHE_MEM="${REPLAY_CACHE_MEM:-128G}"
 fi
 
 if [ "${CHUNK_SIZE}" -lt 1 ]; then
@@ -159,6 +163,7 @@ append_export SAVE_REPLAY_SHARD
 append_export SAVE_FULL_ZARR
 append_export SAVE_JSON
 append_export INITIAL_RELAX_CACHE
+append_export INITIAL_RELAX_CACHE_DIR
 export "${EXPORT_NAMES[@]}"
 
 echo "OUTPUT_BASE_DIR=${OUTPUT_BASE_DIR}"
@@ -224,6 +229,8 @@ if [ "${USE_INITIAL_RELAX_CACHE}" = "0" ]; then
   INIT_ARGS+=(--no_initial_relax_cache)
 elif [ -n "${INITIAL_RELAX_CACHE:-}" ]; then
   INIT_ARGS+=(--initial_relax_cache "${INITIAL_RELAX_CACHE}")
+elif [ -n "${INITIAL_RELAX_CACHE_DIR:-}" ]; then
+  INIT_ARGS+=(--initial_relax_cache_dir "${INITIAL_RELAX_CACHE_DIR}")
 fi
 echo "collect_trajectories_delta.py init args: ${INIT_ARGS[*]}"
 uv run python collect_trajectories_delta.py \

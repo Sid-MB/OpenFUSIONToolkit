@@ -350,29 +350,47 @@ def test_tokamaker_torax() -> None:
     assert "t_final_s" in result
 
 
+class _RLLoopVoltage:
+    def sel(self, **kwargs):
+        return 0.0
+
+
+class _RLScalars:
+    v_loop_lcfs = _RLLoopVoltage()
+
+
+class _RLDataTree:
+    scalars = _RLScalars()
+
+
+def _minimal_rl_tmtx(pulse_design: Any, events: Optional[list] = None) -> Any:
+    tmtx = object.__new__(pulse_design.TokaMaker_TORAX)
+    tmtx._rl_actor = object()
+    tmtx._rl_actor_checkpoint = None
+    tmtx._rl_actions_history = []
+    tmtx._rl_event_callback = None if events is None else events.append
+    tmtx._rl_max_action_power_w = None
+    tmtx._t_final = 100.0
+    tmtx._t_init = 0.0
+    tmtx._tm_times = np.array([0.0, 100.0])
+    tmtx._state = {"psi_lcfs_tx": np.array([1.0, 0.5])}
+    tmtx._save_outputs = False
+    tmtx._steady_state_mode = False
+    tmtx._current_loop = 1
+    tmtx._log = lambda message: None
+    tmtx._print = lambda message: None
+    tmtx._merge_rl_heating_schedules = pulse_design.TokaMaker_TORAX._merge_rl_heating_schedules
+    tmtx._extract_rl_state_vector = lambda *args, **kwargs: np.zeros(pulse_design.RL_STATE_DIM)
+    tmtx._capture_relax_tx_profiles_from_datatree = lambda *args, **kwargs: None
+    tmtx._tx_update = lambda *args, **kwargs: None
+    return tmtx
+
+
 def test_rl_actor_state_dim_mismatch_raises(tmp_path, monkeypatch) -> None:
     r'''! A supplied actor checkpoint with the wrong observation size must fail fast.'''
     torch = pytest.importorskip("torch")
 
-    oft_pkg = types.ModuleType("OpenFUSIONToolkit")
-    oft_pkg.__path__ = []
-    tokamaker_pkg = types.ModuleType("OpenFUSIONToolkit.TokaMaker")
-    tokamaker_pkg.__path__ = []
-    util_mod = types.ModuleType("OpenFUSIONToolkit.TokaMaker.util")
-    util_mod.read_eqdsk = lambda *args, **kwargs: None
-    util_mod.create_power_flux_fun = lambda *args, **kwargs: None
-    monkeypatch.setitem(sys.modules, "OpenFUSIONToolkit", oft_pkg)
-    monkeypatch.setitem(sys.modules, "OpenFUSIONToolkit.TokaMaker", tokamaker_pkg)
-    monkeypatch.setitem(sys.modules, "OpenFUSIONToolkit.TokaMaker.util", util_mod)
-
-    module_path = os.path.join(
-        _PYTHON_SRC, "OpenFUSIONToolkit", "TokaMaker", "pulse_design.py"
-    )
-    spec = importlib.util.spec_from_file_location("_test_pulse_design_rl", module_path)
-    assert spec is not None and spec.loader is not None
-    pulse_design = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(pulse_design)
-
+    pulse_design = _load_pulse_design_for_unit(monkeypatch)
     checkpoint_path = tmp_path / "bad_actor.pt"
     torch.save(
         {
@@ -395,6 +413,117 @@ def test_rl_actor_state_dim_mismatch_raises(tmp_path, monkeypatch) -> None:
         tmtx._run_tx_rl_segmented()
 
     assert not any("baseline heating fallback" in msg for msg in messages)
+
+
+def test_rl_actor_action_watts_are_not_scaled_twice(monkeypatch) -> None:
+    r'''! Actor actions stay in watts internally and are reported in MW.'''
+    pulse_design = _load_pulse_design_for_unit(monkeypatch)
+    monkeypatch.setattr(pulse_design, "RL_DECISION_TIMES", [80])
+    monkeypatch.setattr(pulse_design, "RL_DECISION_T_LAST", 80)
+
+    events = []
+    segments = []
+    tmtx = _minimal_rl_tmtx(pulse_design, events=events)
+
+    def run_tx_segment(t_start, t_end, ecrh_powers, nbi_powers):
+        segments.append((t_start, t_end, dict(ecrh_powers), dict(nbi_powers)))
+        return _RLDataTree(), None
+
+    tmtx._run_tx_segment = run_tx_segment
+    tmtx._rl_select_action_w = lambda *args, **kwargs: np.array([12.0e6, 34.0e6])
+
+    tmtx._run_tx_rl_segmented()
+
+    expected_event = {
+        "event": "decision",
+        "decision_index": 0,
+        "decision_t": 80.0,
+        "knot_t": 100.0,
+        "ecrh_W": 12.0e6,
+        "nbi_W": 34.0e6,
+        "ecrh_MW": 12.0,
+        "nbi_MW": 34.0,
+    }
+    assert events == [expected_event]
+
+    _, _, ecrh_powers, nbi_powers = segments[-1]
+    assert ecrh_powers[100.0] == 12.0e6
+    assert nbi_powers[100.0] == 34.0e6
+
+
+def test_rl_actor_action_cap_raises_before_next_segment(monkeypatch) -> None:
+    r'''! Unphysical RL actions fail before launching another TORAX segment.'''
+    pulse_design = _load_pulse_design_for_unit(monkeypatch)
+    monkeypatch.setattr(pulse_design, "RL_DECISION_TIMES", [80])
+    monkeypatch.setattr(pulse_design, "RL_DECISION_T_LAST", 80)
+
+    segments = []
+    tmtx = _minimal_rl_tmtx(pulse_design)
+    tmtx._rl_max_action_power_w = 100.0e6
+    tmtx._run_tx_segment = lambda *args, **kwargs: (segments.append(args) or (_RLDataTree(), None))
+    tmtx._rl_select_action_w = lambda *args, **kwargs: np.array([101.0e6, 34.0e6])
+
+    with pytest.raises(ValueError, match=r"exceeds RL max action power"):
+        tmtx._run_tx_rl_segmented()
+
+    assert len(segments) == 1
+
+
+def test_rl_segment_timeout_wraps_torax_run(monkeypatch) -> None:
+    r'''! RL segment timeout errors include the segment window.'''
+    pulse_design = _load_pulse_design_for_unit(monkeypatch)
+
+    class _TimeoutContext:
+        def __enter__(self):
+            raise TimeoutError("timeout marker")
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    tmtx = object.__new__(pulse_design.TokaMaker_TORAX)
+    tmtx._loop0_coarse_tx_main_scope = lambda: _null_context()
+    tmtx._get_tx_config_segment = lambda *args, **kwargs: object()
+    tmtx._rl_segment_timeout = lambda *args, **kwargs: _TimeoutContext()
+    tmtx._print = lambda message: None
+    tmtx._log = lambda message: None
+    monkeypatch.setattr(
+        pulse_design.torax,
+        "run_simulation",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("timeout wrapper not used")),
+    )
+
+    with pytest.raises(TimeoutError, match=r"TORAX RL run \[0, 80\].*timeout"):
+        tmtx._run_tx_segment(0.0, 80.0, {}, {})
+
+
+class _null_context:
+    def __enter__(self):
+        return None
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
+def _load_pulse_design_for_unit(monkeypatch):
+    oft_pkg = types.ModuleType("OpenFUSIONToolkit")
+    oft_pkg.__path__ = []
+    tokamaker_pkg = types.ModuleType("OpenFUSIONToolkit.TokaMaker")
+    tokamaker_pkg.__path__ = []
+    util_mod = types.ModuleType("OpenFUSIONToolkit.TokaMaker.util")
+    util_mod.read_eqdsk = lambda *args, **kwargs: None
+    util_mod.create_power_flux_fun = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "OpenFUSIONToolkit", oft_pkg)
+    monkeypatch.setitem(sys.modules, "OpenFUSIONToolkit.TokaMaker", tokamaker_pkg)
+    monkeypatch.setitem(sys.modules, "OpenFUSIONToolkit.TokaMaker.util", util_mod)
+
+    module_path = os.path.join(
+        _PYTHON_SRC, "OpenFUSIONToolkit", "TokaMaker", "pulse_design.py"
+    )
+    spec = importlib.util.spec_from_file_location("_test_pulse_design_rl", module_path)
+    assert spec is not None and spec.loader is not None
+    pulse_design = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(pulse_design)
+    return pulse_design
 
 
 def main() -> None:
