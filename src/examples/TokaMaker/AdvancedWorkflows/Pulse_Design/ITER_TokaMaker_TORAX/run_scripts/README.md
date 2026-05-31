@@ -102,8 +102,9 @@ These are the main knobs you usually change for a run.
 | `GRID_SIZE` | `51` | Match the dataset or run a smaller smoke test. |
 
 Standalone CPU jobs on `john` default to `20` CPUs per task. The collection
-array worker still defaults to `4` CPUs per task so collection can scale to the
-128-CPU throughput shape when needed. `SLURM_MAX_ARRAY_SIZE=1001` means the
+submit helper automatically picks a sensible CPU count when `CPUS_PER_TASK` is
+unset: it starts from `N_WORKERS * 4`, which means the normal collection shape
+is `N_WORKERS=1` and `CPUS_PER_TASK=4`. `SLURM_MAX_ARRAY_SIZE=1001` means the
 largest allowed array index is `1000`; it limits the size of a single array
 submission, not the number of jobs running at once.
 

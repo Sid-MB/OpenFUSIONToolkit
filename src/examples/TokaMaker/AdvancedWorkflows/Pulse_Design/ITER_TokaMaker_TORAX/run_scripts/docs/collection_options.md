@@ -28,6 +28,9 @@ Note: the standalone CPU jobs for cache building and evaluation default to 20
 CPUs per task on `john`. The collection array worker stays at 4 CPUs per task
 so the full pipeline can still scale through array concurrency without
 overcommitting a single Slurm task.
+The collection submit helper automatically picks a sensible CPU count when
+`CPUS_PER_TASK` is unset: it starts from `N_WORKERS * 4`, which means the
+normal collection shape is `N_WORKERS=1` and `CPUS_PER_TASK=4`.
 
 ### Simulation
 | Variable | Default (argparse) | Description |

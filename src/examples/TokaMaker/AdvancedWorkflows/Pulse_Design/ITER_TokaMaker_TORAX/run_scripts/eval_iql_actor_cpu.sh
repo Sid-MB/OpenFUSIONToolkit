@@ -35,7 +35,7 @@
 #     DATASET_DIR=./rl_dataset_eval_smoke_1_20260528_130200 \
 #     WANDB_MODE=offline \
 #     env -i PATH="$PATH" HOME="$HOME" TERM="$TERM" \
-#     srun --account=nlp --mem=128G --cpus-per-task=20 --partition=john \
+#     srun --account=nlp --partition=john \
 #     /bin/bash run_scripts/eval_iql_actor_cpu.sh
 #
 # Key optional env vars (all have defaults):
@@ -88,7 +88,8 @@ USE_REPLAY_CACHE="${USE_REPLAY_CACHE:-1}"
 RL_SEGMENT_TIMEOUT_SECONDS="${RL_SEGMENT_TIMEOUT_SECONDS:-1800}"
 RL_MAX_ACTION_POWER_W="${RL_MAX_ACTION_POWER_W:-150000000}"
 
-TOTAL_CPUS="${SLURM_CPUS_PER_TASK:-20}"
+CPUS_PER_TASK="${SLURM_CPUS_PER_TASK:-20}"
+TOTAL_CPUS="${CPUS_PER_TASK}"
 THREADS_PER_WORKER="${THREADS_PER_WORKER:-${TOTAL_CPUS}}"
 if [ "${THREADS_PER_WORKER}" -lt 1 ]; then
   THREADS_PER_WORKER=1
@@ -137,6 +138,8 @@ echo "REPLAY_CACHE_DIR=${REPLAY_CACHE_DIR}"
 echo "USE_REPLAY_CACHE=${USE_REPLAY_CACHE}"
 echo "RL_SEGMENT_TIMEOUT_SECONDS=${RL_SEGMENT_TIMEOUT_SECONDS}"
 echo "RL_MAX_ACTION_POWER_W=${RL_MAX_ACTION_POWER_W}"
+echo "CPUS_PER_TASK=${CPUS_PER_TASK}"
+echo "TOTAL_CPUS=${TOTAL_CPUS}"
 
 ARGS=(
   --actor_checkpoint "${ACTOR_CHECKPOINT}"

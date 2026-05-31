@@ -13,12 +13,13 @@ set -euo pipefail
 # Should you call this directly?
 #   Yes. For the standard full run, paste the example below into your shell.
 #
-# Explicit full-run example (128 total allocated CPUs: 32 tasks x 4 CPUs):
+# Explicit full-run example. See README docs for the current default values
+# and the collection parameter table for the recommended run knobs:
 #   N_TRAJECTORIES=1000 START_IDX=600 END_IDX=1000 \
-#     N_WORKERS=1 CHUNK_SIZE=1 ARRAY_CONCURRENCY=32 \
-#     SLURM_MAX_ARRAY_SIZE=1001 CPUS_PER_TASK=4 MEM_PER_NODE=128G \
+#     N_WORKERS=1 CHUNK_SIZE=1 \
+#     SLURM_MAX_ARRAY_SIZE=1001 \
 #     USE_INITIAL_RELAX_CACHE=0 OUTPUT_BASE_DIR=./my_dataset \
-#     DRY_RUN=0 SUBMIT_GRID_SEARCH=1 SUBMIT_REPLAY_CACHE=1 SUBMIT_IQL=0 \
+#     SUBMIT_GRID_SEARCH=1 SUBMIT_REPLAY_CACHE=1 SUBMIT_IQL=0 \
 #     GRID_SEARCH_CPUS=1 GRID_SEARCH_MEM=128G \
 #     REPLAY_CACHE_CPUS=8 REPLAY_CACHE_MEM=128G \
 #     ./run_scripts/submit_collect_trajectories_cpu_array.sh
@@ -158,7 +159,7 @@ if [ "${REUSE_EXISTING_DATASET}" = "0" ]; then
 fi
 # CPU and memory requests have defaults that work well; override per job class
 # if needed. Memory defaults to the 128G floor.
-CPUS_PER_TASK="${CPUS_PER_TASK:-4}"
+CPUS_PER_TASK="${CPUS_PER_TASK:-$(( N_WORKERS * 4 ))}"
 MEM_PER_NODE="${MEM_PER_NODE:-128G}"
 require_env USE_INITIAL_RELAX_CACHE
 require_env OUTPUT_BASE_DIR

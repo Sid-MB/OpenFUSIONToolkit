@@ -30,7 +30,7 @@
 #   CHECKPOINTS_FILE=my_checkpoints.txt \
 #     N_WORKERS=4 \
 #     env -i PATH="$PATH" HOME="$HOME" TERM="$TERM" \
-#     srun --account=nlp --mem=256G --cpus-per-task=20 --partition=john \
+#     srun --account=nlp --partition=john \
 #     /bin/bash run_scripts/eval_iql_actor_cpu_batch.sh
 #
 # Key optional env vars (all have defaults):
@@ -64,7 +64,8 @@ cd "${PROJECT_DIR}"
 OFT_ROOT="$(cd "${PROJECT_DIR}/../../../../../../" && pwd -P)"
 source "${OFT_ROOT}/scripts/oft_arch/select_oft_install.sh"
 
-TOTAL_CPUS="${SLURM_CPUS_PER_TASK:-20}"
+CPUS_PER_TASK="${SLURM_CPUS_PER_TASK:-20}"
+TOTAL_CPUS="${CPUS_PER_TASK}"
 N_WORKERS="${N_WORKERS:-4}"
 THREADS_PER_WORKER="${THREADS_PER_WORKER:-$(( TOTAL_CPUS / N_WORKERS ))}"
 if [ "${THREADS_PER_WORKER}" -lt 1 ]; then
@@ -114,6 +115,7 @@ export XLA_FLAGS="${XLA_FLAGS:-} --xla_cpu_multi_thread_eigen=true intra_op_para
 
 echo "Running on host: $(hostname)"
 echo "OFT_SELECTED_FLAVOR=${OFT_SELECTED_FLAVOR}"
+echo "CPUS_PER_TASK=${CPUS_PER_TASK}"
 echo "TOTAL_CPUS=${TOTAL_CPUS}"
 echo "N_WORKERS=${N_WORKERS}"
 echo "THREADS_PER_WORKER=${THREADS_PER_WORKER}"

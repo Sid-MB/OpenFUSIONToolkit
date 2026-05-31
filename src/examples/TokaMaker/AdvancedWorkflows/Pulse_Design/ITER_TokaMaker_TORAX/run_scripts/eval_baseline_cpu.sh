@@ -68,7 +68,8 @@ USE_REPLAY_CACHE="${USE_REPLAY_CACHE:-1}"
 RL_SEGMENT_TIMEOUT_SECONDS="${RL_SEGMENT_TIMEOUT_SECONDS:-1800}"
 RL_MAX_ACTION_POWER_W="${RL_MAX_ACTION_POWER_W:-150000000}"
 
-TOTAL_CPUS="${SLURM_CPUS_PER_TASK:-20}"
+CPUS_PER_TASK="${SLURM_CPUS_PER_TASK:-20}"
+TOTAL_CPUS="${CPUS_PER_TASK}"
 THREADS_PER_WORKER="${THREADS_PER_WORKER:-${TOTAL_CPUS}}"
 if [ "${THREADS_PER_WORKER}" -lt 1 ]; then
   THREADS_PER_WORKER=1
@@ -111,6 +112,8 @@ echo "REPLAY_CACHE_DIR=${REPLAY_CACHE_DIR}"
 echo "USE_REPLAY_CACHE=${USE_REPLAY_CACHE}"
 echo "RL_SEGMENT_TIMEOUT_SECONDS=${RL_SEGMENT_TIMEOUT_SECONDS}"
 echo "RL_MAX_ACTION_POWER_W=${RL_MAX_ACTION_POWER_W}"
+echo "CPUS_PER_TASK=${CPUS_PER_TASK}"
+echo "TOTAL_CPUS=${TOTAL_CPUS}"
 
 uv run python - <<'PY'
 import os
@@ -125,7 +128,7 @@ from collect_trajectories_delta import (
     configure_tmtx,
 )
 from rl.eval_postprocess import postprocess_actor_eval
-from rl.eval_sim import _plain, _bundle_safe, _action_history_to_array
+from rl.eval_sim import _plain, _bundle_safe, _action_history_to_array, _default_action_row
 
 
 cwd = Path.cwd()
@@ -151,7 +154,7 @@ preflight_required_inputs(
 mygs, _, _, _ = setup_tokamaker(str(cwd))
 tmtx = configure_tmtx(
     mygs,
-    [],
+    _default_action_row(),
     eqdsk_list,
     geom["eqtimes"],
     geom["coil_bounds"],
