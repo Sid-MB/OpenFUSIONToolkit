@@ -7,6 +7,8 @@ import pickle
 from types import SimpleNamespace
 from pathlib import Path
 
+import numpy as np
+
 from log import get_logger
 
 logger = get_logger(__name__)
@@ -108,14 +110,30 @@ def postprocess_actor_eval(
 
 def _bundle_to_tmtx_shim(bundle):
     """Rebuild the minimum object surface required by TORAX plot helpers."""
-    state = bundle.get("state", {})
-    tm_times = bundle.get("tm_times", [])
+    from OpenFUSIONToolkit.TokaMaker import pulse_design as pulse_design_mod
+
+    def _coerce_numeric_payload(value):
+        if isinstance(value, dict):
+            return {str(k): _coerce_numeric_payload(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            coerced_items = [_coerce_numeric_payload(v) for v in value]
+            if not coerced_items:
+                return np.asarray([])
+            if all(isinstance(v, (int, float, bool, np.number, np.ndarray)) for v in coerced_items):
+                return np.asarray(coerced_items)
+            return coerced_items
+        return value
+
+    state = _coerce_numeric_payload(bundle.get("state", {}))
+    tm_times = np.asarray(bundle.get("tm_times", []), dtype=float)
     current_loop = bundle.get("current_loop", 0) or 0
     flattop = bundle.get("flattop", None)
     if flattop is None:
-        flattop = [False] * len(tm_times)
+        flattop = np.zeros(len(tm_times), dtype=bool)
+    else:
+        flattop = np.asarray(flattop, dtype=bool)
     coil_bounds = bundle.get("coil_bounds", {})
-    results = bundle.get("results", {})
+    results = _coerce_numeric_payload(bundle.get("results", {}))
 
     tm = SimpleNamespace(
         coil_sets={name: {"net_turns": 1.0} for name in coil_bounds},
@@ -126,9 +144,12 @@ def _bundle_to_tmtx_shim(bundle):
     def _print(*args, **kwargs):
         logger.info(" ".join(str(a) for a in args))
 
-    return SimpleNamespace(
+    shim = SimpleNamespace(
         _state=state,
         _tm_times=tm_times,
+        _t_init=float(tm_times[0]) if len(tm_times) else 0.0,
+        _t_final=float(tm_times[-1]) if len(tm_times) else 0.0,
+        _last_surface_factor=float(state.get("last_surface_factor", bundle.get("last_surface_factor", 0.0))),
         _current_loop=current_loop,
         _flattop=flattop,
         _coil_bounds=coil_bounds,
@@ -136,4 +157,23 @@ def _bundle_to_tmtx_shim(bundle):
         _output_mode=bundle.get("output_mode"),
         _tm=tm,
         _print=_print,
+        _run_name=Path(bundle.get("actor_checkpoint", "actor_eval")).stem,
     )
+
+    # Bind the notebook-facing helpers directly to the shim so offline
+    # postprocessing can emit the same figures/movie/summary without rerunning
+    # TORAX.
+    shim.summary = lambda **kwargs: pulse_design_mod.summary(shim, **kwargs)
+    shim.plot_scalars = lambda save_path=None, display=True, **kwargs: pulse_design_mod.plot_scalars(
+        shim, save_path=save_path, display=display, **kwargs
+    )
+    shim.plot_profile_evolution = lambda save_path=None, display=True, one_plot=False, **kwargs: pulse_design_mod.plot_profile_evolution(
+        shim, save_path=save_path, display=display, one_plot=one_plot, **kwargs
+    )
+    shim.plot_lcfs_evolution = lambda save_path=None, display=True, one_plot=False, **kwargs: pulse_design_mod.plot_lcfs_evolution(
+        shim, save_path=save_path, display=display, one_plot=one_plot, **kwargs
+    )
+    shim.make_movie = lambda save_path=None, **kwargs: pulse_design_mod.make_movie(
+        shim, save_path=save_path, **kwargs
+    )
+    return shim

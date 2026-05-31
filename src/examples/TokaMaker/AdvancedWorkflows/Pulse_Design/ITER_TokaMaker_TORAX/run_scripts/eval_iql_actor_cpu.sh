@@ -2,7 +2,10 @@
 # eval_iql_actor_cpu.sh — Evaluate one IQL actor checkpoint on the CPU (john partition).
 #
 # Runs rl/eval.py with TokaMaker_TORAX in RL closed-loop mode, forcing JAX/TORAX
-# onto CPU. The IQL actor (PyTorch) already runs on CPU regardless.
+# onto CPU. This is the canonical single-checkpoint path for notebook-style
+# outputs: it writes the summary bundle and then renders the plots/movie from
+# the live tmtx object before the process exits. The IQL actor (PyTorch) already
+# runs on CPU regardless.
 #
 # Why CPU instead of GPU?
 #   The RL eval loop is latency-bound, not compute-bound: each of the ~22 cold-start
@@ -44,7 +47,7 @@
 #   REPLAY_CACHE_DIR         preprocessed replay cache dir (optional)
 #   JAX_COMPILATION_CACHE_DIR persistent XLA cache root (runtime namespaces by build fingerprint; default: ./.jax_cache)
 #   RL_SEGMENT_TIMEOUT_SECONDS per-segment wall-clock timeout (default: 1800)
-#   OFT_DISABLE_JAX_COMPILE_CACHE set to 1 to disable the persistent cache
+#   OFT_DISABLE_JAX_COMPILE_CACHE set to 1 to disable the persistent cache when debugging a cache/runtime mismatch
 
 #SBATCH --account=nlp
 #SBATCH --cpus-per-task=20
@@ -162,6 +165,5 @@ uv run python -m rl.eval "${ARGS[@]}"
 # Example:
 #   ACTOR_CHECKPOINT=out/iql/<run>/iql_weights.pt \
 #     DATASET_DIR=./rl_dataset_eval_smoke_1_20260528_130200 \
-#     WANDB_MODE=offline \
 #     sbatch run_scripts/eval_iql_actor_cpu.sh
 #

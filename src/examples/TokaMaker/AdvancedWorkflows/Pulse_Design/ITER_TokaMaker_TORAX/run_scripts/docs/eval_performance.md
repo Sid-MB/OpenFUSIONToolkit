@@ -143,6 +143,12 @@ runs `N_WORKERS` evals concurrently using `multiprocessing.Pool`:
 
 ### Single checkpoint, CPU
 
+This is the canonical path when you want the notebook-style outputs in one
+pass. It runs the closed-loop TORAX eval, writes the actor summary bundle, and
+renders plots/movie from the live `tmtx` object before exiting. The saved
+`actor_eval_bundle.pkl` is useful for diagnostics, but it is not the preferred
+source for rendering the full movie later.
+
 ```bash
 # Submit to john partition:
 ACTOR_CHECKPOINT=out/iql/<run>/iql_weights.pt \
@@ -158,6 +164,10 @@ ACTOR_CHECKPOINT=out/iql/<run>/iql_weights.pt \
 ```
 
 ### Multiple checkpoints in parallel, CPU
+
+Batch mode is for throughput and checkpoint sweeps. Each worker still runs the
+live eval path, but if you only need one full notebook-style run, prefer the
+single-checkpoint wrapper above.
 
 ```bash
 # 4 checkpoints, 4 workers × 5 CPUs = 20 total:
@@ -184,6 +194,13 @@ result = run_actor_eval_from_config(
     grid_size=51,
 )
 ```
+
+### Bundle-only diagnostics
+
+If you already have `actor_eval_summary.json` and `actor_eval_bundle.pkl`, you
+can call `rl.eval_postprocess.postprocess_actor_eval(...)` directly. That is a
+diagnostic path only. It may not have enough runtime state to reconstruct the
+complete notebook movie, so do not use it as the primary eval workflow.
 
 ## Performance Findings
 

@@ -11,6 +11,7 @@ import json
 import os
 import pickle
 import time
+import warnings
 from contextlib import redirect_stdout
 from datetime import datetime
 from pathlib import Path
@@ -56,6 +57,82 @@ def _plain(value):
     if isinstance(value, (list, tuple)):
         return [_plain(v) for v in value]
     return value
+
+
+def _bundle_safe(value):
+    """Return a pickle-friendly snapshot of nested eval artifacts.
+
+    We keep numeric / array-like payloads intact and drop opaque runtime
+    objects that TORAX or ctypes backends attach to the live `tmtx`.
+    """
+    if isinstance(value, (str, int, float, bool, type(None))):
+        return value
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, torch.Tensor):
+        return value.detach().cpu().tolist()
+    if isinstance(value, dict):
+        safe = {}
+        for key, item in value.items():
+            item_safe = _bundle_safe(item)
+            if item_safe is not None:
+                safe[str(key)] = item_safe
+        return safe
+    if isinstance(value, (list, tuple)):
+        safe_list = []
+        for item in value:
+            item_safe = _bundle_safe(item)
+            if item_safe is not None:
+                safe_list.append(item_safe)
+        return safe_list
+
+    # Preserve a few simple containers that are already picklable.
+    if isinstance(value, (set, frozenset)):
+        return [_bundle_safe(item) for item in value if _bundle_safe(item) is not None]
+
+    try:
+        pickle.dumps(value)
+    except Exception:
+        return None
+    return value
+
+
+def _action_history_to_array(actions_history):
+    """Normalize RL action history into a numeric array and structured records."""
+    records = []
+    numeric = []
+    saw_legacy_shape = False
+    for item in actions_history or []:
+        if isinstance(item, dict):
+            record = _plain(item)
+            records.append(record)
+            if "ecrh_W" in record and "nbi_W" in record:
+                numeric.append([float(record["ecrh_W"]), float(record["nbi_W"])])
+            elif "ecrh_MW" in record and "nbi_MW" in record:
+                numeric.append([float(record["ecrh_MW"]) * 1e6, float(record["nbi_MW"]) * 1e6])
+        else:
+            saw_legacy_shape = True
+            arr = np.asarray(item, dtype=np.float64).reshape(-1)
+            if arr.size >= 2:
+                numeric.append([float(arr[0]), float(arr[1])])
+                records.append({"ecrh_W": float(arr[0]), "nbi_W": float(arr[1])})
+    numeric_arr = np.asarray(numeric, dtype=np.float64)
+    if numeric_arr.size == 0:
+        numeric_arr = np.zeros((0, 2), dtype=np.float64)
+    elif numeric_arr.ndim == 1:
+        numeric_arr = numeric_arr.reshape(-1, 2)
+    if saw_legacy_shape:
+        warnings.warn(
+            "Legacy numeric RL action history detected. The current TORAX eval path "
+            "expects dict event records with decision_t/knot_t/ecrh_W/nbi_W; "
+            "numeric action arrays are still accepted for backward compatibility "
+            "but should be regenerated.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+    return numeric_arr, records
 
 
 def _normalizers_from_dataset(dataset_dir, replay_cache_dir=None, prefer_replay_cache=True):
@@ -298,9 +375,7 @@ def run_actor_eval_simulation(
         with redirect_stdout(io.StringIO()):
             summary = tmtx.summary()
         rewards = tmtx.compute_rewards()
-        actions = np.asarray(getattr(tmtx, "_rl_actions_history", []), dtype=np.float64)
-        if actions.ndim == 1 and actions.size:
-            actions = actions.reshape(-1, 2)
+        actions, action_records = _action_history_to_array(getattr(tmtx, "_rl_actions_history", []))
         action_max = np.asarray(_plain(ckpt.get("action_max", np.ones(2))), dtype=np.float64)
         if action_max.ndim == 0:
             action_max = np.asarray([float(action_max), float(action_max)], dtype=np.float64)
@@ -331,20 +406,21 @@ def run_actor_eval_simulation(
             "finished_at": datetime.now().isoformat(),
             "actor_checkpoint": str(Path(actor_checkpoint).resolve()),
             "eval_actor_checkpoint": str(actor_path),
-            "initial_relax_state": initial_relax_state,
+            "initial_relax_state": _bundle_safe(initial_relax_state),
             "summary": _plain(summary),
             "rewards": _plain(rewards),
             "actions": _plain(actions),
+            "action_records": action_records,
             "metrics": _plain(metrics),
             "output_dir": str(output_dir),
         }
         bundle = {
-            "state": tmtx._state,
+            "state": _bundle_safe(tmtx._state),
             "tm_times": list(getattr(tmtx, "_tm_times", [])),
             "current_loop": getattr(tmtx, "_current_loop", None),
-            "flattop": _plain(getattr(tmtx, "_flattop", None)),
-            "coil_bounds": _plain(getattr(tmtx, "_coil_bounds", None)),
-            "results": _plain(getattr(tmtx, "_results", None)),
+            "flattop": _bundle_safe(getattr(tmtx, "_flattop", None)),
+            "coil_bounds": _bundle_safe(getattr(tmtx, "_coil_bounds", None)),
+            "results": _bundle_safe(getattr(tmtx, "_results", None)),
             "output_mode": getattr(tmtx, "_output_mode", None),
             "actor_checkpoint": str(actor_path),
             "initial_relax_state": initial_relax_state,
@@ -361,7 +437,16 @@ def run_actor_eval_simulation(
         wandb.save(str(result_path))
         actions_path = output_dir / "actor_eval_actions.json"
         with actions_path.open("w") as f:
-            json.dump({"actions": _plain(actions), "action_max": _plain(action_max), "metrics": _plain(metrics)}, f, indent=2)
+            json.dump(
+                {
+                    "actions": _plain(actions),
+                    "action_records": action_records,
+                    "action_max": _plain(action_max),
+                    "metrics": _plain(metrics),
+                },
+                f,
+                indent=2,
+            )
         wandb.save(str(actions_path))
         result["tmtx"] = tmtx
         return result

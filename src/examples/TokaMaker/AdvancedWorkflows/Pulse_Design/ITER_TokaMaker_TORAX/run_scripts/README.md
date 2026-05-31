@@ -84,6 +84,7 @@ OUTPUT_BASE_DIR=./my_dataset \
 DRY_RUN=0 SUBMIT_GRID_SEARCH=1 SUBMIT_REPLAY_CACHE=1 SUBMIT_IQL=0 \
   ./run_scripts/submit_collect_trajectories_cpu_array.sh
 ```
+Artifacts are written under `./my_dataset/` (trajectory shards, optional `grid_search/`, optional `replay_cache/`, and per-run logs).
 
 ### Train IQL only (replay cache already exists)
 
@@ -91,6 +92,7 @@ DRY_RUN=0 SUBMIT_GRID_SEARCH=1 SUBMIT_REPLAY_CACHE=1 SUBMIT_IQL=0 \
 DATASET_DIR=./my_dataset \
   sbatch run_scripts/train_iql.sh
 ```
+Artifacts are written under `./my_dataset/iql/` (final weights, checkpoints) and W&B.
 
 ### Evaluate only (checkpoint already exists)
 
@@ -113,6 +115,7 @@ Or from a file (`#` lines are comments):
 CHECKPOINTS_FILE=my_checkpoints.txt N_WORKERS=4 \
   sbatch run_scripts/eval_iql_actor_cpu_batch.sh
 ```
+Artifacts are written under `<OUTPUT_DIR>/` for single-checkpoint evals, or `<OUTPUT_ROOT>/` for batch evals (summary JSON, action trace, plots, movie, and TORAX logs).
 
 ### Changed the reward metric — what to re-run
 
@@ -120,13 +123,13 @@ Rewards are computed by `compute_reward()` in `collect_trajectories_delta.py`
 and **baked into `replay_shards/*.npz` at collection time**. The replay cache
 materializer only aggregates those saved values; it does not recompute them.
 
-**You must recollect trajectories** to apply a new reward function.
-If you saved full Zarr traces (`SAVE_FULL_ZARR=1`), you can recompute rewards
-from those without re-running the simulator — but that requires a custom
-extraction step (not yet scripted).
+**You must recollect trajectories** to apply a new reward function. The normal
+path is still the compact replay shards (`SAVE_FULL_ZARR=0`); do not enable
+full Zarr unless you explicitly need deeper forensic traces or want to
+recompute rewards from richer simulator state.
 
 ```bash
-# 1. Recollect (or recompute from Zarr) with the new reward logic
+# 1. Recollect with the new reward logic (compact shards by default)
 N_TRAJECTORIES=1000 START_IDX=0 END_IDX=1000 \
 ARRAY_CONCURRENCY=32 \
 OUTPUT_BASE_DIR=./my_dataset_new_reward \
@@ -188,10 +191,20 @@ Also logged to wandb (`iql-training` project by default).
 
 ### Evaluation (`eval_iql_actor_cpu.sh` / `eval_iql_actor_cpu_batch.sh`)
 
+The single-checkpoint CPU eval is the canonical way to get the full notebook-
+style outputs in one pass: it runs TORAX, writes the summary bundle, and then
+renders plots/movie from the live `tmtx` object before the process exits.
+
 ```
 <OUTPUT_DIR>/
-  eval_results.json              # per-loop metrics (Ip, Q_fusion, beta_N, ...)
-  actions_history.json           # RL action sequence chosen by the actor
+  actor_eval_summary.json        # metrics + action history + TORAX metadata
+  actor_eval_actions.json        # compact per-decision action trace
+  actor_eval_bundle.pkl          # serialized TORAX state snapshot for diagnostics
+  artifacts/
+    plot_scalars.png
+    plot_lcfs_evolution.png
+    plot_profile_evolution_*.png
+    movie.mp4
   tokamaker_torax_logs/          # TORAX solver output
 ```
 
