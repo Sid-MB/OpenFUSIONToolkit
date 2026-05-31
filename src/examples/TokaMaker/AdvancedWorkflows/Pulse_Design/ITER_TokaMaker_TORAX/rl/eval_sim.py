@@ -274,13 +274,27 @@ def run_actor_eval_simulation(
         with redirect_stdout(io.StringIO()):
             summary = tmtx.summary()
         rewards = tmtx.compute_rewards()
-        actions = getattr(tmtx, "_rl_actions_history", [])
+        actions = np.asarray(getattr(tmtx, "_rl_actions_history", []), dtype=np.float64)
+        if actions.ndim == 1 and actions.size:
+            actions = actions.reshape(-1, 2)
+        action_max = np.asarray(_plain(ckpt.get("action_max", np.ones(2))), dtype=np.float64)
+        if action_max.ndim == 0:
+            action_max = np.asarray([float(action_max), float(action_max)], dtype=np.float64)
+        action_abs = np.abs(actions) if actions.size else np.zeros((0, 2), dtype=np.float64)
+        action_sat = action_abs >= (0.95 * action_max.reshape(1, -1)) if actions.size else np.zeros((0, 2), dtype=bool)
+        action_delta = np.diff(actions, axis=0) if len(actions) > 1 else np.zeros((0, 2), dtype=np.float64)
+        action_delta_abs = np.abs(action_delta) if action_delta.size else action_delta
         metrics = {
             "actor_eval/reward_total": float(np.sum(rewards)),
             "actor_eval/reward_mean": float(np.mean(rewards)),
             "actor_eval/reward_min": float(np.min(rewards)),
             "actor_eval/reward_max": float(np.max(rewards)),
             "actor_eval/n_decisions": len(actions),
+            "actor_eval/action_abs_mean": float(np.mean(action_abs)) if action_abs.size else 0.0,
+            "actor_eval/action_delta_abs_mean": float(np.mean(action_delta_abs)) if action_delta_abs.size else 0.0,
+            "actor_eval/action_saturation_rate": float(np.mean(action_sat)) if action_sat.size else 0.0,
+            "actor_eval/nbi_saturation_rate": float(np.mean(action_sat[:, 1])) if action_sat.size else 0.0,
+            "actor_eval/ecrh_saturation_rate": float(np.mean(action_sat[:, 0])) if action_sat.size else 0.0,
         }
         for key, val in summary.items():
             if val is not None:
@@ -321,6 +335,10 @@ def run_actor_eval_simulation(
         with result_path.open("w") as f:
             json.dump(result, f, indent=2)
         wandb.save(str(result_path))
+        actions_path = output_dir / "actor_eval_actions.json"
+        with actions_path.open("w") as f:
+            json.dump({"actions": _plain(actions), "action_max": _plain(action_max), "metrics": _plain(metrics)}, f, indent=2)
+        wandb.save(str(actions_path))
         result["tmtx"] = tmtx
         return result
     finally:

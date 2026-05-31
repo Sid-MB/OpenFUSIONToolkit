@@ -468,6 +468,7 @@ def train_from_config(
     actor_eval_max_loop,
     actor_eval_grid_size,
     actor_eval_device,
+    observation_mode,
     wandb_group=None,
 ):
     base_config = {
@@ -501,6 +502,7 @@ def train_from_config(
         "actor_eval_max_loop": actor_eval_max_loop,
         "actor_eval_grid_size": actor_eval_grid_size,
         "actor_eval_device": actor_eval_device,
+        "observation_mode": observation_mode,
     }
     wandb_init_kwargs = {"project": project, "config": base_config, "job_type": "train"}
     if run_name:
@@ -780,6 +782,12 @@ def parse_args(argv):
     parser.add_argument("--actor_eval_max_loop", type=int, default=2)
     parser.add_argument("--actor_eval_grid_size", type=int, default=51)
     parser.add_argument("--actor_eval_device", default=None)
+    parser.add_argument(
+        "--observation_mode",
+        choices=["legacy", "prev_action", "plasma_only"],
+        default="prev_action",
+        help="How trajectory observations are constructed from TORAX states and actions.",
+    )
     return parser.parse_args(argv)
 
 def train_kwargs_from_args(args):
@@ -822,6 +830,7 @@ def train_kwargs_from_args(args):
         "actor_eval_max_loop": args.actor_eval_max_loop,
         "actor_eval_grid_size": args.actor_eval_grid_size,
         "actor_eval_device": args.actor_eval_device,
+        "observation_mode": args.observation_mode,
         "wandb_group": args.wandb_group,
     }
 

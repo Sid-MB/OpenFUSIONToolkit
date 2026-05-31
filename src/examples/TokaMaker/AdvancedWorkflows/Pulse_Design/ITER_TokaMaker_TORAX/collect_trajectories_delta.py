@@ -96,6 +96,12 @@ FGW_PENALTY_WEIGHT = 3
 PELLET_S_TOTAL = {0: 0, 90: 5e21, 450: 5e21, 451: 0}
 SEED_EQDSK_COUNT = 5
 
+# Observation contracts for trajectory extraction and downstream training/eval.
+# LEGACY keeps the current action inside the state for backward compatibility.
+# PREV_ACTION makes the previous action explicit and avoids leaking the action
+# for the interval being scored. PLASMA_ONLY removes action history entirely.
+OBSERVATION_MODES = {"legacy", "prev_action", "plasma_only"}
+
 
 # ── Per-worker global state ───────────────────────────────────────────────────
 
@@ -401,7 +407,7 @@ def get_torax_profile_at_rho(tmtx, var_name, rho_values, rl_time):
     return result
 
 
-def extract_state(tmtx, t_start, t_end, current_action):
+def extract_state(tmtx, t_start, t_end, current_action, prev_action=None, observation_mode="legacy"):
     """
     Extract state vector for interval [t_start, t_end].
 
@@ -441,8 +447,18 @@ def extract_state(tmtx, t_start, t_end, current_action):
     for var in torax_scalars:
         state[f'tx_{var}'] = interpolate_torax_scalar(tmtx, var, t_start)
 
-    state['ecrh'] = float(current_action[0])
-    state['nbi']  = float(current_action[1])
+    if observation_mode == "legacy":
+        state['ecrh'] = float(current_action[0])
+        state['nbi']  = float(current_action[1])
+    elif observation_mode == "prev_action":
+        if prev_action is None:
+            prev_action = (0.0, 0.0)
+        state['prev_ecrh'] = float(prev_action[0])
+        state['prev_nbi'] = float(prev_action[1])
+    elif observation_mode == "plasma_only":
+        pass
+    else:
+        raise ValueError(f"Unknown observation_mode={observation_mode!r}")
 
     # ── P_LH margin ───────────────────────────────────────────────────────────
     P_heat_total = interpolate_torax_scalar(tmtx, 'P_heat_total', t_start)
@@ -591,7 +607,7 @@ def validate_trajectory(transitions, summary, action_row):
 
 # ── Trajectory builder ────────────────────────────────────────────────────────
 
-def build_trajectory(tmtx, action_row):
+def build_trajectory(tmtx, action_row, observation_mode="legacy"):
     """
     After fly() has completed, extract the full list of transitions.
 
@@ -600,13 +616,21 @@ def build_trajectory(tmtx, action_row):
     """
     transitions = []
 
+    prev_action = (0.0, 0.0)
     for i, t in enumerate(DECISION_TIMES):
 
         t_next = RL_TIMES[i + 1]
 
         is_terminal = (i == len(DECISION_TIMES) - 1)
         a  = action_row[i].tolist()  # [ecrh_W, nbi_W]
-        s = extract_state(tmtx, t, t_next, a)
+        s = extract_state(
+            tmtx,
+            t,
+            t_next,
+            a,
+            prev_action=prev_action,
+            observation_mode=observation_mode,
+        )
         r = compute_reward(tmtx, t, t_next, is_terminal=is_terminal)
 
         transitions.append({
@@ -617,6 +641,7 @@ def build_trajectory(tmtx, action_row):
             't':      t,
             't_next': t_next,
         })
+        prev_action = tuple(a)
 
     for i, transition in enumerate(transitions):
         if i < len(transitions) - 1:
@@ -889,7 +914,8 @@ def run_single_trajectory(mygs, action_row, run_id, cwd, eqdsk_list, eqtimes,
                            Ip_targets, ne_init, Te_init, psi_sample,
                            initial_relax_cache, log_dir,
                            max_loop, grid_size,
-                           trajectory_timeout_seconds):
+                           trajectory_timeout_seconds,
+                           observation_mode="legacy"):
     """
     Configure and run one TokaMaker_TORAX simulation with the given action_row.
     Returns (transitions, summary, data_tree), or (None, None, None) if simulation failed.
@@ -915,7 +941,7 @@ def run_single_trajectory(mygs, action_row, run_id, cwd, eqdsk_list, eqtimes,
                 log_dir=log_dir,
             )
 
-        transitions = build_trajectory(tmtx, action_row)
+        transitions = build_trajectory(tmtx, action_row, observation_mode=observation_mode)
         with redirect_stdout(io.StringIO()):
             summary = tmtx.summary()
         validate_trajectory(transitions, summary, action_row)
@@ -958,6 +984,7 @@ def trajectory_payload(transitions, summary, action_row, run_id):
         'actions_raw': action_row.tolist(),   # (21, 2) array in W
         'transitions': transitions,            # list of 21 dicts
         'summary':     summary,
+        'observation_mode': summary.get('observation_mode', 'legacy') if isinstance(summary, dict) else 'legacy',
     }
     return payload
 
@@ -1001,7 +1028,7 @@ def worker_fn(run_id, all_actions, eqdsk_list, eqtimes, coil_bounds,
               x_points, diverted_isoflux_pts, Ip_targets, ne_init, Te_init,
               psi_sample, dataset_dir, initial_relax_cache, log_dir,
               max_loop, grid_size, trajectory_timeout_seconds, save_replay_shard,
-              save_full_zarr, save_json):
+              save_full_zarr, save_json, observation_mode):
     """Run and save one trajectory using this worker's initialized TokaMaker."""
     global _mygs
     worker_t0 = time.time()
@@ -1039,6 +1066,7 @@ def worker_fn(run_id, all_actions, eqdsk_list, eqtimes, coil_bounds,
             max_loop=max_loop,
             grid_size=grid_size,
             trajectory_timeout_seconds=trajectory_timeout_seconds,
+            observation_mode=observation_mode,
         )
         sim_elapsed = time.time() - sim_t0
 
@@ -1116,6 +1144,9 @@ if __name__ == '__main__':
                         help='Maximum TokaMaker/TORAX coupling loop count per trajectory')
     parser.add_argument('--grid_size', type=int, default=51,
                         help='TORAX radial grid size passed to set_TORAX_grid')
+    parser.add_argument('--observation_mode', choices=sorted(OBSERVATION_MODES), default='legacy',
+                        help='How to build trajectory observations: legacy includes current action, '
+                             'prev_action carries the prior decision explicitly, plasma_only removes action history.')
     parser.add_argument('--trajectory_timeout_seconds', type=int, default=0,
                         help='Abort a single trajectory after this many seconds; 0 disables timeout')
     parser.add_argument('--save_replay_shard', dest='save_replay_shard', action='store_true',
@@ -1349,6 +1380,7 @@ if __name__ == '__main__':
                 max_loop=args.max_loop,
                 grid_size=args.grid_size,
                 trajectory_timeout_seconds=args.trajectory_timeout_seconds,
+                observation_mode=args.observation_mode,
             )
 
             simulation_elapsed = time.time() - sim_t0
@@ -1428,6 +1460,7 @@ if __name__ == '__main__':
             save_replay_shard=args.save_replay_shard,
             save_full_zarr=args.save_full_zarr,
             save_json=args.save_json,
+            observation_mode=args.observation_mode,
         )
 
         mp_context = os.environ.get('MP_CONTEXT', 'fork')
