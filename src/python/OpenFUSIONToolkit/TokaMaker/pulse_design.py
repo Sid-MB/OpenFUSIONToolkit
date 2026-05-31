@@ -72,9 +72,10 @@ _BASE_RL_ECRH_POWERS_W = {
     10: 0.0,
     50: 20.0e6,
     80: 20.0e6,
-    520: 10.0e6,
-    540: 5.0e6,
-    560: 0.0,
+    # Match collect_trajectories_delta.build_ecrh_schedule fixed ramp-down.
+    520: 15.0e6,
+    540: 10.0e6,
+    560: 5.0e6,
     600: 0.0,
 }
 _BASE_RL_NBI_POWERS_W = {
@@ -207,14 +208,14 @@ class RLRewardConfig:
     q95_min:               float = 3.0
     beta_n_max:            float = 2.8
     fgw_max:               float = 0.85
-    # Reward weights
-    step_reward_weight:    float = 1.0      # ← missing
-    q95_penalty_weight:    float = 0.15
-    beta_n_penalty_weight: float = 1.67
-    fgw_penalty_weight:    float = 3.0
-    # Terminal bonus weights
-    q_flattop_weight:      float = 1.0      # ← missing
-    flux_weight:           float = 0.001
+    # Reward weights: keep in sync with preprocess_run.ipynb.
+    step_reward_weight:    float = 1.0
+    q95_penalty_weight:    float = 1.2
+    beta_n_penalty_weight: float = 1.0
+    fgw_penalty_weight:    float = 2.0
+    # Terminal bonus weights: keep in sync with preprocess_run.ipynb.
+    q_flattop_weight:      float = 1.0
+    flux_weight:           float = 0.012
 
 # Setup output re-direct from TORAX to log file, suppressing frivolous warnings.
 # Errors will still be output in terminal.
@@ -989,7 +990,15 @@ class TokaMaker_TORAX:
             if is_terminal:
                 with redirect_stdout(io.StringIO()):
                     summary = self.summary()
-                r += cfg.q_flattop_weight * summary.get('Q_flattop_avg', 0.0) - cfg.flux_weight * summary.get('flux_consumed_Wb', 0.0)
+                try:
+                    q_flattop_avg = float(summary['Q_flattop_avg'])
+                    flux_consumed_wb = float(summary['flux_consumed_Wb'])
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise RuntimeError(
+                        'Cannot compute terminal RL reward: summary is missing a numeric '
+                        'Q_flattop_avg or flux_consumed_Wb value.'
+                    ) from exc
+                r += cfg.q_flattop_weight * q_flattop_avg - cfg.flux_weight * flux_consumed_wb
 
             rewards.append(r)
 
@@ -2193,15 +2202,13 @@ class TokaMaker_TORAX:
                 
         '''
         if self._rl_actor is None and self._rl_actor_checkpoint is not None:
-            try:
-                self._load_rl_actor(self._rl_actor_checkpoint)
-            except Exception as e:
-                self._log(
-                    f'Warning: could not load RL actor ({self._rl_actor_checkpoint}): {e}; '
-                    'using baseline heating fallback.'
-                )
-                self._print('  TORAX RL: actor load failed — baseline heating fallback')
-                self._rl_actor = None
+            self._load_rl_actor(self._rl_actor_checkpoint)
+            # self._log(
+            #     f'Warning: could not load RL actor ({self._rl_actor_checkpoint}): {e}; '
+            #     'using baseline heating fallback.'
+            # )
+            # self._print('  TORAX RL: actor load failed — baseline heating fallback')
+            # self._rl_actor = None
         if self._rl_actor is None:
             self._log('TORAX RL: no actor loaded; baseline heating at each decision knot.')
             self._print('  TORAX RL: baseline heating fallback (no trained actor)')
@@ -3946,14 +3953,14 @@ class RLRewardConfig:
     q95_min:               float = 3.0
     beta_n_max:            float = 2.8
     fgw_max:               float = 0.85
-    # Reward weights
+    # Reward weights: keep in sync with preprocess_run.ipynb.
     step_reward_weight:    float = 1.0
-    q95_penalty_weight:    float = 0.15
-    beta_n_penalty_weight: float = 1.67
-    fgw_penalty_weight:    float = 3.0
-    # Terminal bonus weights
+    q95_penalty_weight:    float = 1.2
+    beta_n_penalty_weight: float = 1.0
+    fgw_penalty_weight:    float = 2.0
+    # Terminal bonus weights: keep in sync with preprocess_run.ipynb.
     q_flattop_weight:      float = 1.0
-    flux_weight:           float = 0.001
+    flux_weight:           float = 0.012
 
 # =============================================================================
 #  Visualization
