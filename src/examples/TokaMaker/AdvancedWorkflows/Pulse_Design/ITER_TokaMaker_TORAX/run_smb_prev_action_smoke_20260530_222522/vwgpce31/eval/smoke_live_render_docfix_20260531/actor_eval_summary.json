@@ -1,0 +1,339 @@
+{
+  "status": "success",
+  "started_at": "2026-05-31T14:04:12.278374",
+  "finished_at": "2026-05-31T14:39:19.243589",
+  "actor_checkpoint": "/juice2/scr2/siddharth/OpenFUSIONToolkit/src/examples/TokaMaker/AdvancedWorkflows/Pulse_Design/ITER_TokaMaker_TORAX/out/iql/run_prev_action_smoke_20260530_222521/vwgpce31/iql_weights.pt",
+  "eval_actor_checkpoint": "/juice2/scr2/siddharth/OpenFUSIONToolkit/src/examples/TokaMaker/AdvancedWorkflows/Pulse_Design/ITER_TokaMaker_TORAX/out/iql/run_prev_action_smoke_20260530_222521/vwgpce31/iql_weights.pt",
+  "initial_relax_state": "/juice2/scr2/siddharth/OpenFUSIONToolkit/src/examples/TokaMaker/AdvancedWorkflows/Pulse_Design/ITER_TokaMaker_TORAX/initial_relax_cache/initial_relax_568b58f010fd7259.json",
+  "summary": {
+    "Q_max": 5.099225073389508,
+    "Q_max_time": 269.814864814815,
+    "Q_flattop_avg": 4.885580161303458,
+    "E_fusion_total_MJ": 65379.497702765155,
+    "beta_N_max": 1.1211649466738511,
+    "H98_max": 0.7452172989203898,
+    "H98_flattop_avg": 0.7107393745299868,
+    "T_e_core_max_keV": 12.323247556171541,
+    "T_i_core_max_keV": 10.456885805427616,
+    "n_e_line_avg_max": 1.1149793466887291e+20,
+    "f_GW_max": 0.9445726630251522,
+    "q95_min": 2.8557774799286078,
+    "q0_min": 0.8854027057821457,
+    "flux_consumed_Wb": 160.39443018291556,
+    "P_fusion_max_MW": 167.8724372565353,
+    "P_ohmic_max_MW": 7.659877890299365,
+    "l_i_flattop_avg": 0.722790960346213,
+    "vloop_tx_flattop_avg_V": 0.17755405130032142
+  },
+  "rewards": [
+    0.5433571626574543,
+    0.728304316454219,
+    0.7426942790070373,
+    0.6589099512516261,
+    0.36397905649979045,
+    0.32893854717570825,
+    0.31116827661871627,
+    0.3079870192496872,
+    0.30473916875771834,
+    0.30473870241411327,
+    0.3111116742918698,
+    0.31408432657867436,
+    0.31724396526035337,
+    0.321048663752765,
+    0.32538922572319295,
+    0.32998495236253134,
+    0.33469191448271607,
+    0.3394893960119174,
+    0.6950981883281575,
+    1.3453937399574847,
+    6.208756521072871
+  ],
+  "actions": [
+    [
+      19048986.0,
+      30560632.0
+    ],
+    [
+      12350191.0,
+      19708670.0
+    ],
+    [
+      12517179.0,
+      20099842.0
+    ],
+    [
+      12579263.0,
+      19983580.0
+    ],
+    [
+      11683867.0,
+      19936746.0
+    ],
+    [
+      12267177.0,
+      18821810.0
+    ],
+    [
+      12155101.0,
+      18761368.0
+    ],
+    [
+      12087326.0,
+      18714050.0
+    ],
+    [
+      12152042.0,
+      18560984.0
+    ],
+    [
+      12189560.0,
+      18489072.0
+    ],
+    [
+      12225293.0,
+      18438860.0
+    ],
+    [
+      12269328.0,
+      18410472.0
+    ],
+    [
+      12303951.0,
+      18386036.0
+    ],
+    [
+      12339921.0,
+      18358910.0
+    ],
+    [
+      12376983.0,
+      18325790.0
+    ],
+    [
+      12413960.0,
+      18294956.0
+    ],
+    [
+      12449313.0,
+      18265328.0
+    ],
+    [
+      12482877.0,
+      18237854.0
+    ],
+    [
+      12513148.0,
+      18209956.0
+    ],
+    [
+      12722734.0,
+      17915032.0
+    ],
+    [
+      10099284.0,
+      18097848.0
+    ]
+  ],
+  "action_records": [
+    {
+      "decision_t": 80.0,
+      "knot_t": 100.0,
+      "ecrh_W": 19048986.0,
+      "nbi_W": 30560632.0,
+      "ecrh_MW": 19.048986,
+      "nbi_MW": 30.560632
+    },
+    {
+      "decision_t": 100.0,
+      "knot_t": 120.0,
+      "ecrh_W": 12350191.0,
+      "nbi_W": 19708670.0,
+      "ecrh_MW": 12.350191,
+      "nbi_MW": 19.70867
+    },
+    {
+      "decision_t": 120.0,
+      "knot_t": 140.0,
+      "ecrh_W": 12517179.0,
+      "nbi_W": 20099842.0,
+      "ecrh_MW": 12.517179,
+      "nbi_MW": 20.099842
+    },
+    {
+      "decision_t": 140.0,
+      "knot_t": 160.0,
+      "ecrh_W": 12579263.0,
+      "nbi_W": 19983580.0,
+      "ecrh_MW": 12.579263,
+      "nbi_MW": 19.98358
+    },
+    {
+      "decision_t": 160.0,
+      "knot_t": 180.0,
+      "ecrh_W": 11683867.0,
+      "nbi_W": 19936746.0,
+      "ecrh_MW": 11.683867,
+      "nbi_MW": 19.936746
+    },
+    {
+      "decision_t": 180.0,
+      "knot_t": 200.0,
+      "ecrh_W": 12267177.0,
+      "nbi_W": 18821810.0,
+      "ecrh_MW": 12.267177,
+      "nbi_MW": 18.82181
+    },
+    {
+      "decision_t": 200.0,
+      "knot_t": 220.0,
+      "ecrh_W": 12155101.0,
+      "nbi_W": 18761368.0,
+      "ecrh_MW": 12.155101,
+      "nbi_MW": 18.761368
+    },
+    {
+      "decision_t": 220.0,
+      "knot_t": 240.0,
+      "ecrh_W": 12087326.0,
+      "nbi_W": 18714050.0,
+      "ecrh_MW": 12.087326,
+      "nbi_MW": 18.71405
+    },
+    {
+      "decision_t": 240.0,
+      "knot_t": 260.0,
+      "ecrh_W": 12152042.0,
+      "nbi_W": 18560984.0,
+      "ecrh_MW": 12.152042,
+      "nbi_MW": 18.560984
+    },
+    {
+      "decision_t": 260.0,
+      "knot_t": 280.0,
+      "ecrh_W": 12189560.0,
+      "nbi_W": 18489072.0,
+      "ecrh_MW": 12.18956,
+      "nbi_MW": 18.489072
+    },
+    {
+      "decision_t": 280.0,
+      "knot_t": 300.0,
+      "ecrh_W": 12225293.0,
+      "nbi_W": 18438860.0,
+      "ecrh_MW": 12.225293,
+      "nbi_MW": 18.43886
+    },
+    {
+      "decision_t": 300.0,
+      "knot_t": 320.0,
+      "ecrh_W": 12269328.0,
+      "nbi_W": 18410472.0,
+      "ecrh_MW": 12.269328,
+      "nbi_MW": 18.410472
+    },
+    {
+      "decision_t": 320.0,
+      "knot_t": 340.0,
+      "ecrh_W": 12303951.0,
+      "nbi_W": 18386036.0,
+      "ecrh_MW": 12.303951,
+      "nbi_MW": 18.386036
+    },
+    {
+      "decision_t": 340.0,
+      "knot_t": 360.0,
+      "ecrh_W": 12339921.0,
+      "nbi_W": 18358910.0,
+      "ecrh_MW": 12.339921,
+      "nbi_MW": 18.35891
+    },
+    {
+      "decision_t": 360.0,
+      "knot_t": 380.0,
+      "ecrh_W": 12376983.0,
+      "nbi_W": 18325790.0,
+      "ecrh_MW": 12.376983,
+      "nbi_MW": 18.32579
+    },
+    {
+      "decision_t": 380.0,
+      "knot_t": 400.0,
+      "ecrh_W": 12413960.0,
+      "nbi_W": 18294956.0,
+      "ecrh_MW": 12.41396,
+      "nbi_MW": 18.294956
+    },
+    {
+      "decision_t": 400.0,
+      "knot_t": 420.0,
+      "ecrh_W": 12449313.0,
+      "nbi_W": 18265328.0,
+      "ecrh_MW": 12.449313,
+      "nbi_MW": 18.265328
+    },
+    {
+      "decision_t": 420.0,
+      "knot_t": 440.0,
+      "ecrh_W": 12482877.0,
+      "nbi_W": 18237854.0,
+      "ecrh_MW": 12.482877,
+      "nbi_MW": 18.237854
+    },
+    {
+      "decision_t": 440.0,
+      "knot_t": 460.0,
+      "ecrh_W": 12513148.0,
+      "nbi_W": 18209956.0,
+      "ecrh_MW": 12.513148,
+      "nbi_MW": 18.209956
+    },
+    {
+      "decision_t": 460.0,
+      "knot_t": 480.0,
+      "ecrh_W": 12722734.0,
+      "nbi_W": 17915032.0,
+      "ecrh_MW": 12.722734,
+      "nbi_MW": 17.915032
+    },
+    {
+      "decision_t": 480.0,
+      "knot_t": 500.0,
+      "ecrh_W": 10099284.0,
+      "nbi_W": 18097848.0,
+      "ecrh_MW": 10.099284,
+      "nbi_MW": 18.097848
+    }
+  ],
+  "metrics": {
+    "actor_eval/reward_total": 15.437109047908603,
+    "actor_eval/reward_mean": 0.7351004308527906,
+    "actor_eval/reward_min": 0.30473870241411327,
+    "actor_eval/reward_max": 6.208756521072871,
+    "actor_eval/n_decisions": 21,
+    "actor_eval/action_abs_mean": 15900125.714285715,
+    "actor_eval/action_delta_abs_mean": 636401.05,
+    "actor_eval/action_saturation_rate": 0.0,
+    "actor_eval/nbi_saturation_rate": 0.0,
+    "actor_eval/ecrh_saturation_rate": 0.0,
+    "actor_eval/Q_max": 5.099225073389508,
+    "actor_eval/Q_max_time": 269.814864814815,
+    "actor_eval/Q_flattop_avg": 4.885580161303458,
+    "actor_eval/E_fusion_total_MJ": 65379.497702765155,
+    "actor_eval/beta_N_max": 1.1211649466738511,
+    "actor_eval/H98_max": 0.7452172989203898,
+    "actor_eval/H98_flattop_avg": 0.7107393745299868,
+    "actor_eval/T_e_core_max_keV": 12.323247556171541,
+    "actor_eval/T_i_core_max_keV": 10.456885805427616,
+    "actor_eval/n_e_line_avg_max": 1.1149793466887291e+20,
+    "actor_eval/f_GW_max": 0.9445726630251522,
+    "actor_eval/q95_min": 2.8557774799286078,
+    "actor_eval/q0_min": 0.8854027057821457,
+    "actor_eval/flux_consumed_Wb": 160.39443018291556,
+    "actor_eval/P_fusion_max_MW": 167.8724372565353,
+    "actor_eval/P_ohmic_max_MW": 7.659877890299365,
+    "actor_eval/l_i_flattop_avg": 0.722790960346213,
+    "actor_eval/vloop_tx_flattop_avg_V": 0.17755405130032142
+  },
+  "output_dir": "/juice2/scr2/siddharth/OpenFUSIONToolkit/src/examples/TokaMaker/AdvancedWorkflows/Pulse_Design/ITER_TokaMaker_TORAX/out/iql_eval/smoke_live_render_docfix_20260531",
+  "bundle_path": "/juice2/scr2/siddharth/OpenFUSIONToolkit/src/examples/TokaMaker/AdvancedWorkflows/Pulse_Design/ITER_TokaMaker_TORAX/out/iql_eval/smoke_live_render_docfix_20260531/actor_eval_bundle.pkl"
+}
