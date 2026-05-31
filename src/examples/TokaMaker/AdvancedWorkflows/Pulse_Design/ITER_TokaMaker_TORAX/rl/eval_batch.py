@@ -42,7 +42,8 @@ from rl.eval import run_actor_eval_from_config
 
 def _run_one(job, *, dataset_dir, project, max_loop, grid_size,
              initial_relax_cache_dir, replay_cache_dir, prefer_replay_cache,
-             allow_cpu_jax_on_gpu, rl_segment_timeout_seconds, rl_max_action_power_w):
+             allow_cpu_jax_on_gpu, rl_segment_timeout_seconds, rl_max_action_power_w,
+             wandb_group, render_plots, render_movie, render_summary_artifacts):
     """Run one eval in this worker process and return a picklable status dict.
 
     Called by Pool.imap_unordered; all shared config is bound via functools.partial
@@ -69,6 +70,10 @@ def _run_one(job, *, dataset_dir, project, max_loop, grid_size,
             allow_cpu_jax_on_gpu=allow_cpu_jax_on_gpu,
             rl_segment_timeout_seconds=rl_segment_timeout_seconds,
             rl_max_action_power_w=rl_max_action_power_w,
+            wandb_group=wandb_group,
+            render_plots=render_plots,
+            render_movie=render_movie,
+            render_summary=render_summary_artifacts,
         )
         return {
             "checkpoint": str(checkpoint),
@@ -142,6 +147,7 @@ def parse_args():
                              "Defaults to out/iql_eval_batch/<timestamp>.")
     parser.add_argument("--dataset_dir", default=None)
     parser.add_argument("--project", default=os.environ.get("WANDB_PROJECT", "iql-training"))
+    parser.add_argument("--wandb_group", default=os.environ.get("WANDB_GROUP"))
     parser.add_argument("--max_loop", type=int, default=2)
     parser.add_argument("--grid_size", type=int, default=51)
     parser.add_argument("--n_workers", type=int,
@@ -160,6 +166,9 @@ def parse_args():
         type=float,
         default=float(os.environ.get("RL_MAX_ACTION_POWER_W", "150000000")),
     )
+    parser.add_argument("--no_plots", action="store_true")
+    parser.add_argument("--no_movie", action="store_true")
+    parser.add_argument("--no_summary_artifacts", action="store_true")
     return parser.parse_args()
 
 
@@ -191,6 +200,10 @@ def main():
         allow_cpu_jax_on_gpu=args.allow_cpu_jax_on_gpu,
         rl_segment_timeout_seconds=args.rl_segment_timeout_seconds,
         rl_max_action_power_w=args.rl_max_action_power_w,
+        wandb_group=args.wandb_group,
+        render_plots=not args.no_plots,
+        render_movie=not args.no_movie,
+        render_summary_artifacts=not args.no_summary_artifacts,
     )
 
     t_start = time.time()

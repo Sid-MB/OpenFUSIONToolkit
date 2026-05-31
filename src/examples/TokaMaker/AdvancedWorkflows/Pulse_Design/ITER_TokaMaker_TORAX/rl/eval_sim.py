@@ -1,0 +1,339 @@
+"""Simulation-only actor evaluation.
+
+This module owns the expensive closed-loop `tmtx.fly()` call and writes a compact
+JSON summary plus the raw artifacts needed for offline postprocessing.
+"""
+
+from __future__ import annotations
+
+import io
+import json
+import os
+import pickle
+import time
+from contextlib import redirect_stdout
+from datetime import datetime
+from pathlib import Path
+
+import numpy as np
+import torch
+import wandb
+
+from IQL import ReplayBuffer, normalize_buffer
+from dataloader import describe_dataset_with_replay_cache, load_d4rl_dataset
+from log import get_logger
+
+logger = get_logger(__name__)
+
+os.environ.setdefault("JAX_COMPILATION_CACHE_DIR", str(Path(__file__).resolve().parent.parent / ".jax_cache"))
+os.environ.setdefault("JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS", "0")
+os.environ.setdefault("JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES", "0")
+
+
+def _plain(value):
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, torch.Tensor):
+        return value.detach().cpu().tolist()
+    if isinstance(value, dict):
+        return {str(k): _plain(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain(v) for v in value]
+    return value
+
+
+def _normalizers_from_dataset(dataset_dir, replay_cache_dir=None, prefer_replay_cache=True):
+    specs = describe_dataset_with_replay_cache(
+        dataset_dir,
+        cache_dir=replay_cache_dir,
+        prefer_cache=prefer_replay_cache,
+    )
+    buffer = ReplayBuffer(specs["state_dim"], specs["action_dim"], specs["num_transitions"])
+    load_d4rl_dataset(
+        str(dataset_dir),
+        buffer,
+        specs["state_keys"],
+        cache_dir=replay_cache_dir,
+        prefer_cache=prefer_replay_cache,
+    )
+    return specs, normalize_buffer(buffer)
+
+
+def prepare_actor_checkpoint(actor_checkpoint, output_dir, dataset_dir=None, replay_cache_dir=None, prefer_replay_cache=True):
+    actor_checkpoint = Path(actor_checkpoint).resolve()
+    output_dir = Path(output_dir).resolve()
+    ckpt = torch.load(actor_checkpoint, map_location="cpu", weights_only=False)
+    if "state_mean" in ckpt and "state_std" in ckpt:
+        ckpt["_checkpoint_had_normalizers"] = True
+        return actor_checkpoint, ckpt, None
+    if dataset_dir is None:
+        raise ValueError("Actor checkpoint has no state_mean/state_std. Pass --dataset_dir.")
+
+    specs, normalizers = _normalizers_from_dataset(
+        Path(dataset_dir).resolve(),
+        replay_cache_dir=replay_cache_dir,
+        prefer_replay_cache=prefer_replay_cache,
+    )
+    patched = dict(ckpt)
+    patched["state_mean"] = torch.as_tensor(normalizers["state_mean"])
+    patched["state_std"] = torch.as_tensor(normalizers["state_std"])
+    patched.setdefault("action_max", torch.as_tensor(normalizers["action_max"]))
+    patched.setdefault("state_keys", specs["state_keys"])
+    patched.setdefault("state_dim", specs["state_dim"])
+    patched.setdefault("action_dim", specs["action_dim"])
+    patched["_checkpoint_had_normalizers"] = False
+    output_dir.mkdir(parents=True, exist_ok=True)
+    patched_path = output_dir / f"{actor_checkpoint.stem}_with_eval_normalizers.pt"
+    torch.save(patched, patched_path)
+    return patched_path, patched, specs
+
+
+def run_actor_eval_simulation(
+    actor_checkpoint,
+    output_dir,
+    dataset_dir=None,
+    project="iql-training",
+    run_name=None,
+    wandb_group=None,
+    wandb_mode=None,
+    initial_relax_state=None,
+    initial_relax_cache_dir=None,
+    max_loop=2,
+    grid_size=51,
+    device=None,
+    replay_cache_dir=None,
+    prefer_replay_cache=True,
+    allow_cpu_jax_on_gpu=False,
+    rl_segment_timeout_seconds=1800,
+    rl_max_action_power_w=150.0e6,
+):
+    from collect_trajectories_delta import (
+        build_initial_relax_cache,
+        configure_tmtx,
+        default_initial_relax_cache_dir,
+        default_relax_geometry,
+        patch_initial_relax_cache_loader,
+        preflight_required_inputs,
+        resolve_initial_relax_cache_path,
+        resolve_seed_eqdsk_paths,
+        setup_tokamaker,
+        validate_jax_backend,
+    )
+    from OpenFUSIONToolkit.TokaMaker.pulse_design import RL_DECISION_TIMES
+
+    output_dir = Path(output_dir).resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    actor_path, ckpt, dataset_specs = prepare_actor_checkpoint(
+        actor_checkpoint,
+        output_dir,
+        dataset_dir=dataset_dir,
+        replay_cache_dir=replay_cache_dir,
+        prefer_replay_cache=prefer_replay_cache,
+    )
+    if device is not None:
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(device)
+
+    cwd = Path.cwd()
+    eqdsk_list = resolve_seed_eqdsk_paths(str(cwd))
+    action_row = _default_action_row()
+    geom = default_relax_geometry()
+    relax_cache_params = None
+    if initial_relax_state is None:
+        legacy = None if dataset_dir is None else Path(dataset_dir) / "initial_relax_state.json"
+        if legacy is not None and legacy.is_file():
+            initial_relax_state = str(legacy)
+        else:
+            cache_dir = initial_relax_cache_dir or default_initial_relax_cache_dir()
+            initial_relax_state, relax_key, relax_cache_params = resolve_initial_relax_cache_path(
+                cache_dir,
+                grid_size,
+                geom["ne_init"],
+                geom["Te_init"],
+                geom["psi_sample"],
+                geom["eqtimes"],
+                geom["Ip_targets"],
+                geom["coil_bounds"],
+                geom["x_points"],
+                eqdsk_list,
+            )
+            logger.info("Keyed initial relax cache: %s (key=%s)", initial_relax_state, relax_key)
+
+    relax_cache_exists = initial_relax_state is not None and os.path.exists(initial_relax_state)
+    preflight_required_inputs(
+        str(cwd),
+        eqdsk_list,
+        initial_relax_cache=initial_relax_state,
+        require_initial_relax_cache=relax_cache_exists,
+    )
+    validate_jax_backend(require_cuda_on_gpu=not allow_cpu_jax_on_gpu)
+
+    config = {
+        "actor_checkpoint": str(Path(actor_checkpoint).resolve()),
+        "eval_actor_checkpoint": str(actor_path),
+        "dataset_dir": None if dataset_dir is None else str(Path(dataset_dir).resolve()),
+        "output_dir": str(output_dir),
+        "initial_relax_state": initial_relax_state,
+        "max_loop": max_loop,
+        "grid_size": grid_size,
+        "checkpoint_has_normalizers": bool(ckpt.get("_checkpoint_had_normalizers", True)),
+        "state_dim": int(ckpt.get("state_dim", 0) or len(ckpt["state_mean"])),
+        "action_dim": int(ckpt.get("action_dim", 2)),
+        "state_keys": ckpt.get("state_keys"),
+        "dataset_specs": dataset_specs,
+        "rl_segment_timeout_seconds": rl_segment_timeout_seconds,
+        "rl_max_action_power_w": rl_max_action_power_w,
+    }
+
+    wandb_kwargs = {"project": project, "config": _plain(config), "reinit": True, "job_type": "actor_eval"}
+    if run_name:
+        wandb_kwargs["name"] = run_name
+    if wandb_mode:
+        wandb_kwargs["mode"] = wandb_mode
+    if wandb_group:
+        wandb_kwargs["group"] = wandb_group
+    run = wandb.init(**wandb_kwargs)
+    wandb.define_metric("actor_eval_live/*", step_metric="actor_eval_live/decision_index")
+    log_dir = output_dir / "tokamaker_torax_logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    _fly_t0 = [0.0]
+
+    def log_rl_event(event):
+        if event.get("event") != "decision":
+            return
+        try:
+            idx = int(event["decision_index"])
+            ecrh_mw = float(event["ecrh_MW"])
+            nbi_mw = float(event["nbi_MW"])
+            wandb.log(
+                {
+                    "actor_eval_live/decision_index": idx,
+                    "actor_eval_live/decision_t_s": float(event["decision_t"]),
+                    "actor_eval_live/ecrh_MW": ecrh_mw,
+                    "actor_eval_live/nbi_MW": nbi_mw,
+                    "actor_eval_live/total_heating_MW": ecrh_mw + nbi_mw,
+                    "actor_eval_live/elapsed_s": time.time() - _fly_t0[0],
+                    "actor_eval_live/progress": (idx + 1) / len(RL_DECISION_TIMES),
+                }
+            )
+        except Exception as exc:
+            logger.warning("Could not stream RL event to wandb: %s", exc)
+
+    started = datetime.now().isoformat()
+    try:
+        mygs, _, _, _ = setup_tokamaker(str(cwd))
+        if not os.path.exists(initial_relax_state):
+            build_initial_relax_cache(
+                mygs,
+                action_row,
+                initial_relax_state,
+                eqdsk_list,
+                geom["eqtimes"],
+                geom["coil_bounds"],
+                geom["x_points"],
+                geom["Ip_targets"],
+                geom["ne_init"],
+                geom["Te_init"],
+                geom["psi_sample"],
+                log_dir=str(log_dir),
+                grid_size=grid_size,
+                params=relax_cache_params,
+            )
+        tmtx = configure_tmtx(
+            mygs,
+            action_row,
+            eqdsk_list,
+            geom["eqtimes"],
+            geom["coil_bounds"],
+            geom["x_points"],
+            geom["Ip_targets"],
+            geom["ne_init"],
+            geom["Te_init"],
+            geom["psi_sample"],
+            grid_size=grid_size,
+        )
+        patch_initial_relax_cache_loader(tmtx)
+        _fly_t0[0] = time.time()
+        tmtx.fly(
+            output_mode=False,
+            max_loop=max_loop,
+            run_name=run_name or "iql_actor_eval",
+            t_ave_toggle="flattop",
+            t_ave_window=25,
+            relax=True,
+            relax_duration=5,
+            initial_relax_state=initial_relax_state,
+            log_dir=str(log_dir),
+            use_rl_actor=True,
+            actor_checkpoint=str(actor_path),
+            rl_event_callback=log_rl_event,
+            rl_segment_timeout_seconds=rl_segment_timeout_seconds,
+            rl_max_action_power_w=rl_max_action_power_w,
+        )
+        with redirect_stdout(io.StringIO()):
+            summary = tmtx.summary()
+        rewards = tmtx.compute_rewards()
+        actions = getattr(tmtx, "_rl_actions_history", [])
+        metrics = {
+            "actor_eval/reward_total": float(np.sum(rewards)),
+            "actor_eval/reward_mean": float(np.mean(rewards)),
+            "actor_eval/reward_min": float(np.min(rewards)),
+            "actor_eval/reward_max": float(np.max(rewards)),
+            "actor_eval/n_decisions": len(actions),
+        }
+        for key, val in summary.items():
+            if val is not None:
+                metrics[f"actor_eval/{key}"] = float(val)
+        wandb.log({**metrics})
+        run.summary.update(metrics)
+        result = {
+            "status": "success",
+            "started_at": started,
+            "finished_at": datetime.now().isoformat(),
+            "actor_checkpoint": str(Path(actor_checkpoint).resolve()),
+            "eval_actor_checkpoint": str(actor_path),
+            "initial_relax_state": initial_relax_state,
+            "summary": _plain(summary),
+            "rewards": _plain(rewards),
+            "actions": _plain(actions),
+            "metrics": _plain(metrics),
+            "output_dir": str(output_dir),
+        }
+        bundle = {
+            "state": tmtx._state,
+            "tm_times": list(getattr(tmtx, "_tm_times", [])),
+            "current_loop": getattr(tmtx, "_current_loop", None),
+            "flattop": _plain(getattr(tmtx, "_flattop", None)),
+            "coil_bounds": _plain(getattr(tmtx, "_coil_bounds", None)),
+            "results": _plain(getattr(tmtx, "_results", None)),
+            "output_mode": getattr(tmtx, "_output_mode", None),
+            "actor_checkpoint": str(actor_path),
+            "initial_relax_state": initial_relax_state,
+            "grid_size": grid_size,
+            "max_loop": max_loop,
+        }
+        bundle_path = output_dir / "actor_eval_bundle.pkl"
+        with bundle_path.open("wb") as f:
+            pickle.dump(bundle, f)
+        result["bundle_path"] = str(bundle_path)
+        result_path = output_dir / "actor_eval_summary.json"
+        with result_path.open("w") as f:
+            json.dump(result, f, indent=2)
+        wandb.save(str(result_path))
+        result["tmtx"] = tmtx
+        return result
+    finally:
+        wandb.finish()
+
+
+def _default_action_row():
+    from collect_trajectories_delta import DECISION_TIMES
+    from OpenFUSIONToolkit.TokaMaker.pulse_design import TokaMaker_TORAX
+
+    actions = []
+    for decision_t in DECISION_TIMES:
+        knot_t = decision_t + 20
+        ecrh_w, nbi_w = TokaMaker_TORAX._rl_default_action_w_at_time(knot_t)
+        actions.append([ecrh_w, nbi_w])
+    return np.asarray(actions, dtype=np.float64)

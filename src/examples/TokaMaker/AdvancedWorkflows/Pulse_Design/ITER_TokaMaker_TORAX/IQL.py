@@ -468,6 +468,7 @@ def train_from_config(
     actor_eval_max_loop,
     actor_eval_grid_size,
     actor_eval_device,
+    wandb_group=None,
 ):
     base_config = {
         "dataset_dir": str(dataset_dir),
@@ -501,11 +502,13 @@ def train_from_config(
         "actor_eval_grid_size": actor_eval_grid_size,
         "actor_eval_device": actor_eval_device,
     }
-    wandb_init_kwargs = {"project": project, "config": base_config}
+    wandb_init_kwargs = {"project": project, "config": base_config, "job_type": "train"}
     if run_name:
         wandb_init_kwargs["name"] = run_name
     if wandb_mode:
         wandb_init_kwargs["mode"] = wandb_mode
+    if wandb_group:
+        wandb_init_kwargs["group"] = wandb_group
 
     run = wandb.init(**wandb_init_kwargs)
     config = dict(run.config)
@@ -680,6 +683,11 @@ def train_from_config(
             project=eval_project,
             run_name=eval_run_name,
             wandb_mode=config.get("actor_eval_wandb_mode") or wandb_mode,
+            wandb_group=(
+                config.get("actor_eval_wandb_group")
+                or config.get("wandb_group")
+                or wandb_group
+            ),
             initial_relax_state=config.get("actor_eval_initial_relax_state"),
             initial_relax_cache_dir=config.get("actor_eval_initial_relax_cache_dir"),
             max_loop=int(config.get("actor_eval_max_loop", 0)),
@@ -717,6 +725,11 @@ def parse_args(argv):
     parser.add_argument("--num_steps", type=int, default=20000)
     parser.add_argument("--project", default=os.environ.get("WANDB_PROJECT", "iql-training"))
     parser.add_argument("--run_name", default=None)
+    parser.add_argument(
+        "--wandb_group",
+        default=os.environ.get("WANDB_GROUP"),
+        help="W&B group name to tie related training/eval runs together.",
+    )
     parser.add_argument("--resume_from", default="auto", help="Checkpoint path, 'auto', or empty string to disable resume")
     parser.add_argument("--wandb_mode", default=os.environ.get("WANDB_MODE"), help="Set to offline or disabled for debugging")
     parser.add_argument("--checkpoint_interval", type=int, default=5000)
@@ -761,6 +774,7 @@ def parse_args(argv):
     parser.add_argument("--actor_eval_project", default=None)
     parser.add_argument("--actor_eval_run_name", default=None)
     parser.add_argument("--actor_eval_wandb_mode", default=os.environ.get("ACTOR_EVAL_WANDB_MODE"))
+    parser.add_argument("--actor_eval_wandb_group", default=os.environ.get("ACTOR_EVAL_WANDB_GROUP"))
     parser.add_argument("--actor_eval_initial_relax_state", default=None)
     parser.add_argument("--actor_eval_initial_relax_cache_dir", default=None)
     parser.add_argument("--actor_eval_max_loop", type=int, default=2)
@@ -802,11 +816,13 @@ def train_kwargs_from_args(args):
         "actor_eval_project": args.actor_eval_project,
         "actor_eval_run_name": args.actor_eval_run_name,
         "actor_eval_wandb_mode": args.actor_eval_wandb_mode,
+        "actor_eval_wandb_group": args.actor_eval_wandb_group,
         "actor_eval_initial_relax_state": args.actor_eval_initial_relax_state,
         "actor_eval_initial_relax_cache_dir": args.actor_eval_initial_relax_cache_dir,
         "actor_eval_max_loop": args.actor_eval_max_loop,
         "actor_eval_grid_size": args.actor_eval_grid_size,
         "actor_eval_device": args.actor_eval_device,
+        "wandb_group": args.wandb_group,
     }
 
 def main():

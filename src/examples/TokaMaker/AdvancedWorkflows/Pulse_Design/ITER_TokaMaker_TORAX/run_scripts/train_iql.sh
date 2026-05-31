@@ -62,6 +62,7 @@ add_arg BATCH_SIZE --batch_size
 add_arg NUM_STEPS --num_steps
 add_arg WANDB_PROJECT --project
 add_arg RUN_NAME --run_name
+add_arg WANDB_GROUP --wandb_group
 add_arg RESUME_FROM --resume_from
 add_arg WANDB_MODE --wandb_mode
 add_arg CHECKPOINT_INTERVAL --checkpoint_interval
@@ -84,6 +85,7 @@ add_arg ACTOR_EVAL_OUTPUT_DIR --actor_eval_output_dir
 add_arg ACTOR_EVAL_PROJECT --actor_eval_project
 add_arg ACTOR_EVAL_RUN_NAME --actor_eval_run_name
 add_arg ACTOR_EVAL_WANDB_MODE --actor_eval_wandb_mode
+add_arg ACTOR_EVAL_WANDB_GROUP --actor_eval_wandb_group
 add_arg ACTOR_EVAL_INITIAL_RELAX_STATE --actor_eval_initial_relax_state
 add_arg ACTOR_EVAL_INITIAL_RELAX_CACHE_DIR --actor_eval_initial_relax_cache_dir
 add_arg ACTOR_EVAL_MAX_LOOP --actor_eval_max_loop
