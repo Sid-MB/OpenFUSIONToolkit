@@ -40,7 +40,13 @@ def run_actor_eval_from_config(
     render_movie=True,
     render_summary=True,
 ):
-    output_dir = Path(output_dir) if output_dir else Path(actor_checkpoint).resolve().parent / "actor_eval"
+    if output_dir:
+        output_dir = Path(output_dir)
+    elif dataset_dir:
+        run_id = run_name or Path(actor_checkpoint).resolve().stem
+        output_dir = Path(dataset_dir).resolve() / "eval" / run_id
+    else:
+        output_dir = Path(actor_checkpoint).resolve().parent / "actor_eval"
     result = run_actor_eval_simulation(
         actor_checkpoint=actor_checkpoint,
         output_dir=output_dir,
@@ -109,7 +115,13 @@ def parse_args():
 
 def main():
     args = parse_args()
-    output_dir = Path(args.output_dir) if args.output_dir else Path(args.actor_checkpoint).resolve().parent / "actor_eval"
+    if args.output_dir:
+        output_dir = Path(args.output_dir)
+    elif args.dataset_dir:
+        run_id = args.run_name or Path(args.actor_checkpoint).resolve().stem
+        output_dir = Path(args.dataset_dir).resolve() / "eval" / run_id
+    else:
+        output_dir = Path(args.actor_checkpoint).resolve().parent / "actor_eval"
     run_actor_eval_from_config(
         actor_checkpoint=args.actor_checkpoint,
         output_dir=output_dir,

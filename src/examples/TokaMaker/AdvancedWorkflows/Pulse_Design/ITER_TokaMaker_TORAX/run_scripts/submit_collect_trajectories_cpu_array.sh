@@ -82,7 +82,7 @@ echo_env_or_argparse_default() {
   fi
 }
 
-REUSE_EXISTING_DATASET="${REUSE_EXISTING_DATASET:-0}"
+REUSE_EXISTING_DATASET="${REUSE_EXISTING_DATASET:-1}"
 if [ "${REUSE_EXISTING_DATASET}" != "0" ]; then
   N_WORKERS="${N_WORKERS:-1}"
   CHUNK_SIZE="${CHUNK_SIZE:-1}"
@@ -92,7 +92,7 @@ fi
 
 validate_existing_dataset() {
   echo "Validating that the requested dataset already exists..."
-  uv run python - "${OUTPUT_BASE_DIR}" "${N_TRAJECTORIES}" "${START_IDX}" "${END_IDX}" <<'PY'
+  uv run python - "${OUTPUT_BASE_DIR}" "${N_TRAJECTORIES}" "${START_IDX}" "${END_IDX}" "${OBSERVATION_MODE}" <<'PY'
 from pathlib import Path
 import sys
 
@@ -104,26 +104,56 @@ root = Path(sys.argv[1]).resolve()
 n_trajectories = int(sys.argv[2])
 start_idx = int(sys.argv[3])
 end_idx = int(sys.argv[4])
+expected_observation_mode = str(sys.argv[5])
 
 manifest_path = root / 'run_manifest.json'
 actions_path = root / 'all_actions.npy'
 if not manifest_path.is_file():
-    raise SystemExit(f'Missing dataset manifest: {manifest_path}')
+    raise SystemExit(
+        f"Missing dataset manifest: {manifest_path}\n"
+        "Recollecting trajectories is expensive: it reruns full TORAX/TokaMaker "
+        "closed-loop simulations for every requested trajectory. If you already "
+        "have a complete dataset elsewhere, point OUTPUT_BASE_DIR at it and set "
+        "REUSE_EXISTING_DATASET=1."
+    )
 if not actions_path.is_file():
-    raise SystemExit(f'Missing action table: {actions_path}')
+    raise SystemExit(
+        f"Missing action table: {actions_path}\n"
+        "Recollecting trajectories is expensive: it reruns full TORAX/TokaMaker "
+        "closed-loop simulations for every requested trajectory. If you already "
+        "have a complete dataset elsewhere, point OUTPUT_BASE_DIR at it and set "
+        "REUSE_EXISTING_DATASET=1."
+    )
 
 manifest = load_json(manifest_path)
 requested_range = manifest.get('requested_range', {})
+existing_observation_mode = str(manifest.get('observation_mode', 'legacy'))
 if int(manifest.get('n_trajectories', -1)) != n_trajectories:
     raise SystemExit(
         f"Dataset n_trajectories mismatch: expected {n_trajectories}, "
-        f"found {manifest.get('n_trajectories')}"
+        f"found {manifest.get('n_trajectories')}\n"
+        "Recollecting trajectories to change the range is expensive because it "
+        "repeats the full closed-loop simulation for each trajectory. If the "
+        "existing dataset is the one you want, keep REUSE_EXISTING_DATASET=1 and "
+        "adjust OUTPUT_BASE_DIR to the complete dataset."
     )
 if int(requested_range.get('start_idx', -1)) != start_idx or int(requested_range.get('end_idx', -1)) != end_idx:
     raise SystemExit(
         'Dataset requested_range mismatch: '
         f"expected [{start_idx}, {end_idx}), found "
-        f"[{requested_range.get('start_idx')}, {requested_range.get('end_idx')})"
+        f"[{requested_range.get('start_idx')}, {requested_range.get('end_idx')})\n"
+        "Recollecting is expensive because it reruns the full trajectory set. "
+        "If you intended to reuse an existing dataset, point OUTPUT_BASE_DIR at "
+        "the complete dataset and keep REUSE_EXISTING_DATASET=1."
+    )
+if existing_observation_mode != expected_observation_mode:
+    raise SystemExit(
+        'Dataset observation_mode mismatch: '
+        f'expected {expected_observation_mode!r}, found {existing_observation_mode!r}. '
+        'Legacy and prev_action datasets are not interchangeable. Recollecting to '
+        'change observation mode is expensive because it reruns the full closed-loop '
+        'simulation set; if you already have the matching schema, point OUTPUT_BASE_DIR '
+        'at it and keep REUSE_EXISTING_DATASET=1.'
     )
 
 actions = np.load(actions_path)
@@ -142,6 +172,10 @@ if missing:
     raise SystemExit(
         'Dataset reuse requested, but replay shards are missing:\n'
         + '\n'.join(f'  {path}' for path in missing)
+        + '\nRecollecting trajectories to regenerate missing shards is expensive: '
+        'it repeats the full TORAX/TokaMaker closed-loop simulation for every '
+        'trajectory in the requested range. If a complete dataset already exists, '
+        'use that OUTPUT_BASE_DIR with REUSE_EXISTING_DATASET=1 instead.'
     )
 
 print(f'Existing dataset validated: {root}')
@@ -308,11 +342,16 @@ if [ "${REUSE_EXISTING_DATASET}" = "0" ]; then
   if [ -s "${OUTPUT_BASE_DIR}/run_manifest.json" ] || [ -d "${OUTPUT_BASE_DIR}/replay_shards" ]; then
     echo "NOTE: ${OUTPUT_BASE_DIR} already looks like a dataset root."
     echo "      This run will collect trajectories again."
-    echo "      If you meant to reuse the existing dataset, stop here and rerun with REUSE_EXISTING_DATASET=1."
+    echo "      If you meant to reuse the existing dataset, stop here and rerun with the default REUSE_EXISTING_DATASET=1."
   else
     echo "Starting a fresh trajectory collection."
     echo "If you already have a complete dataset in ${OUTPUT_BASE_DIR}, stop and rerun with REUSE_EXISTING_DATASET=1."
   fi
+  echo "Fresh collection is explicit opt-out because the dataset schema is part of the contract."
+  echo "Use OBSERVATION_MODE=prev_action for new datasets; legacy is only for compatibility checks."
+else
+  echo "Reusing an existing dataset is explicit."
+  echo "The launcher will validate run_manifest.json, all_actions.npy, and replay_shards/ before skipping collection."
 fi
 
 collection_jid=""

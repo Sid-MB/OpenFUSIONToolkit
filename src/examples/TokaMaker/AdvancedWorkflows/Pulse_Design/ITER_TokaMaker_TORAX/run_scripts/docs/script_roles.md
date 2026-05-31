@@ -35,6 +35,12 @@ optimizations that make all eval scripts fast.
   - Evaluates **one** IQL actor checkpoint on `jag-standard` (GPU).
   - Use when GPU is intentionally needed; for normal eval prefer the CPU scripts.
 
+- `train_iql_low_smoothness.sh` _(direct use: `sbatch run_scripts/train_iql_low_smoothness.sh`)_
+  - Ablation wrapper for training with less smoothing bias.
+  - Defaults to `ACTION_RATE_PENALTY=0`, `OBSERVATION_MODE=plasma_only`,
+    and `ACTION_MODE=absolute`.
+  - Use this when testing whether the default actor setup is over-regularized.
+
 ## Trajectory Collection Entrypoint
 
 - `submit_collect_trajectories_cpu_array.sh`

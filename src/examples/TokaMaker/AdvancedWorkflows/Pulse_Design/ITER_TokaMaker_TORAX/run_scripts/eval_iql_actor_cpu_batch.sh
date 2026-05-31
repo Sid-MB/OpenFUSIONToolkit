@@ -63,14 +63,13 @@ fi
 cd "${PROJECT_DIR}"
 OFT_ROOT="$(cd "${PROJECT_DIR}/../../../../../../" && pwd -P)"
 source "${OFT_ROOT}/scripts/oft_arch/select_oft_install.sh"
+source "${PROJECT_DIR}/run_scripts/lib/threading.sh"
 
 CPUS_PER_TASK="${SLURM_CPUS_PER_TASK:-20}"
 TOTAL_CPUS="${CPUS_PER_TASK}"
 N_WORKERS="${N_WORKERS:-4}"
 THREADS_PER_WORKER="${THREADS_PER_WORKER:-$(( TOTAL_CPUS / N_WORKERS ))}"
-if [ "${THREADS_PER_WORKER}" -lt 1 ]; then
-  THREADS_PER_WORKER=1
-fi
+THREADS_PER_WORKER="$(oft_cap_thread_budget "${THREADS_PER_WORKER}" "batch eval worker")"
 
 ACTOR_CHECKPOINTS="${ACTOR_CHECKPOINTS:-}"
 CHECKPOINTS_FILE="${CHECKPOINTS_FILE:-}"
@@ -119,6 +118,7 @@ echo "CPUS_PER_TASK=${CPUS_PER_TASK}"
 echo "TOTAL_CPUS=${TOTAL_CPUS}"
 echo "N_WORKERS=${N_WORKERS}"
 echo "THREADS_PER_WORKER=${THREADS_PER_WORKER}"
+echo "PHYSICAL_CORES=$(oft_detect_physical_cores || echo '<unknown>')"
 echo "OUTPUT_ROOT=${OUTPUT_ROOT}"
 echo "WANDB_GROUP=${WANDB_GROUP}"
 echo "DATASET_DIR=${DATASET_DIR}"

@@ -35,14 +35,13 @@ fi
 cd "${PROJECT_DIR}"
 OFT_ROOT="$(cd "${PROJECT_DIR}/../../../../../../" && pwd -P)"
 source "${OFT_ROOT}/scripts/oft_arch/select_oft_install.sh"
+source "${PROJECT_DIR}/run_scripts/lib/threading.sh"
 
 CPUS_PER_TASK="${SLURM_CPUS_PER_TASK:-20}"
 TOTAL_CPUS="${CPUS_PER_TASK}"
 N_WORKERS="${N_WORKERS:-1}"
 THREADS_PER_WORKER="${THREADS_PER_WORKER:-$(( TOTAL_CPUS / N_WORKERS ))}"
-if [ "${THREADS_PER_WORKER}" -lt 1 ]; then
-  THREADS_PER_WORKER=1
-fi
+THREADS_PER_WORKER="$(oft_cap_thread_budget "${THREADS_PER_WORKER}" "trajectory collection")"
 RUN_ID="${SLURM_JOB_ID:-$(date +%Y%m%d_%H%M%S)}"
 OUTPUT_DIR="${OUTPUT_DIR:-./rl_dataset_delta_sampling_maxloop=2_grid_51_cpu_${RUN_ID}}"
 N_TRAJECTORIES="${N_TRAJECTORIES:-1000}"
@@ -76,6 +75,7 @@ echo "CPUS_PER_TASK=${CPUS_PER_TASK}"
 echo "TOTAL_CPUS=${TOTAL_CPUS}"
 echo "N_WORKERS=${N_WORKERS}"
 echo "THREADS_PER_WORKER=${THREADS_PER_WORKER}"
+echo "PHYSICAL_CORES=$(oft_detect_physical_cores || echo '<unknown>')"
 echo "OFT_NUM_THREADS=${OFT_NUM_THREADS}"
 echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
 echo "JAX_PLATFORMS=${JAX_PLATFORMS}"

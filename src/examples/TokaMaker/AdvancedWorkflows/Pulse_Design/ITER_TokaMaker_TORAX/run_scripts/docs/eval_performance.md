@@ -119,7 +119,9 @@ The TORAX RL eval loop is latency-bound, not throughput-bound:
 - GPU compute utilization spikes to ~5% then drops back to zero between
   segments; GPU memory stays allocated at ~75% throughout (XLA heap).
 - On CPU, there is no GPU memory preallocation and XLA compilation is also
-  cheaper.
+  cheaper. The CPU wrappers automatically cap thread counts to the physical
+  cores visible on the node and log the cap if a request would oversubscribe
+  the machine.
 
 **Recommendation:** run evals on the `john` (CPU) partition using
 `eval_iql_actor_cpu.sh` or `eval_iql_actor_cpu_batch.sh`.  Reserve GPU
@@ -233,7 +235,9 @@ Measurements taken on CPU (`john` / `jagupard` partition), `grid_size=51`,
 
 The eval loop is latency-bound (short 1-D solves on a 51-point grid), not
 compute-bound. GPU memory preallocation and kernel-launch overhead outweigh
-any parallel compute benefit at this problem size.
+any parallel compute benefit at this problem size. The CPU wrappers
+automatically cap thread counts to the physical cores visible on the node and
+log the cap if a request would oversubscribe the machine.
 
 ### Batch Parallelism Scaling
 

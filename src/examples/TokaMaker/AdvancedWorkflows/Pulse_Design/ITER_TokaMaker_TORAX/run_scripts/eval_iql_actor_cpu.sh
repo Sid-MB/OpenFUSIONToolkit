@@ -67,6 +67,7 @@ fi
 cd "${PROJECT_DIR}"
 OFT_ROOT="$(cd "${PROJECT_DIR}/../../../../../../" && pwd -P)"
 source "${OFT_ROOT}/scripts/oft_arch/select_oft_install.sh"
+source "${PROJECT_DIR}/run_scripts/lib/threading.sh"
 
 ACTOR_CHECKPOINT="${ACTOR_CHECKPOINT:?Set ACTOR_CHECKPOINT to iql_weights.pt or checkpoint_step_*.pt}"
 DATASET_DIR="${DATASET_DIR:-}"
@@ -91,9 +92,7 @@ RL_MAX_ACTION_POWER_W="${RL_MAX_ACTION_POWER_W:-150000000}"
 CPUS_PER_TASK="${SLURM_CPUS_PER_TASK:-20}"
 TOTAL_CPUS="${CPUS_PER_TASK}"
 THREADS_PER_WORKER="${THREADS_PER_WORKER:-${TOTAL_CPUS}}"
-if [ "${THREADS_PER_WORKER}" -lt 1 ]; then
-  THREADS_PER_WORKER=1
-fi
+THREADS_PER_WORKER="$(oft_cap_thread_budget "${THREADS_PER_WORKER}" "single-checkpoint eval")"
 
 # Force the CPU path even if this script is run from a GPU-capable login node.
 export CUDA_VISIBLE_DEVICES=-1
@@ -131,6 +130,7 @@ echo "MAX_LOOP=${MAX_LOOP}"
 echo "GRID_SIZE=${GRID_SIZE}"
 echo "TOTAL_CPUS=${TOTAL_CPUS}"
 echo "THREADS_PER_WORKER=${THREADS_PER_WORKER}"
+echo "PHYSICAL_CORES=$(oft_detect_physical_cores || echo '<unknown>')"
 echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
 echo "JAX_PLATFORMS=${JAX_PLATFORMS}"
 echo "JAX_COMPILATION_CACHE_DIR(base)=${JAX_COMPILATION_CACHE_DIR}"

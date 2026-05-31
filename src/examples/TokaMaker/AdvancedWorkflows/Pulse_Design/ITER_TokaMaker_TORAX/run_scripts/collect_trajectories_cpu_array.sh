@@ -55,6 +55,7 @@ fi
 cd "${PROJECT_DIR}"
 OFT_ROOT="$(cd "${PROJECT_DIR}/../../../../../../" && pwd -P)"
 source "${OFT_ROOT}/scripts/oft_arch/select_oft_install.sh"
+source "${PROJECT_DIR}/run_scripts/lib/threading.sh"
 
 require_env() {
   local name="$1"
@@ -117,9 +118,7 @@ TOTAL_CPUS="${SLURM_CPUS_PER_TASK}"
 if [ -z "${THREADS_PER_WORKER:-}" ]; then
   THREADS_PER_WORKER="$(( TOTAL_CPUS / N_WORKERS ))"
 fi
-if [ "${THREADS_PER_WORKER}" -lt 1 ]; then
-  THREADS_PER_WORKER=1
-fi
+THREADS_PER_WORKER="$(oft_cap_thread_budget "${THREADS_PER_WORKER}" "trajectory array worker")"
 
 ARRAY_TASK_ID="${SLURM_ARRAY_TASK_ID}"
 ARRAY_JOB_ID="${SLURM_ARRAY_JOB_ID}"
@@ -153,6 +152,7 @@ echo "ARRAY_TASK_ID=${ARRAY_TASK_ID}"
 echo "TOTAL_CPUS=${TOTAL_CPUS}"
 echo "N_WORKERS=${N_WORKERS}"
 echo "THREADS_PER_WORKER=${THREADS_PER_WORKER}"
+echo "PHYSICAL_CORES=$(oft_detect_physical_cores || echo '<unknown>')"
 echo "N_TRAJECTORIES=${N_TRAJECTORIES}"
 echo "START_IDX=${START_IDX}"
 echo "END_IDX=${END_IDX}"

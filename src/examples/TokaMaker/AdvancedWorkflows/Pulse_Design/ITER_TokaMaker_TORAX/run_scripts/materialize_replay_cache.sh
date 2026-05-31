@@ -16,6 +16,7 @@ else
   PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd -P)"
 fi
 cd "${PROJECT_DIR}"
+source "${PROJECT_DIR}/run_scripts/lib/threading.sh"
 
 DATASET_DIR="${DATASET_DIR:?Set DATASET_DIR to the collected dataset root}"
 : "${SLURM_CPUS_PER_TASK:?SLURM_CPUS_PER_TASK must be set by Slurm or sbatch --cpus-per-task}"
@@ -25,13 +26,17 @@ exec > >(tee -a "${RUN_LOG_DIR}/materialize_replay_cache-${SLURM_JOB_ID:-$$}.out
   2> >(tee -a "${RUN_LOG_DIR}/materialize_replay_cache-${SLURM_JOB_ID:-$$}.err" >&2)
 
 export PYTHONUNBUFFERED=1
-export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK}"
-export OPENBLAS_NUM_THREADS="${SLURM_CPUS_PER_TASK}"
-export MKL_NUM_THREADS="${SLURM_CPUS_PER_TASK}"
-export NUMEXPR_NUM_THREADS="${SLURM_CPUS_PER_TASK}"
+THREADS_PER_WORKER="$(oft_cap_thread_budget "${SLURM_CPUS_PER_TASK}" "replay-cache materialization")"
+export OMP_NUM_THREADS="${THREADS_PER_WORKER}"
+export OPENBLAS_NUM_THREADS="${THREADS_PER_WORKER}"
+export MKL_NUM_THREADS="${THREADS_PER_WORKER}"
+export NUMEXPR_NUM_THREADS="${THREADS_PER_WORKER}"
 
 echo "Running on host: $(hostname)"
 echo "DATASET_DIR=${DATASET_DIR}"
+echo "SLURM_CPUS_PER_TASK=${SLURM_CPUS_PER_TASK}"
+echo "PHYSICAL_CORES=$(oft_detect_physical_cores || echo '<unknown>')"
+echo "THREADS_PER_WORKER=${THREADS_PER_WORKER}"
 for name in REPLAY_CACHE_DIR OVERWRITE_REPLAY_CACHE REPLAY_CACHE_PROGRESS REPLAY_CACHE_WORKERS REPLAY_CACHE_WORKER_BACKEND; do
   if [ -n "${!name:-}" ]; then
     echo "${name}=${!name}"

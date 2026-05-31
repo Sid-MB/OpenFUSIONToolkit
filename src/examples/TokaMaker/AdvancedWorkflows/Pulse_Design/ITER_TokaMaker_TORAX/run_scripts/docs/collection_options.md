@@ -28,6 +28,9 @@ Note: the standalone CPU jobs for cache building and evaluation default to 20
 CPUs per task on `john`. The collection array worker stays at 4 CPUs per task
 so the full pipeline can still scale through array concurrency without
 overcommitting a single Slurm task.
+The CPU wrappers then cap the effective thread count to the physical cores
+visible on the node and log the cap if a request would oversubscribe the
+machine.
 The collection submit helper automatically picks a sensible CPU count when
 `CPUS_PER_TASK` is unset: it starts from `N_WORKERS * 4`, which means the
 normal collection shape is `N_WORKERS=1` and `CPUS_PER_TASK=4`.
@@ -67,7 +70,7 @@ normal collection shape is `N_WORKERS=1` and `CPUS_PER_TASK=4`.
 | `REPLAY_CACHE_WORKERS` | (= CPUS) | Parallel Zarr readers |
 | `REPLAY_CACHE_WORKER_BACKEND` | `process` | `process` or `thread` |
 | `SUBMIT_IQL` | `0` | Submit IQL training after replay cache is ready |
-| `REUSE_EXISTING_DATASET` | `0` | `1` to validate an existing dataset and skip trajectory collection; downstream replay-cache/train jobs still use `OUTPUT_BASE_DIR` |
+| `REUSE_EXISTING_DATASET` | `1` | `0` only when you explicitly want to recollect trajectories; `1` validates and reuses an existing complete dataset, then downstream replay-cache/train jobs still use `OUTPUT_BASE_DIR` |
 
 ### Misc
 | Variable | Default | Description |
@@ -123,13 +126,18 @@ normal collection shape is `N_WORKERS=1` and `CPUS_PER_TASK=4`.
 - Array workers validate `run_manifest.json` on startup and exit nonzero if
   they detect a seed, grid, `MAX_LOOP`, or sampler mismatch — preventing
   mixed datasets.
-- Fresh collection is the default. When the submit helper starts a non-reuse
-  run, it prints a reminder that you can stop and rerun with
-  `REUSE_EXISTING_DATASET=1` if the dataset already exists.
+- Dataset reuse is the default. If the submit helper cannot validate a complete
+  dataset in `OUTPUT_BASE_DIR`, it exits with a message explaining that
+  recollection would rerun the full TORAX/TokaMaker closed-loop simulation for
+  every trajectory in the requested range. Use `REUSE_EXISTING_DATASET=0` only
+  when you explicitly want a fresh collection.
 - If `REUSE_EXISTING_DATASET=1`, the submit helper validates that the requested
   `OUTPUT_BASE_DIR` already contains the manifest, action table, and replay
   shards for the requested range, then skips both the initial-relax cache job
   and the trajectory array.
+- Reuse is schema-specific. `legacy` and `prev_action` datasets are not
+  interchangeable, so the submit helper checks `observation_mode` before it
+  skips recollection.
 - `MaxArraySize=1001` on this cluster means array task IDs `0..1000`; increase
   `CHUNK_SIZE` or split the range when you need more tasks.
 - Scale throughput with `ARRAY_CONCURRENCY`, not `N_WORKERS`. Each worker in a

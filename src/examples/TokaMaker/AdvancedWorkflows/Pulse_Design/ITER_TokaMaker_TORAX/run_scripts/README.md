@@ -24,6 +24,7 @@ All scripts are run from the project root (`ITER_TokaMaker_TORAX/`).
 | `grid_search_baseline.sh` | Ranks completed trajectories by return; writes leaderboard |
 | `materialize_replay_cache.sh` | Aggregates trajectory shards into a flat IQL replay cache |
 | `train_iql.sh` | Trains an IQL actor on the replay cache |
+| `train_iql_low_smoothness.sh` | Ablation wrapper for training with less smoothing bias |
 | `eval_iql_actor_cpu.sh` | Evaluates **one** IQL checkpoint in closed-loop on `john` (CPU) |
 | `eval_baseline_cpu.sh` | Evaluates the TORAX baseline fallback on `john` (CPU), no checkpoint |
 | `eval_iql_actor_cpu_batch.sh` | Evaluates **multiple** checkpoints in parallel on `john` (CPU) |
@@ -46,15 +47,18 @@ SUBMIT_GRID_SEARCH=1 SUBMIT_REPLAY_CACHE=1 SUBMIT_IQL=1 \
 # 2. Evaluate the trained actor (after train_iql.sh finishes)
 DATASET_DIR=./run_<date> \
 ACTOR_CHECKPOINT=./run_<date>/iql/iql_weights.pt \
-  sbatch run_scripts/eval_iql_actor_cpu.sh
+  sbatch --account=nlp --partition=john --mem=128G run_scripts/eval_iql_actor_cpu.sh
 ```
 
-If you already have a complete dataset in `OUTPUT_BASE_DIR` and want to reuse
-it instead of recollecting trajectories, set `REUSE_EXISTING_DATASET=1`.
-The default is to collect fresh trajectories and print a reminder at startup:
+By default, the submit helper tries to reuse an existing complete dataset in
+`OUTPUT_BASE_DIR`. If that dataset is missing or incomplete, it exits with a
+message explaining that recollection would rerun the full
+TORAX/TokaMaker closed-loop simulation for every requested trajectory. Set
+`REUSE_EXISTING_DATASET=0` only when you explicitly want a fresh collection.
+`legacy` and `prev_action` outputs are not interchangeable.
 
 ```bash
-REUSE_EXISTING_DATASET=1 \
+REUSE_EXISTING_DATASET=0 \
 N_TRAJECTORIES=1000 START_IDX=0 END_IDX=1000 \
 OUTPUT_BASE_DIR=./run_20260530 \
 SUBMIT_GRID_SEARCH=0 SUBMIT_REPLAY_CACHE=1 SUBMIT_IQL=1 \
@@ -86,7 +90,7 @@ These are the main knobs you usually change for a run.
 | `SUBMIT_REPLAY_CACHE` | `0` | Set to `1` if you want the flat replay cache materialized automatically. |
 | `SUBMIT_IQL` | `0` | Set to `1` if you want training launched automatically. |
 | `USE_INITIAL_RELAX_CACHE` | `0` | Set to `1` when you want the shared initial-relax cache. |
-| `REUSE_EXISTING_DATASET` | `0` | Set to `1` when `OUTPUT_BASE_DIR` already contains a complete dataset. |
+| `REUSE_EXISTING_DATASET` | `1` | Set to `0` only when you want to recollect trajectories instead of reusing a complete dataset. |
 | `SLURM_NICE` | unset | Lower priority when you want other jobs to run first. |
 
 ### Evaluation
@@ -101,10 +105,13 @@ These are the main knobs you usually change for a run.
 | `MAX_LOOP` | `1` for baseline, `2` for actor evals | Match the collection settings you want to compare against. |
 | `GRID_SIZE` | `51` | Match the dataset or run a smaller smoke test. |
 
-Standalone CPU jobs on `john` default to `20` CPUs per task. The collection
-submit helper automatically picks a sensible CPU count when `CPUS_PER_TASK` is
-unset: it starts from `N_WORKERS * 4`, which means the normal collection shape
-is `N_WORKERS=1` and `CPUS_PER_TASK=4`. `SLURM_MAX_ARRAY_SIZE=1001` means the
+Standalone CPU jobs on `john` default to `20` CPUs per task request, but the
+wrappers now cap the effective thread count to the physical cores visible on
+the node and log the cap when it happens. That keeps the default simple while
+avoiding oversubscription on smaller `john` nodes. The collection submit helper
+automatically picks a sensible CPU count when `CPUS_PER_TASK` is unset: it
+starts from `N_WORKERS * 4`, which means the normal collection shape is
+`N_WORKERS=1` and `CPUS_PER_TASK=4`. `SLURM_MAX_ARRAY_SIZE=1001` means the
 largest allowed array index is `1000`; it limits the size of a single array
 submission, not the number of jobs running at once.
 
@@ -152,8 +159,23 @@ Artifacts are written under `./my_dataset/` (trajectory shards, optional `grid_s
 
 ```bash
 DATASET_DIR=./my_dataset \
-  sbatch run_scripts/train_iql.sh
+  sbatch --account=nlp --gres=gpu:1 --constraint=48G --mem=128G --partition=jag-standard run_scripts/train_iql.sh
 ```
+
+### Low-smoothness ablation
+
+Use this when you want to test whether the default residual-action + previous-
+action setup is over-regularizing the actor:
+
+```bash
+DATASET_DIR=./my_dataset \
+  sbatch --account=nlp --gres=gpu:1 --constraint=48G --mem=128G --partition=jag-standard run_scripts/train_iql_low_smoothness.sh
+```
+
+The wrapper defaults to:
+- `ACTION_RATE_PENALTY=0`
+- `OBSERVATION_MODE=plasma_only`
+- `ACTION_MODE=absolute`
 Artifacts are written under `./my_dataset/iql/` (final weights, checkpoints) and W&B. Logs are written under `./my_dataset/logs/`.
 
 ### Evaluate only (checkpoint already exists)
