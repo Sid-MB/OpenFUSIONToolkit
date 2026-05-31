@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 #SBATCH --account=nlp
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=20
 #SBATCH --mem=128G
 #SBATCH --partition=john
 #SBATCH --output=logs/%x-%j.out

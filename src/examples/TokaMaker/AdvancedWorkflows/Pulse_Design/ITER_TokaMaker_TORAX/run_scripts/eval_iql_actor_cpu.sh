@@ -32,7 +32,7 @@
 #     DATASET_DIR=./rl_dataset_eval_smoke_1_20260528_130200 \
 #     WANDB_MODE=offline \
 #     env -i PATH="$PATH" HOME="$HOME" TERM="$TERM" \
-#     srun --account=nlp --mem=128G --cpus-per-task=8 --partition=john \
+#     srun --account=nlp --mem=128G --cpus-per-task=20 --partition=john \
 #     /bin/bash run_scripts/eval_iql_actor_cpu.sh
 #
 # Key optional env vars (all have defaults):
@@ -42,12 +42,12 @@
 #   WANDB_PROJECT            wandb project name (default: iql-training)
 #   INITIAL_RELAX_CACHE_DIR  shared initial-relax cache dir (default: ./initial_relax_cache)
 #   REPLAY_CACHE_DIR         preprocessed replay cache dir (optional)
-#   JAX_COMPILATION_CACHE_DIR persistent XLA cache dir (default: ./.jax_cache)
+#   JAX_COMPILATION_CACHE_DIR persistent XLA cache root (runtime namespaces by build fingerprint; default: ./.jax_cache)
 #   RL_SEGMENT_TIMEOUT_SECONDS per-segment wall-clock timeout (default: 1800)
 #   OFT_DISABLE_JAX_COMPILE_CACHE set to 1 to disable the persistent cache
 
 #SBATCH --account=nlp
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=20
 #SBATCH --mem=128G
 #SBATCH --partition=john
 #SBATCH --output=logs/%x-%j.out
@@ -81,7 +81,7 @@ USE_REPLAY_CACHE="${USE_REPLAY_CACHE:-1}"
 RL_SEGMENT_TIMEOUT_SECONDS="${RL_SEGMENT_TIMEOUT_SECONDS:-1800}"
 RL_MAX_ACTION_POWER_W="${RL_MAX_ACTION_POWER_W:-150000000}"
 
-TOTAL_CPUS="${SLURM_CPUS_PER_TASK:-8}"
+TOTAL_CPUS="${SLURM_CPUS_PER_TASK:-20}"
 THREADS_PER_WORKER="${THREADS_PER_WORKER:-${TOTAL_CPUS}}"
 if [ "${THREADS_PER_WORKER}" -lt 1 ]; then
   THREADS_PER_WORKER=1
@@ -96,6 +96,9 @@ export PYTHONUNBUFFERED=1
 # Persistent XLA compilation cache: the single TORAX compile is reused across
 # processes/runs (e.g. a later batch worker loads it from disk instead of recompiling).
 export JAX_COMPILATION_CACHE_DIR="${JAX_COMPILATION_CACHE_DIR:-${PROJECT_DIR}/.jax_cache}"
+if [ "${OFT_DISABLE_JAX_COMPILE_CACHE:-0}" = "1" ]; then
+  export OFT_DISABLE_JAX_COMPILE_CACHE=1
+fi
 
 # Keep native math/OpenMP libraries from oversubscribing cores.
 export OMP_NUM_THREADS="${THREADS_PER_WORKER}"
@@ -122,7 +125,7 @@ echo "TOTAL_CPUS=${TOTAL_CPUS}"
 echo "THREADS_PER_WORKER=${THREADS_PER_WORKER}"
 echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
 echo "JAX_PLATFORMS=${JAX_PLATFORMS}"
-echo "JAX_COMPILATION_CACHE_DIR=${JAX_COMPILATION_CACHE_DIR}"
+echo "JAX_COMPILATION_CACHE_DIR(base)=${JAX_COMPILATION_CACHE_DIR}"
 echo "REPLAY_CACHE_DIR=${REPLAY_CACHE_DIR}"
 echo "USE_REPLAY_CACHE=${USE_REPLAY_CACHE}"
 echo "RL_SEGMENT_TIMEOUT_SECONDS=${RL_SEGMENT_TIMEOUT_SECONDS}"

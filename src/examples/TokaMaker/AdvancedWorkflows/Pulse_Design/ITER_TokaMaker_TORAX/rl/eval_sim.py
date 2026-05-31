@@ -30,6 +30,20 @@ os.environ.setdefault("JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS", "0")
 os.environ.setdefault("JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES", "0")
 
 
+def _jax_cache_workaround_note() -> str:
+    """Return a short hint for catchable eval failures.
+
+    This only helps for Python exceptions. Native SIGSEGV / abort failures
+    inside TORAX/JAX/OFT cannot be intercepted here; they need a fresh process
+    repro and, when relevant, `OFT_DISABLE_JAX_COMPILE_CACHE=1`.
+    """
+    return (
+        "Known workaround: retry with OFT_DISABLE_JAX_COMPILE_CACHE=1 to bypass "
+        "the persistent JAX cache. This is only a hint for catchable Python "
+        "exceptions; native segfaults still bypass Python exception handling."
+    )
+
+
 def _plain(value):
     if isinstance(value, np.generic):
         return value.item()
@@ -184,6 +198,10 @@ def run_actor_eval_simulation(
         "dataset_specs": dataset_specs,
         "rl_segment_timeout_seconds": rl_segment_timeout_seconds,
         "rl_max_action_power_w": rl_max_action_power_w,
+        "jax_compilation_cache_root": str(
+            Path(os.environ.get("JAX_COMPILATION_CACHE_DIR", Path(__file__).resolve().parent.parent / ".jax_cache")).expanduser().resolve()
+        ),
+        "oft_disable_jax_compile_cache": os.environ.get("OFT_DISABLE_JAX_COMPILE_CACHE", "0") == "1",
     }
 
     wandb_kwargs = {"project": project, "config": _plain(config), "reinit": True, "job_type": "actor_eval"}
@@ -255,22 +273,28 @@ def run_actor_eval_simulation(
         )
         patch_initial_relax_cache_loader(tmtx)
         _fly_t0[0] = time.time()
-        tmtx.fly(
-            output_mode=False,
-            max_loop=max_loop,
-            run_name=run_name or "iql_actor_eval",
-            t_ave_toggle="flattop",
-            t_ave_window=25,
-            relax=True,
-            relax_duration=5,
-            initial_relax_state=initial_relax_state,
-            log_dir=str(log_dir),
-            use_rl_actor=True,
-            actor_checkpoint=str(actor_path),
-            rl_event_callback=log_rl_event,
-            rl_segment_timeout_seconds=rl_segment_timeout_seconds,
-            rl_max_action_power_w=rl_max_action_power_w,
-        )
+        try:
+            tmtx.fly(
+                output_mode=False,
+                max_loop=max_loop,
+                run_name=run_name or "iql_actor_eval",
+                t_ave_toggle="flattop",
+                t_ave_window=25,
+                relax=True,
+                relax_duration=5,
+                initial_relax_state=initial_relax_state,
+                log_dir=str(log_dir),
+                use_rl_actor=True,
+                actor_checkpoint=str(actor_path),
+                rl_event_callback=log_rl_event,
+                rl_segment_timeout_seconds=rl_segment_timeout_seconds,
+                rl_max_action_power_w=rl_max_action_power_w,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                "Actor eval failed during TORAX simulation. "
+                f"{_jax_cache_workaround_note()}"
+            ) from exc
         with redirect_stdout(io.StringIO()):
             summary = tmtx.summary()
         rewards = tmtx.compute_rewards()

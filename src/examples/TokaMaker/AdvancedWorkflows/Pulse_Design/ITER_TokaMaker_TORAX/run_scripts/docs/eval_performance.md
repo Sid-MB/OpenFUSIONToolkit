@@ -68,7 +68,8 @@ jax.config.update('jax_persistent_cache_min_entry_size_bytes', 0)
 ```
 
 `rl/eval.py` also sets the corresponding environment variables at import time
-so the cache directory is configured before JAX initializes:
+so the cache root is configured before JAX initializes. The TORAX runtime then
+adds a namespace based on the installed OFT/JAX/Python build fingerprint:
 
 ```python
 os.environ.setdefault("JAX_COMPILATION_CACHE_DIR", "<project>/.jax_cache")
@@ -77,12 +78,14 @@ os.environ.setdefault("JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES", "0")
 ```
 
 **Result:** the very first eval on a clean cache compiles once (~30 s on CPU).
-Every subsequent eval — including other processes in a batch job — loads the
-compiled executable from disk and pays **0 s compilation cost**.
+Every subsequent eval with the same build fingerprint — including other
+processes in a batch job — loads the compiled executable from disk and pays
+**0 s compilation cost**.
 
 ### Cache location
 
-Default: `.jax_cache/` inside the project directory (set by `rl/eval.py`).
+Default: `.jax_cache/` inside the project directory (set by `rl/eval.py`),
+with the runtime appending a build-specific namespace under that root.
 Override with:
 
 ```bash
@@ -99,6 +102,13 @@ If you observe semaphore-leak warnings that are not suppressed by `os._exit`
 
 ```bash
 export OFT_DISABLE_JAX_COMPILE_CACHE=1
+```
+
+You can also request the same mode through the eval wrappers:
+
+```bash
+OFT_DISABLE_JAX_COMPILE_CACHE=1 sbatch run_scripts/eval_iql_actor_cpu.sh
+OFT_DISABLE_JAX_COMPILE_CACHE=1 sbatch run_scripts/eval_iql_actor_cpu_batch.sh
 ```
 
 ## Fix 3: CPU Execution
@@ -143,14 +153,14 @@ ACTOR_CHECKPOINT=out/iql/<run>/iql_weights.pt \
 ACTOR_CHECKPOINT=out/iql/<run>/iql_weights.pt \
   DATASET_DIR=./rl_dataset_eval_smoke_1_20260528_130200 \
   WANDB_MODE=offline \
-  srun --account=nlp --mem=128G --cpus-per-task=8 --partition=john \
+  srun --account=nlp --mem=128G --cpus-per-task=20 --partition=john \
   bash run_scripts/eval_iql_actor_cpu.sh
 ```
 
 ### Multiple checkpoints in parallel, CPU
 
 ```bash
-# 4 checkpoints, 4 workers × 8 CPUs = 32 total:
+# 4 checkpoints, 4 workers × 5 CPUs = 20 total:
 ACTOR_CHECKPOINTS="out/iql/run_a/iql_weights.pt out/iql/run_b/iql_weights.pt \
   out/iql/run_c/checkpoint_step_50000.pt out/iql/run_d/checkpoint_step_50000.pt" \
   N_WORKERS=4 \

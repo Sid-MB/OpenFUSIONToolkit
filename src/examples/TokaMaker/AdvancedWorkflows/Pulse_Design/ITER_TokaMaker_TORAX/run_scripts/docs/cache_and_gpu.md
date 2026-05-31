@@ -43,7 +43,7 @@ uv run python collect_trajectories_delta.py \
 Submit a CPU cache job and a dependent CPU trajectory array:
 
 ```bash
-START_IDX=600 END_IDX=1000 ARRAY_SPEC=0-399%16 USE_INITIAL_RELAX_CACHE=1 \
+START_IDX=600 END_IDX=1000 ARRAY_SPEC=0-399%32 USE_INITIAL_RELAX_CACHE=1 \
   ./run_scripts/submit_collect_trajectories_cpu_array.sh
 ```
 
@@ -54,7 +54,7 @@ export OUTPUT_BASE_DIR=./rl_dataset_delta_sampling_maxloop=2_grid_51_cpu_array_$
 cache_jid=$(START_IDX=600 END_IDX=1000 sbatch --parsable run_scripts/collect_initial_relax_cache_cpu.sh)
 START_IDX=600 END_IDX=1000 OUTPUT_BASE_DIR="${OUTPUT_BASE_DIR}" \
   USE_INITIAL_RELAX_CACHE=1 N_WORKERS=1 CHUNK_SIZE=1 \
-  sbatch --dependency=afterok:${cache_jid} --cpus-per-task=4 --mem=128G --array=0-399%16 \
+  sbatch --dependency=afterok:${cache_jid} --cpus-per-task=4 --mem=128G --array=0-399%32 \
     run_scripts/collect_trajectories_cpu_array.sh
 ```
 
@@ -76,7 +76,7 @@ export OUTPUT_BASE_DIR=./rl_dataset_delta_sampling_reuse_cache_$(date +%Y%m%d_%H
 export INITIAL_RELAX_CACHE=/path/to/initial_relax_state.json
 START_IDX=600 END_IDX=1000 OUTPUT_BASE_DIR="${OUTPUT_BASE_DIR}" \
   INITIAL_RELAX_CACHE="${INITIAL_RELAX_CACHE}" USE_INITIAL_RELAX_CACHE=1 \
-  sbatch --cpus-per-task=4 --mem=128G --array=0-399%16 \
+  sbatch --cpus-per-task=4 --mem=128G --array=0-399%32 \
     run_scripts/collect_trajectories_cpu_array.sh
 ```
 

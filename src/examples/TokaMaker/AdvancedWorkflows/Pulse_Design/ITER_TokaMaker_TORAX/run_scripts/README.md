@@ -38,8 +38,9 @@ Python entry points: `collect_trajectories_delta.py`, `IQL.py`,
 ```bash
 # 1. Collect trajectories + grid-search baseline + replay cache + IQL training
 N_TRAJECTORIES=1000 START_IDX=0 END_IDX=1000 \
-CPUS_PER_TASK=4 MEM_PER_NODE=128G ARRAY_CONCURRENCY=16 \
+CPUS_PER_TASK=4 MEM_PER_NODE=128G ARRAY_CONCURRENCY=32 \
 OUTPUT_BASE_DIR=./run_$(date +%Y%m%d) \
+OBSERVATION_MODE=prev_action \
 DRY_RUN=0 SUBMIT_GRID_SEARCH=1 SUBMIT_REPLAY_CACHE=1 SUBMIT_IQL=1 \
   ./run_scripts/submit_collect_trajectories_cpu_array.sh
 
@@ -48,11 +49,27 @@ ACTOR_CHECKPOINT=./run_<date>/iql/iql_weights.pt \
   sbatch run_scripts/eval_iql_actor_cpu.sh
 ```
 
+If you already have a complete dataset in `OUTPUT_BASE_DIR` and want to reuse
+it instead of recollecting trajectories, set `REUSE_EXISTING_DATASET=1`.
+The default is to collect fresh trajectories and print a reminder at startup:
+
+```bash
+REUSE_EXISTING_DATASET=1 \
+OUTPUT_BASE_DIR=./run_20260530 \
+SUBMIT_GRID_SEARCH=0 SUBMIT_REPLAY_CACHE=1 SUBMIT_IQL=1 \
+  ./run_scripts/submit_collect_trajectories_cpu_array.sh
+```
+
 Common parameters to tune:
 - `MAX_LOOP=2` — TORAX/TokaMaker coupling passes per trajectory (higher = slower, more accurate)
 - `GRID_SIZE=51` — radial grid resolution (11 for smoke tests, 51 for production)
-- `ARRAY_CONCURRENCY=16` — max parallel Slurm tasks (× `CPUS_PER_TASK` = total CPUs used)
+- `ARRAY_CONCURRENCY=32` — max parallel Slurm tasks (× `CPUS_PER_TASK` = total CPUs used)
 - `N_TRAJECTORIES` / `START_IDX` / `END_IDX` — trajectory index range to collect
+- `SLURM_NICE=10000` — lower the priority of the collection array so other pending jobs on `john` can be scheduled first
+
+Standalone CPU jobs on `john` default to `20` CPUs per task. The array worker
+still defaults to `4` CPUs per task so collection can scale to the 128-CPU
+throughput shape when needed.
 
 ---
 
@@ -62,7 +79,7 @@ Common parameters to tune:
 
 ```bash
 N_TRAJECTORIES=1000 START_IDX=0 END_IDX=1000 \
-ARRAY_CONCURRENCY=16 \
+ARRAY_CONCURRENCY=32 \
 OUTPUT_BASE_DIR=./my_dataset \
 DRY_RUN=0 SUBMIT_GRID_SEARCH=1 SUBMIT_REPLAY_CACHE=1 SUBMIT_IQL=0 \
   ./run_scripts/submit_collect_trajectories_cpu_array.sh
@@ -111,7 +128,7 @@ extraction step (not yet scripted).
 ```bash
 # 1. Recollect (or recompute from Zarr) with the new reward logic
 N_TRAJECTORIES=1000 START_IDX=0 END_IDX=1000 \
-ARRAY_CONCURRENCY=16 \
+ARRAY_CONCURRENCY=32 \
 OUTPUT_BASE_DIR=./my_dataset_new_reward \
 DRY_RUN=0 SUBMIT_REPLAY_CACHE=1 SUBMIT_IQL=1 \
   ./run_scripts/submit_collect_trajectories_cpu_array.sh
@@ -182,6 +199,13 @@ Batch eval also writes `<OUTPUT_ROOT>/batch_eval_summary.json` with status and
 elapsed time for every checkpoint.
 
 Results are logged to wandb alongside collection and training.
+
+The persistent JAX cache is automatic by default: the wrappers point JAX at a
+project-local cache root and the TORAX runtime namespaces it by build/runtime
+fingerprint so different installs do not reuse incompatible executables.
+
+If you need to debug cache portability or force a clean compile path, set
+`OFT_DISABLE_JAX_COMPILE_CACHE=1` when invoking the eval wrappers.
 
 ---
 

@@ -17,6 +17,7 @@ r'''! TokaMaker + TORAX Coupled Pulse Design and Simulation Workflow (TokaMaker_
     @ingroup doxy_oft_python
 '''
 import copy
+import hashlib
 import json
 import logging
 import os
@@ -29,6 +30,8 @@ import tempfile
 import time
 from contextlib import contextmanager
 from datetime import datetime
+from importlib import metadata as importlib_metadata
+from pathlib import Path
 
 import matplotlib.cm as cm
 import matplotlib.pyplot as plt
@@ -57,6 +60,77 @@ RELAX_FIXED_DT = 0.01
 EQDSK_SAVE_NR_NZ_SEQUENCE = (100, 150, 200, 250, 300, 350, 400, 450, 500)
 # Default TORAX radial face count for loop 0 coarse runs (evenly spaced normalized rho).
 DEFAULT_LOOP0_TX_FACE_POINTS = 51
+
+
+def _file_fingerprint(path: Path, chunk_size: int = 1024 * 1024) -> str:
+    path = Path(path)
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(chunk_size), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _runtime_cache_fingerprint() -> dict:
+    """Collect the inputs that should namespace the persistent JAX cache."""
+    def _pkg_version(name: str) -> str:
+        try:
+            return importlib_metadata.version(name)
+        except Exception:
+            return "unknown"
+
+    components = {
+        "oft_version": "unknown",
+        "jax_version": _pkg_version("jax"),
+        "jaxlib_version": _pkg_version("jaxlib"),
+        "python_version": platform.python_version(),
+        "platform": platform.platform(),
+        "machine": platform.machine(),
+        "system": platform.system(),
+        "file_fingerprints": {"pulse_design_py": _file_fingerprint(Path(__file__).resolve())},
+    }
+    try:
+        import OpenFUSIONToolkit
+        from OpenFUSIONToolkit import _core as oft_core
+        from OpenFUSIONToolkit.TokaMaker import _core as toka_core
+
+        files = {
+            "oft_init_py": Path(OpenFUSIONToolkit.__file__).resolve(),
+            "oft_core_so": Path(oft_core.__file__).resolve(),
+            "toka_core_so": Path(toka_core.__file__).resolve(),
+        }
+        components["oft_version"] = getattr(OpenFUSIONToolkit, "__version__", "unknown")
+        components["file_fingerprints"].update(
+            {name: _file_fingerprint(path) for name, path in files.items() if path.exists()}
+        )
+    except Exception as exc:
+        components["fingerprint_error"] = f"{type(exc).__name__}: {exc}"
+    namespace_src = json.dumps(components, sort_keys=True, separators=(",", ":"))
+    namespace = hashlib.sha256(namespace_src.encode("utf-8")).hexdigest()[:16]
+    components["namespace"] = namespace
+    return components
+
+
+def _resolve_jax_cache_dir() -> tuple[bool, Path | None, dict]:
+    disable_cache = os.environ.get("OFT_DISABLE_JAX_COMPILE_CACHE", "0") == "1"
+    base_root = Path(
+        os.environ.get("JAX_COMPILATION_CACHE_DIR", Path.cwd() / ".jax_cache")
+    ).expanduser().resolve()
+    if disable_cache:
+        return False, None, {
+            "enabled": False,
+            "base_root": str(base_root),
+            "reason": "OFT_DISABLE_JAX_COMPILE_CACHE=1",
+        }
+
+    fingerprint = _runtime_cache_fingerprint()
+    cache_dir = base_root / fingerprint["namespace"]
+    return True, cache_dir, {
+        "enabled": True,
+        "base_root": str(base_root),
+        "cache_dir": str(cache_dir),
+        "fingerprint": fingerprint,
+    }
 
 # RL TORAX: agent decisions every 20 s from 80 s through 480 s (inclusive); cold-start reruns.
 # A decision at time t sets the schedule knot at t + RL_KNOT_TIME_OFFSET (80 -> 100).
@@ -3579,6 +3653,11 @@ class TokaMaker_TORAX:
         root_logger.addHandler(file_handler)
         self._logging_configured = True
         logging.info(f"File logging configured. All logs will be written to {self._log_file}")
+        if self._jax_cache_info is not None:
+            logging.info(
+                "JAX cache config: %s",
+                json.dumps(self._jax_cache_info, sort_keys=True),
+            )
 
     # =========================================================================
     #  fly — run simulation loop
@@ -3703,19 +3782,36 @@ class TokaMaker_TORAX:
         # The cache was previously disabled because it could leak semaphores under
         # heavy multiprocessing; those warnings are emitted by the resource_tracker
         # at interpreter exit and are avoided by callers that os._exit (collect and
-        # batch eval already do). Opt out with OFT_DISABLE_JAX_COMPILE_CACHE=1.
+        # batch eval already do). The cache is namespaced automatically by the
+        # runtime/build fingerprint so a new install or a different machine gets a
+        # new cache directory. If you hit a native crash or suspect a stale or
+        # incompatible cached executable, rerun with OFT_DISABLE_JAX_COMPILE_CACHE=1
+        # to force a fresh compile. That is a diagnostic workaround, not a cure for
+        # every TORAX/OFT failure.
+        self._jax_cache_info = None
         try:
             import jax
-            if os.environ.get('OFT_DISABLE_JAX_COMPILE_CACHE', '0') == '1':
+            cache_enabled, cache_dir, cache_info = _resolve_jax_cache_dir()
+            self._jax_cache_info = cache_info
+            if not cache_enabled:
+                print(
+                    "JAX cache disabled for this run via OFT_DISABLE_JAX_COMPILE_CACHE=1 "
+                    f"(base root would have been {cache_info['base_root']}).",
+                    file=sys.stderr,
+                )
                 jax.config.update('jax_enable_compilation_cache', False)
             else:
-                _jax_cache_dir = os.environ.get('JAX_COMPILATION_CACHE_DIR') or \
-                    os.path.join(os.getcwd(), '.jax_cache')
                 jax.config.update('jax_enable_compilation_cache', True)
-                jax.config.update('jax_compilation_cache_dir', _jax_cache_dir)
+                jax.config.update('jax_compilation_cache_dir', str(cache_dir))
                 # Cache even fast compiles / small entries so every segment is reused.
                 jax.config.update('jax_persistent_cache_min_compile_time_secs', 0.0)
                 jax.config.update('jax_persistent_cache_min_entry_size_bytes', 0)
+                print(
+                    "JAX persistent compilation cache enabled at "
+                    f"{cache_dir} (base root {cache_info['base_root']}, "
+                    f"namespace={cache_info['fingerprint']['namespace']}).",
+                    file=sys.stderr,
+                )
         except Exception:
             pass  # older JAX versions may not have these config keys
 

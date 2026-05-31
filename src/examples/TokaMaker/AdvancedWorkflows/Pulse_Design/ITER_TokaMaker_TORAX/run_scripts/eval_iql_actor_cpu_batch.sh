@@ -30,7 +30,7 @@
 #   CHECKPOINTS_FILE=my_checkpoints.txt \
 #     N_WORKERS=4 \
 #     env -i PATH="$PATH" HOME="$HOME" TERM="$TERM" \
-#     srun --account=nlp --mem=256G --cpus-per-task=32 --partition=john \
+#     srun --account=nlp --mem=256G --cpus-per-task=20 --partition=john \
 #     /bin/bash run_scripts/eval_iql_actor_cpu_batch.sh
 #
 # Key optional env vars (all have defaults):
@@ -41,11 +41,12 @@
 #   GRID_SIZE          TORAX radial grid points (default: 51)
 #   WANDB_PROJECT      wandb project name (default: iql-training)
 #   INITIAL_RELAX_CACHE_DIR shared initial-relax cache dir
-#   JAX_COMPILATION_CACHE_DIR persistent XLA cache (default: ./.jax_cache)
+#   JAX_COMPILATION_CACHE_DIR persistent XLA cache root (runtime namespaces by build fingerprint; default: ./.jax_cache)
 #   MP_CONTEXT         multiprocessing start method: fork (default) or spawn
+#   DISABLE_JAX_COMPILE_CACHE set to 1 to disable the persistent cache
 
 #SBATCH --account=nlp
-#SBATCH --cpus-per-task=32
+#SBATCH --cpus-per-task=20
 #SBATCH --mem=256G
 #SBATCH --partition=john
 #SBATCH --output=logs/%x-%j.out
@@ -63,7 +64,7 @@ cd "${PROJECT_DIR}"
 OFT_ROOT="$(cd "${PROJECT_DIR}/../../../../../../" && pwd -P)"
 source "${OFT_ROOT}/scripts/oft_arch/select_oft_install.sh"
 
-TOTAL_CPUS="${SLURM_CPUS_PER_TASK:-32}"
+TOTAL_CPUS="${SLURM_CPUS_PER_TASK:-20}"
 N_WORKERS="${N_WORKERS:-4}"
 THREADS_PER_WORKER="${THREADS_PER_WORKER:-$(( TOTAL_CPUS / N_WORKERS ))}"
 if [ "${THREADS_PER_WORKER}" -lt 1 ]; then
@@ -90,6 +91,9 @@ export JAX_PLATFORMS=cpu
 export JAX_PLATFORM_NAME=cpu
 export PYTHONUNBUFFERED=1
 export MP_CONTEXT="${MP_CONTEXT:-fork}"
+if [ "${OFT_DISABLE_JAX_COMPILE_CACHE:-0}" = "1" ]; then
+  export OFT_DISABLE_JAX_COMPILE_CACHE=1
+fi
 
 # Shared persistent XLA compilation cache: first worker compiles, the rest load it.
 export JAX_COMPILATION_CACHE_DIR="${JAX_COMPILATION_CACHE_DIR:-${PROJECT_DIR}/.jax_cache}"
@@ -114,7 +118,7 @@ echo "WANDB_GROUP=${WANDB_GROUP}"
 echo "DATASET_DIR=${DATASET_DIR}"
 echo "MAX_LOOP=${MAX_LOOP}"
 echo "GRID_SIZE=${GRID_SIZE}"
-echo "JAX_COMPILATION_CACHE_DIR=${JAX_COMPILATION_CACHE_DIR}"
+echo "JAX_COMPILATION_CACHE_DIR(base)=${JAX_COMPILATION_CACHE_DIR}"
 echo "MP_CONTEXT=${MP_CONTEXT}"
 
 ARGS=(

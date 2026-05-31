@@ -16,6 +16,8 @@ from torch.utils.data import Dataset, DataLoader
 from dataloader import describe_dataset_with_replay_cache, load_d4rl_dataset
 from log import get_logger
 
+# Things to also look at: src/python/OpenFUSIONToolkit/TokaMaker/pulse_design.py [path is from repo root]. Make sure if you edit pulse_design.py that you run rebuild.sh to update the Python package.
+
 app = modal.App("iql-training")
 logger = get_logger(__name__)
 
@@ -563,6 +565,7 @@ def train_from_config(
     actor_eval_max_loop,
     actor_eval_grid_size,
     actor_eval_device,
+    actor_eval_wandb_group,
     observation_mode,
     action_mode,
     action_rate_penalty,
@@ -601,6 +604,7 @@ def train_from_config(
         "actor_eval_max_loop": actor_eval_max_loop,
         "actor_eval_grid_size": actor_eval_grid_size,
         "actor_eval_device": actor_eval_device,
+        "actor_eval_wandb_group": actor_eval_wandb_group,
         "observation_mode": observation_mode,
         "action_mode": action_mode,
         "action_rate_penalty": action_rate_penalty,
@@ -777,7 +781,7 @@ def train_from_config(
             "project": project,
             "run_name": f"{run.name or run.id}-checkpoint-eval",
             "wandb_mode": "disabled",
-            "wandb_group": wandb_group,
+            "wandb_group": actor_eval_wandb_group or wandb_group,
             "initial_relax_state": config.get("actor_eval_initial_relax_state"),
             "initial_relax_cache_dir": config.get("actor_eval_initial_relax_cache_dir"),
             "max_loop": int(config.get("actor_eval_max_loop", 0)),

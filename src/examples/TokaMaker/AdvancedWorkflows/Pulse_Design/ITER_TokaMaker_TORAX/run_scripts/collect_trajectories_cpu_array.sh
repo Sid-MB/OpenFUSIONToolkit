@@ -4,7 +4,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=128G
 #SBATCH --partition=john
-#SBATCH --array=0-399%16
+#SBATCH --array=0-399%32
 #SBATCH --output=logs/%x-%A_%a.out
 #SBATCH --error=logs/%x-%A_%a.err
 
@@ -26,18 +26,18 @@
 #     --output_dir "${OUTPUT_BASE_DIR}" --max_loop "${MAX_LOOP}" \
 #     --grid_size "${GRID_SIZE}" --init_dataset_only
 #   START_IDX=600 END_IDX=1000 USE_INITIAL_RELAX_CACHE=0 N_WORKERS=1 CHUNK_SIZE=1 \
-#     sbatch --cpus-per-task=4 --mem=128G --array=0-399%16 \
+#     sbatch --cpus-per-task=4 --mem=128G --array=0-399%32 \
 #       run_scripts/collect_trajectories_cpu_array.sh
 #
 # Slurm array syntax:
-#   --array=0-399%16 creates task IDs 0..399, with at most 16 tasks running.
+#   --array=0-399%32 creates task IDs 0..399, with at most 32 tasks running.
 #   With CHUNK_SIZE=1 and START_IDX=600, task 0 runs [600, 601), task 1 runs
 #   [601, 602), and task 399 runs [999, 1000).
 #
 # Resource scaling note:
 #   The current best-supported shape is one trajectory worker per Slurm task,
-#   with about four CPUs allocated to that worker. The standard 64-total-CPU
-#   run uses `%16` array concurrency. N_WORKERS>1 can increase RAM pressure and
+#   with about four CPUs allocated to that worker. The standard 128-total-CPU
+#   run uses `%32` array concurrency. N_WORKERS>1 can increase RAM pressure and
 #   makes it harder to tell which trajectory is slow.
 #
 # Shared initial relax cache is controlled explicitly by USE_INITIAL_RELAX_CACHE.
@@ -155,6 +155,7 @@ echo "CHUNK_SIZE=${CHUNK_SIZE}"
 echo_env_or_argparse_default SEED
 echo_env_or_argparse_default MAX_LOOP
 echo_env_or_argparse_default GRID_SIZE
+echo_env_or_argparse_default OBSERVATION_MODE
 echo_env_or_argparse_default TRAJECTORY_TIMEOUT_SECONDS
 echo_env_or_argparse_default SAVE_REPLAY_SHARD
 echo_env_or_argparse_default SAVE_FULL_ZARR
@@ -190,6 +191,7 @@ COLLECT_ARGS=(
 add_arg SEED --seed
 add_arg MAX_LOOP --max_loop
 add_arg GRID_SIZE --grid_size
+add_arg OBSERVATION_MODE --observation_mode
 add_arg TRAJECTORY_TIMEOUT_SECONDS --trajectory_timeout_seconds
 add_bool_output_arg SAVE_REPLAY_SHARD --save_replay_shard --no_save_replay_shard
 add_bool_output_arg SAVE_FULL_ZARR --save_full_zarr --no_save_full_zarr

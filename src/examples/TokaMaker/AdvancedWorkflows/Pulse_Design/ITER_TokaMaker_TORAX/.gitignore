@@ -1,8 +1,4 @@
 /logs/
-/rl_dataset/
-/rl_dataset_*/
-/checkpoints_*.txt
-/initial_relax_cache/
 /*.prof
 /*.log
 /visualize/out/
@@ -11,3 +7,10 @@
 /timing_test*/
 slurm-*.out
 /.jax_cache/
+
+# Runs
+/run_prev_action_*/
+/rl_dataset/
+/rl_dataset_*/
+/checkpoints_*.txt
+/initial_relax_cache/

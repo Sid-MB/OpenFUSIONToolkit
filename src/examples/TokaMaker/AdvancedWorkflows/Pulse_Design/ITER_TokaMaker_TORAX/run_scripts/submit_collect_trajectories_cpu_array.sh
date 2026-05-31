@@ -13,9 +13,9 @@ set -euo pipefail
 # Should you call this directly?
 #   Yes. For the standard full run, paste the example below into your shell.
 #
-# Explicit full-run example (64 total allocated CPUs: 16 tasks x 4 CPUs):
+# Explicit full-run example (128 total allocated CPUs: 32 tasks x 4 CPUs):
 #   N_TRAJECTORIES=1000 START_IDX=600 END_IDX=1000 \
-#     N_WORKERS=1 CHUNK_SIZE=1 ARRAY_CONCURRENCY=16 \
+#     N_WORKERS=1 CHUNK_SIZE=1 ARRAY_CONCURRENCY=32 \
 #     SLURM_MAX_ARRAY_SIZE=1001 CPUS_PER_TASK=4 MEM_PER_NODE=128G \
 #     USE_INITIAL_RELAX_CACHE=0 OUTPUT_BASE_DIR=./my_dataset \
 #     DRY_RUN=0 SUBMIT_GRID_SEARCH=1 SUBMIT_REPLAY_CACHE=1 SUBMIT_IQL=0 \
@@ -81,13 +81,81 @@ echo_env_or_argparse_default() {
   fi
 }
 
+REUSE_EXISTING_DATASET="${REUSE_EXISTING_DATASET:-0}"
+if [ "${REUSE_EXISTING_DATASET}" != "0" ]; then
+  N_WORKERS="${N_WORKERS:-1}"
+  CHUNK_SIZE="${CHUNK_SIZE:-1}"
+  ARRAY_CONCURRENCY="${ARRAY_CONCURRENCY:-1}"
+  SLURM_MAX_ARRAY_SIZE="${SLURM_MAX_ARRAY_SIZE:-1}"
+fi
+
+validate_existing_dataset() {
+  echo "Validating that the requested dataset already exists..."
+  uv run python - "${OUTPUT_BASE_DIR}" "${N_TRAJECTORIES}" "${START_IDX}" "${END_IDX}" <<'PY'
+from pathlib import Path
+import sys
+
+import numpy as np
+
+from dataloader import load_json
+
+root = Path(sys.argv[1]).resolve()
+n_trajectories = int(sys.argv[2])
+start_idx = int(sys.argv[3])
+end_idx = int(sys.argv[4])
+
+manifest_path = root / 'run_manifest.json'
+actions_path = root / 'all_actions.npy'
+if not manifest_path.is_file():
+    raise SystemExit(f'Missing dataset manifest: {manifest_path}')
+if not actions_path.is_file():
+    raise SystemExit(f'Missing action table: {actions_path}')
+
+manifest = load_json(manifest_path)
+requested_range = manifest.get('requested_range', {})
+if int(manifest.get('n_trajectories', -1)) != n_trajectories:
+    raise SystemExit(
+        f"Dataset n_trajectories mismatch: expected {n_trajectories}, "
+        f"found {manifest.get('n_trajectories')}"
+    )
+if int(requested_range.get('start_idx', -1)) != start_idx or int(requested_range.get('end_idx', -1)) != end_idx:
+    raise SystemExit(
+        'Dataset requested_range mismatch: '
+        f"expected [{start_idx}, {end_idx}), found "
+        f"[{requested_range.get('start_idx')}, {requested_range.get('end_idx')})"
+    )
+
+actions = np.load(actions_path)
+if actions.shape[0] < end_idx:
+    raise SystemExit(
+        f'Action table is too short for requested range: shape={actions.shape}, end_idx={end_idx}'
+    )
+
+missing = []
+for run_id in range(start_idx, end_idx):
+    shard = root / 'replay_shards' / f'trajectory_{run_id:04d}.npz'
+    if not shard.is_file() or shard.stat().st_size == 0:
+        missing.append(str(shard))
+
+if missing:
+    raise SystemExit(
+        'Dataset reuse requested, but replay shards are missing:\n'
+        + '\n'.join(f'  {path}' for path in missing)
+    )
+
+print(f'Existing dataset validated: {root}')
+PY
+}
+
 require_env N_TRAJECTORIES
 require_env START_IDX
 require_env END_IDX
-require_env N_WORKERS
-require_env CHUNK_SIZE
-require_env ARRAY_CONCURRENCY
-require_env SLURM_MAX_ARRAY_SIZE
+if [ "${REUSE_EXISTING_DATASET}" = "0" ]; then
+  require_env N_WORKERS
+  require_env CHUNK_SIZE
+  require_env ARRAY_CONCURRENCY
+  require_env SLURM_MAX_ARRAY_SIZE
+fi
 # CPU and memory requests have defaults that work well; override per job class
 # if needed. Memory defaults to the 128G floor.
 CPUS_PER_TASK="${CPUS_PER_TASK:-4}"
@@ -105,6 +173,13 @@ require_env SUBMIT_GRID_SEARCH
 require_env SUBMIT_REPLAY_CACHE
 require_env SUBMIT_IQL
 
+# Optional Slurm priority tweak for the trajectory array itself. Leave unset to
+# use the cluster's normal scheduling priority.
+if [[ -n "${SLURM_NICE:-}" && ! "${SLURM_NICE}" =~ ^[0-9]+$ ]]; then
+  echo "ERROR: SLURM_NICE must be a non-negative integer, got ${SLURM_NICE}" >&2
+  exit 2
+fi
+
 # When the shared cache is enabled, either an explicit INITIAL_RELAX_CACHE path
 # or a keyed INITIAL_RELAX_CACHE_DIR may be provided. Both are optional: child
 # jobs resolve the keyed path themselves (and agree, since the key is derived
@@ -119,10 +194,6 @@ if [ "${SUBMIT_REPLAY_CACHE}" != "0" ]; then
   REPLAY_CACHE_MEM="${REPLAY_CACHE_MEM:-128G}"
 fi
 
-if [ "${CHUNK_SIZE}" -lt 1 ]; then
-  echo "ERROR: CHUNK_SIZE must be >= 1, got ${CHUNK_SIZE}" >&2
-  exit 2
-fi
 if [ "${END_IDX}" -lt "${START_IDX}" ]; then
   echo "ERROR: END_IDX must be >= START_IDX, got START_IDX=${START_IDX}, END_IDX=${END_IDX}" >&2
   exit 2
@@ -133,17 +204,26 @@ if [ "${END_IDX}" -gt "${N_TRAJECTORIES}" ]; then
 fi
 
 REQUESTED_TRAJECTORIES=$(( END_IDX - START_IDX ))
-ARRAY_TASK_COUNT=$(( (REQUESTED_TRAJECTORIES + CHUNK_SIZE - 1) / CHUNK_SIZE ))
-if [ "${ARRAY_TASK_COUNT}" -lt 1 ]; then
-  ARRAY_TASK_COUNT=1
-fi
-if [ "${ARRAY_TASK_COUNT}" -gt "${SLURM_MAX_ARRAY_SIZE}" ]; then
-  echo "ERROR: requested ${ARRAY_TASK_COUNT} Slurm array tasks, but MaxArraySize=${SLURM_MAX_ARRAY_SIZE}." >&2
-  echo "Increase CHUNK_SIZE or split the run into multiple submissions." >&2
-  exit 2
-fi
-if [ -z "${ARRAY_SPEC:-}" ]; then
-  ARRAY_SPEC="0-$(( ARRAY_TASK_COUNT - 1 ))%${ARRAY_CONCURRENCY}"
+if [ "${REUSE_EXISTING_DATASET}" = "0" ]; then
+  if [ "${CHUNK_SIZE}" -lt 1 ]; then
+    echo "ERROR: CHUNK_SIZE must be >= 1, got ${CHUNK_SIZE}" >&2
+    exit 2
+  fi
+  ARRAY_TASK_COUNT=$(( (REQUESTED_TRAJECTORIES + CHUNK_SIZE - 1) / CHUNK_SIZE ))
+  if [ "${ARRAY_TASK_COUNT}" -lt 1 ]; then
+    ARRAY_TASK_COUNT=1
+  fi
+  if [ "${ARRAY_TASK_COUNT}" -gt "${SLURM_MAX_ARRAY_SIZE}" ]; then
+    echo "ERROR: requested ${ARRAY_TASK_COUNT} Slurm array tasks, but MaxArraySize=${SLURM_MAX_ARRAY_SIZE}." >&2
+    echo "Increase CHUNK_SIZE or split the run into multiple submissions." >&2
+    exit 2
+  fi
+  if [ -z "${ARRAY_SPEC:-}" ]; then
+    ARRAY_SPEC="0-$(( ARRAY_TASK_COUNT - 1 ))%${ARRAY_CONCURRENCY}"
+  fi
+else
+  ARRAY_TASK_COUNT=0
+  ARRAY_SPEC="<reuse-existing-dataset>"
 fi
 
 EXPORT_NAMES=(
@@ -164,6 +244,7 @@ append_export SAVE_FULL_ZARR
 append_export SAVE_JSON
 append_export INITIAL_RELAX_CACHE
 append_export INITIAL_RELAX_CACHE_DIR
+append_export OBSERVATION_MODE
 export "${EXPORT_NAMES[@]}"
 
 echo "OUTPUT_BASE_DIR=${OUTPUT_BASE_DIR}"
@@ -175,10 +256,18 @@ echo_env_or_argparse_default SEED "argparse default"
 echo "REQUESTED_TRAJECTORIES=${REQUESTED_TRAJECTORIES}"
 echo "ARRAY_TASK_COUNT=${ARRAY_TASK_COUNT}"
 echo "ARRAY_SPEC=${ARRAY_SPEC}"
-echo "ARRAY_CONCURRENCY=${ARRAY_CONCURRENCY}"
-echo "SLURM_MAX_ARRAY_SIZE=${SLURM_MAX_ARRAY_SIZE}"
-echo "CPUS_PER_TASK=${CPUS_PER_TASK}"
-echo "MEM_PER_NODE=${MEM_PER_NODE}"
+echo "REUSE_EXISTING_DATASET=${REUSE_EXISTING_DATASET}"
+if [ "${REUSE_EXISTING_DATASET}" = "0" ]; then
+  echo "ARRAY_CONCURRENCY=${ARRAY_CONCURRENCY}"
+  echo "SLURM_MAX_ARRAY_SIZE=${SLURM_MAX_ARRAY_SIZE}"
+  echo "CPUS_PER_TASK=${CPUS_PER_TASK}"
+  echo "MEM_PER_NODE=${MEM_PER_NODE}"
+else
+  echo "ARRAY_CONCURRENCY=<unused>"
+  echo "SLURM_MAX_ARRAY_SIZE=<unused>"
+  echo "CPUS_PER_TASK=<unused>"
+  echo "MEM_PER_NODE=<unused>"
+fi
 echo "USE_INITIAL_RELAX_CACHE=${USE_INITIAL_RELAX_CACHE}"
 echo_env_or_argparse_default MAX_LOOP "argparse default"
 echo_env_or_argparse_default GRID_SIZE "argparse default"
@@ -186,12 +275,14 @@ echo_env_or_argparse_default TRAJECTORY_TIMEOUT_SECONDS "argparse default"
 echo_env_or_argparse_default SAVE_REPLAY_SHARD "argparse default"
 echo_env_or_argparse_default SAVE_FULL_ZARR "argparse default"
 echo_env_or_argparse_default SAVE_JSON "argparse default"
+echo_env_or_argparse_default OBSERVATION_MODE "argparse default"
 echo "SUBMIT_GRID_SEARCH=${SUBMIT_GRID_SEARCH}"
 echo_env_or_argparse_default GRID_SEARCH_MEM "unset"
 echo_env_or_argparse_default GRID_SEARCH_CPUS "unset"
 echo_env_or_argparse_default GRID_SEARCH_OUTPUT_DIR "grid search argparse default"
 echo_env_or_argparse_default GRID_SEARCH_GAMMA "grid search argparse default"
 echo_env_or_argparse_default GRID_SEARCH_TOP_K "grid search argparse default"
+echo_env_or_argparse_default SLURM_NICE "unset"
 echo "SUBMIT_REPLAY_CACHE=${SUBMIT_REPLAY_CACHE}"
 echo_env_or_argparse_default REPLAY_CACHE_MEM "unset"
 echo_env_or_argparse_default REPLAY_CACHE_CPUS "unset"
@@ -210,59 +301,78 @@ fi
 mkdir -p "${OUTPUT_BASE_DIR}"
 mkdir -p "${RUN_LOG_DIR}"
 
-echo "Initializing shared dataset manifest/action table..."
-INIT_ARGS=(
-  --n_trajectories "${N_TRAJECTORIES}"
-  --start_idx "${START_IDX}"
-  --end_idx "${END_IDX}"
-  --output_dir "${OUTPUT_BASE_DIR}"
-  --init_dataset_only
-)
-add_arg SEED --seed
-add_arg MAX_LOOP --max_loop
-add_arg GRID_SIZE --grid_size
-add_arg TRAJECTORY_TIMEOUT_SECONDS --trajectory_timeout_seconds
-add_bool_arg SAVE_REPLAY_SHARD --save_replay_shard --no_save_replay_shard
-add_bool_arg SAVE_FULL_ZARR --save_full_zarr --no_save_full_zarr
-add_bool_arg SAVE_JSON --save_json --no_save_json
-if [ "${USE_INITIAL_RELAX_CACHE}" = "0" ]; then
-  INIT_ARGS+=(--no_initial_relax_cache)
-elif [ -n "${INITIAL_RELAX_CACHE:-}" ]; then
-  INIT_ARGS+=(--initial_relax_cache "${INITIAL_RELAX_CACHE}")
-elif [ -n "${INITIAL_RELAX_CACHE_DIR:-}" ]; then
-  INIT_ARGS+=(--initial_relax_cache_dir "${INITIAL_RELAX_CACHE_DIR}")
+if [ "${REUSE_EXISTING_DATASET}" = "0" ]; then
+  if [ -s "${OUTPUT_BASE_DIR}/run_manifest.json" ] || [ -d "${OUTPUT_BASE_DIR}/replay_shards" ]; then
+    echo "NOTE: ${OUTPUT_BASE_DIR} already looks like a dataset root."
+    echo "      This run will collect trajectories again."
+    echo "      If you meant to reuse the existing dataset, stop here and rerun with REUSE_EXISTING_DATASET=1."
+  else
+    echo "Starting a fresh trajectory collection."
+    echo "If you already have a complete dataset in ${OUTPUT_BASE_DIR}, stop and rerun with REUSE_EXISTING_DATASET=1."
+  fi
 fi
-echo "collect_trajectories_delta.py init args: ${INIT_ARGS[*]}"
-uv run python collect_trajectories_delta.py \
-  "${INIT_ARGS[@]}"
 
-dependency_args=()
-if [ "${USE_INITIAL_RELAX_CACHE}" != "0" ]; then
-  echo "Submitting initial relax cache job..."
-  cache_jid="$(
+collection_jid=""
+if [ "${REUSE_EXISTING_DATASET}" = "0" ]; then
+  echo "Initializing shared dataset manifest/action table..."
+  INIT_ARGS=(
+    --n_trajectories "${N_TRAJECTORIES}"
+    --start_idx "${START_IDX}"
+    --end_idx "${END_IDX}"
+    --output_dir "${OUTPUT_BASE_DIR}"
+    --init_dataset_only
+  )
+  add_arg SEED --seed
+  add_arg MAX_LOOP --max_loop
+  add_arg GRID_SIZE --grid_size
+  add_arg TRAJECTORY_TIMEOUT_SECONDS --trajectory_timeout_seconds
+  add_arg OBSERVATION_MODE --observation_mode
+  add_bool_arg SAVE_REPLAY_SHARD --save_replay_shard --no_save_replay_shard
+  add_bool_arg SAVE_FULL_ZARR --save_full_zarr --no_save_full_zarr
+  add_bool_arg SAVE_JSON --save_json --no_save_json
+  if [ "${USE_INITIAL_RELAX_CACHE}" = "0" ]; then
+    INIT_ARGS+=(--no_initial_relax_cache)
+  elif [ -n "${INITIAL_RELAX_CACHE:-}" ]; then
+    INIT_ARGS+=(--initial_relax_cache "${INITIAL_RELAX_CACHE}")
+  elif [ -n "${INITIAL_RELAX_CACHE_DIR:-}" ]; then
+    INIT_ARGS+=(--initial_relax_cache_dir "${INITIAL_RELAX_CACHE_DIR}")
+  fi
+  echo "collect_trajectories_delta.py init args: ${INIT_ARGS[*]}"
+  uv run python collect_trajectories_delta.py \
+    "${INIT_ARGS[@]}"
+
+  dependency_args=()
+  if [ "${USE_INITIAL_RELAX_CACHE}" != "0" ]; then
+    echo "Submitting initial relax cache job..."
+    collection_jid="$(
+      sbatch --parsable \
+        --output="${RUN_LOG_DIR}/collect_initial_relax_cache-%j.out" \
+        --error="${RUN_LOG_DIR}/collect_initial_relax_cache-%j.err" \
+        "${SCRIPT_DIR}/collect_initial_relax_cache_cpu.sh"
+    )"
+    echo "collection_jid=${collection_jid}"
+    dependency_args=(--dependency=afterok:${collection_jid})
+  else
+    echo "Skipping shared initial relax cache; trajectories will run initial relax independently."
+  fi
+
+  echo "Submitting dependent trajectory array (${ARRAY_SPEC})..."
+  collection_jid="$(
     sbatch --parsable \
-      --output="${RUN_LOG_DIR}/collect_initial_relax_cache-%j.out" \
-      --error="${RUN_LOG_DIR}/collect_initial_relax_cache-%j.err" \
-      "${SCRIPT_DIR}/collect_initial_relax_cache_cpu.sh"
+      "${dependency_args[@]}" \
+      --cpus-per-task="${CPUS_PER_TASK}" \
+      --mem="${MEM_PER_NODE}" \
+      --array="${ARRAY_SPEC}" \
+      ${SLURM_NICE:+--nice="${SLURM_NICE}"} \
+      --output="${RUN_LOG_DIR}/collect_trajectories-%A_%a.out" \
+      --error="${RUN_LOG_DIR}/collect_trajectories-%A_%a.err" \
+      "${SCRIPT_DIR}/collect_trajectories_cpu_array.sh"
   )"
-  echo "cache_jid=${cache_jid}"
-  dependency_args=(--dependency=afterok:${cache_jid})
+  echo "collection_jid=${collection_jid}"
 else
-  echo "Skipping shared initial relax cache; trajectories will run initial relax independently."
+  echo "Reusing existing dataset; skipping trajectory collection and initial-relax cache submission."
+  validate_existing_dataset
 fi
-
-echo "Submitting dependent trajectory array (${ARRAY_SPEC})..."
-array_jid="$(
-  sbatch --parsable \
-    "${dependency_args[@]}" \
-    --cpus-per-task="${CPUS_PER_TASK}" \
-    --mem="${MEM_PER_NODE}" \
-    --array="${ARRAY_SPEC}" \
-    --output="${RUN_LOG_DIR}/collect_trajectories-%A_%a.out" \
-    --error="${RUN_LOG_DIR}/collect_trajectories-%A_%a.err" \
-    "${SCRIPT_DIR}/collect_trajectories_cpu_array.sh"
-)"
-echo "array_jid=${array_jid}"
 
 grid_search_jid=""
 if [ "${SUBMIT_GRID_SEARCH}" != "0" ]; then
@@ -277,9 +387,13 @@ if [ "${SUBMIT_GRID_SEARCH}" != "0" ]; then
   if [ -n "${GRID_SEARCH_TOP_K:-}" ]; then
     grid_search_export+=",GRID_SEARCH_TOP_K=${GRID_SEARCH_TOP_K}"
   fi
+  grid_search_args=()
+  if [ -n "${collection_jid}" ] && [ "${REUSE_EXISTING_DATASET}" = "0" ]; then
+    grid_search_args+=(--dependency=afterok:${collection_jid})
+  fi
   grid_search_jid="$(
     sbatch --parsable \
-      --dependency=afterok:${array_jid} \
+      "${grid_search_args[@]}" \
       --cpus-per-task="${GRID_SEARCH_CPUS}" \
       --mem="${GRID_SEARCH_MEM}" \
       --export="${grid_search_export}" \
@@ -308,9 +422,13 @@ if [ "${SUBMIT_REPLAY_CACHE}" != "0" ]; then
   if [ -n "${REPLAY_CACHE_WORKER_BACKEND:-}" ]; then
     replay_export+=",REPLAY_CACHE_WORKER_BACKEND=${REPLAY_CACHE_WORKER_BACKEND}"
   fi
+  replay_cache_args=()
+  if [ -n "${collection_jid}" ] && [ "${REUSE_EXISTING_DATASET}" = "0" ]; then
+    replay_cache_args+=(--dependency=afterok:${collection_jid})
+  fi
   replay_cache_jid="$(
     sbatch --parsable \
-      --dependency=afterok:${array_jid} \
+      "${replay_cache_args[@]}" \
       --cpus-per-task="${REPLAY_CACHE_CPUS}" \
       --mem="${REPLAY_CACHE_MEM}" \
       --export="${replay_export}" \
@@ -324,18 +442,20 @@ else
 fi
 
 if [ "${SUBMIT_IQL}" != "0" ]; then
-  iql_dependency="${array_jid}"
-  if [ -n "${replay_cache_jid}" ]; then
-    iql_dependency="${replay_cache_jid}"
-  fi
   echo "Submitting dependent IQL training job..."
   iql_export="ALL,DATASET_DIR=${OUTPUT_BASE_DIR}"
   if [ -n "${REPLAY_CACHE_DIR:-}" ]; then
     iql_export+=",REPLAY_CACHE_DIR=${REPLAY_CACHE_DIR}"
   fi
+  iql_args=()
+  if [ -n "${replay_cache_jid}" ]; then
+    iql_args+=(--dependency=afterok:${replay_cache_jid})
+  elif [ -n "${collection_jid}" ] && [ "${REUSE_EXISTING_DATASET}" = "0" ]; then
+    iql_args+=(--dependency=afterok:${collection_jid})
+  fi
   iql_jid="$(
     sbatch --parsable \
-      --dependency=afterok:${iql_dependency} \
+      "${iql_args[@]}" \
       --export="${iql_export}" \
       --output="${RUN_LOG_DIR}/train_iql-%j.out" \
       --error="${RUN_LOG_DIR}/train_iql-%j.err" \

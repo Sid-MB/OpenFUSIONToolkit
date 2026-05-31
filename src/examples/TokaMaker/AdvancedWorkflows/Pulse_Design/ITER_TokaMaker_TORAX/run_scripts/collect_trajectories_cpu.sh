@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 #SBATCH --account=nlp
-#SBATCH --cpus-per-task=4
+#SBATCH --cpus-per-task=20
 #SBATCH --mem=128G
 #SBATCH --partition=john
 #SBATCH --output=logs/%x-%j.out
@@ -36,7 +36,7 @@ cd "${PROJECT_DIR}"
 OFT_ROOT="$(cd "${PROJECT_DIR}/../../../../../../" && pwd -P)"
 source "${OFT_ROOT}/scripts/oft_arch/select_oft_install.sh"
 
-TOTAL_CPUS="${SLURM_CPUS_PER_TASK:-4}"
+TOTAL_CPUS="${SLURM_CPUS_PER_TASK:-20}"
 N_WORKERS="${N_WORKERS:-1}"
 THREADS_PER_WORKER="${THREADS_PER_WORKER:-$(( TOTAL_CPUS / N_WORKERS ))}"
 if [ "${THREADS_PER_WORKER}" -lt 1 ]; then
