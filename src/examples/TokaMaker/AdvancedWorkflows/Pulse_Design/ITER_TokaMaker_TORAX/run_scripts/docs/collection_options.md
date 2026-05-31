@@ -21,7 +21,7 @@ Slurm and to `collect_trajectories_delta.py` (argparse).
 |---|---|---|
 | `CPUS_PER_TASK` | `4` | CPUs per Slurm task |
 | `MEM_PER_NODE` | `128G` | RAM per Slurm task |
-| `N_WORKERS` | `1` | Trajectory workers per task (keep at 1; scale via array concurrency) |
+| `N_WORKERS` | `1` | Trajectory workers per task (default 1; keep at 1 and scale via array concurrency) |
 | `SLURM_NICE` | unset | Lower the priority of the collection array job; useful when you want other `john` jobs to slip in between array tasks |
 
 Note: the standalone CPU jobs for cache building and evaluation default to 20

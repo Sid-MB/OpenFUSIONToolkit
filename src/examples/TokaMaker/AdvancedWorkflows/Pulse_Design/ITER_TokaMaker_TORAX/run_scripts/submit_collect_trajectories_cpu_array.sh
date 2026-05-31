@@ -150,8 +150,8 @@ PY
 require_env N_TRAJECTORIES
 require_env START_IDX
 require_env END_IDX
+N_WORKERS="${N_WORKERS:-1}"
 if [ "${REUSE_EXISTING_DATASET}" = "0" ]; then
-  require_env N_WORKERS
   require_env CHUNK_SIZE
   require_env ARRAY_CONCURRENCY
   require_env SLURM_MAX_ARRAY_SIZE

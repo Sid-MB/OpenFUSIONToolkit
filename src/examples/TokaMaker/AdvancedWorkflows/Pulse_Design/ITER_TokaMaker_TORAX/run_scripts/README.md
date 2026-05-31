@@ -65,6 +65,8 @@ Common parameters to tune:
 - `GRID_SIZE=51` — radial grid resolution (11 for smoke tests, 51 for production)
 - `ARRAY_CONCURRENCY=32` — max parallel Slurm tasks (× `CPUS_PER_TASK` = total CPUs used)
 - `N_TRAJECTORIES` / `START_IDX` / `END_IDX` — trajectory index range to collect
+- `SUBMIT_GRID_SEARCH=1` — also launch the baseline leaderboard job so you can compare trajectories and keep the best-return run; set to `0` when you only want collection/replay-cache/training
+- `OBSERVATION_MODE=prev_action` — recommended dataset schema for new runs; use `legacy` only for compatibility with old datasets and `plasma_only` only if you intentionally want no action history in the observation
 - `SLURM_NICE=10000` — lower the priority of the collection array so other pending jobs on `john` can be scheduled first
 
 Standalone CPU jobs on `john` default to `20` CPUs per task. The array worker
