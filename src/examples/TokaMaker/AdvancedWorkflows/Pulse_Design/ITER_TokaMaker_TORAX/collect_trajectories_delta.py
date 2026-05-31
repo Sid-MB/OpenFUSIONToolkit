@@ -1211,6 +1211,7 @@ if __name__ == '__main__':
         rl_times=RL_TIMES,
         action_bounds=action_manifest_fields(),
         sampler=sampler_manifest_fields(),
+        observation_mode=args.observation_mode,
         start_idx=args.start_idx,
         end_idx=args.end_idx,
     )

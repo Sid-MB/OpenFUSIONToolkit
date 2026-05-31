@@ -25,6 +25,7 @@ All scripts are run from the project root (`ITER_TokaMaker_TORAX/`).
 | `materialize_replay_cache.sh` | Aggregates trajectory shards into a flat IQL replay cache |
 | `train_iql.sh` | Trains an IQL actor on the replay cache |
 | `eval_iql_actor_cpu.sh` | Evaluates **one** IQL checkpoint in closed-loop on `john` (CPU) |
+| `eval_baseline_cpu.sh` | Evaluates the TORAX baseline fallback on `john` (CPU), no checkpoint |
 | `eval_iql_actor_cpu_batch.sh` | Evaluates **multiple** checkpoints in parallel on `john` (CPU) |
 | `eval_iql_actor.sh` | Evaluates one IQL checkpoint on `jag-standard` (GPU; use CPU scripts instead) |
 
@@ -38,13 +39,12 @@ Python entry points: `collect_trajectories_delta.py`, `IQL.py`,
 ```bash
 # 1. Collect trajectories + grid-search baseline + replay cache + IQL training
 N_TRAJECTORIES=1000 START_IDX=0 END_IDX=1000 \
-CPUS_PER_TASK=4 MEM_PER_NODE=128G ARRAY_CONCURRENCY=32 \
 OUTPUT_BASE_DIR=./run_$(date +%Y%m%d) \
-OBSERVATION_MODE=prev_action \
-DRY_RUN=0 SUBMIT_GRID_SEARCH=1 SUBMIT_REPLAY_CACHE=1 SUBMIT_IQL=1 \
+SUBMIT_GRID_SEARCH=1 SUBMIT_REPLAY_CACHE=1 SUBMIT_IQL=1 \
   ./run_scripts/submit_collect_trajectories_cpu_array.sh
 
 # 2. Evaluate the trained actor (after train_iql.sh finishes)
+DATASET_DIR=./run_<date> \
 ACTOR_CHECKPOINT=./run_<date>/iql/iql_weights.pt \
   sbatch run_scripts/eval_iql_actor_cpu.sh
 ```
@@ -55,23 +55,83 @@ The default is to collect fresh trajectories and print a reminder at startup:
 
 ```bash
 REUSE_EXISTING_DATASET=1 \
+N_TRAJECTORIES=1000 START_IDX=0 END_IDX=1000 \
 OUTPUT_BASE_DIR=./run_20260530 \
 SUBMIT_GRID_SEARCH=0 SUBMIT_REPLAY_CACHE=1 SUBMIT_IQL=1 \
   ./run_scripts/submit_collect_trajectories_cpu_array.sh
 ```
 
-Common parameters to tune:
-- `MAX_LOOP=2` — TORAX/TokaMaker coupling passes per trajectory (higher = slower, more accurate)
-- `GRID_SIZE=51` — radial grid resolution (11 for smoke tests, 51 for production)
-- `ARRAY_CONCURRENCY=32` — max parallel Slurm tasks (× `CPUS_PER_TASK` = total CPUs used)
-- `N_TRAJECTORIES` / `START_IDX` / `END_IDX` — trajectory index range to collect
-- `SUBMIT_GRID_SEARCH=1` — also launch the baseline leaderboard job so you can compare trajectories and keep the best-return run; set to `0` when you only want collection/replay-cache/training
-- `OBSERVATION_MODE=prev_action` — recommended dataset schema for new runs; use `legacy` only for compatibility with old datasets and `plasma_only` only if you intentionally want no action history in the observation
-- `SLURM_NICE=10000` — lower the priority of the collection array so other pending jobs on `john` can be scheduled first
+---
 
-Standalone CPU jobs on `john` default to `20` CPUs per task. The array worker
-still defaults to `4` CPUs per task so collection can scale to the 128-CPU
-throughput shape when needed.
+## Configuration Parameters
+
+These are the main knobs you usually change for a run.
+
+### Collection
+
+| Variable | Default | When to change |
+|---|---|---|
+| `OUTPUT_BASE_DIR` | auto-timestamped | Set this to choose the dataset/run root explicitly. |
+| `N_TRAJECTORIES` | required | Total trajectories to collect. |
+| `START_IDX` / `END_IDX` | required | Inclusive/exclusive trajectory range. |
+| `CPUS_PER_TASK` | `4` | CPUs per Slurm task for the collection array worker. |
+| `MEM_PER_NODE` | `128G` | RAM per Slurm task for the collection array worker. |
+| `ARRAY_CONCURRENCY` | `64` | Increase or decrease collection fan-out; lower it for smaller jobs or tighter clusters. |
+| `CHUNK_SIZE` | `1` | Increase only when you need fewer array tasks. |
+| `SLURM_MAX_ARRAY_SIZE` | `1001` | Cluster cap for the total array size; valid task IDs are `0..1000` on the default setup. |
+| `MAX_LOOP` | `2` | Lower for smoke tests, raise for slower but more accurate coupling. |
+| `GRID_SIZE` | `51` | Lower for smoke tests, use `51` for production runs. |
+| `OBSERVATION_MODE` | `legacy` | Use `prev_action` for normal new datasets; use `plasma_only` only for ablations or when you intentionally want no action history. |
+| `SUBMIT_GRID_SEARCH` | `0` | Set to `1` if you want the baseline leaderboard job. |
+| `SUBMIT_REPLAY_CACHE` | `0` | Set to `1` if you want the flat replay cache materialized automatically. |
+| `SUBMIT_IQL` | `0` | Set to `1` if you want training launched automatically. |
+| `USE_INITIAL_RELAX_CACHE` | `0` | Set to `1` when you want the shared initial-relax cache. |
+| `REUSE_EXISTING_DATASET` | `0` | Set to `1` when `OUTPUT_BASE_DIR` already contains a complete dataset. |
+| `SLURM_NICE` | unset | Lower priority when you want other jobs to run first. |
+
+### Evaluation
+
+| Variable | Default | When to change |
+|---|---|---|
+| `ACTOR_CHECKPOINT` | required for actor evals | Point at the checkpoint you want to evaluate. |
+| `ACTOR_CHECKPOINTS` / `CHECKPOINTS_FILE` | required for batch evals | Choose the checkpoints to fan out over workers. |
+| `RUN_ID` | derived from the checkpoint | Set this to control the eval folder name. |
+| `DATASET_DIR` | required for evals and training | Point this at the dataset root you want to reuse. |
+| `N_WORKERS` | `4` for batch eval | Raise or lower parallel eval fan-out. |
+| `MAX_LOOP` | `1` for baseline, `2` for actor evals | Match the collection settings you want to compare against. |
+| `GRID_SIZE` | `51` | Match the dataset or run a smaller smoke test. |
+
+Standalone CPU jobs on `john` default to `20` CPUs per task. The collection
+array worker still defaults to `4` CPUs per task so collection can scale to the
+128-CPU throughput shape when needed. `SLURM_MAX_ARRAY_SIZE=1001` means the
+largest allowed array index is `1000`; it limits the size of a single array
+submission, not the number of jobs running at once.
+
+---
+
+## Output Locations
+
+### Collection
+
+- `<OUTPUT_BASE_DIR>/run_manifest.json`
+- `<OUTPUT_BASE_DIR>/replay_shards/`
+- `<OUTPUT_BASE_DIR>/grid_search/` when `SUBMIT_GRID_SEARCH=1`
+- `<OUTPUT_BASE_DIR>/replay_cache/` when `SUBMIT_REPLAY_CACHE=1`
+- `<OUTPUT_BASE_DIR>/failures/`
+- `<OUTPUT_BASE_DIR>/chunks/`
+- `<OUTPUT_BASE_DIR>/logs/`
+- `<OUTPUT_BASE_DIR>/.gitignore` with `*`
+
+### Training
+
+- `<DATASET_DIR>/iql/`
+- `<DATASET_DIR>/logs/`
+
+### Evaluation
+
+- Single-checkpoint eval: `<DATASET_DIR>/eval/<RUN_ID>/`
+- Batch eval: `<DATASET_DIR>/eval_batch/<JOB_ID>/`
+- Eval logs: `.../logs/` inside the eval output root
 
 ---
 
@@ -81,9 +141,8 @@ throughput shape when needed.
 
 ```bash
 N_TRAJECTORIES=1000 START_IDX=0 END_IDX=1000 \
-ARRAY_CONCURRENCY=32 \
 OUTPUT_BASE_DIR=./my_dataset \
-DRY_RUN=0 SUBMIT_GRID_SEARCH=1 SUBMIT_REPLAY_CACHE=1 SUBMIT_IQL=0 \
+SUBMIT_GRID_SEARCH=1 SUBMIT_REPLAY_CACHE=1 SUBMIT_IQL=0 \
   ./run_scripts/submit_collect_trajectories_cpu_array.sh
 ```
 Artifacts are written under `./my_dataset/` (trajectory shards, optional `grid_search/`, optional `replay_cache/`, and per-run logs).
@@ -94,30 +153,39 @@ Artifacts are written under `./my_dataset/` (trajectory shards, optional `grid_s
 DATASET_DIR=./my_dataset \
   sbatch run_scripts/train_iql.sh
 ```
-Artifacts are written under `./my_dataset/iql/` (final weights, checkpoints) and W&B.
+Artifacts are written under `./my_dataset/iql/` (final weights, checkpoints) and W&B. Logs are written under `./my_dataset/logs/`.
 
 ### Evaluate only (checkpoint already exists)
 
 Single checkpoint:
 ```bash
-ACTOR_CHECKPOINT=./my_run/iql/iql_weights.pt \
 DATASET_DIR=./my_dataset \
+ACTOR_CHECKPOINT=./my_run/iql/iql_weights.pt \
   sbatch run_scripts/eval_iql_actor_cpu.sh
+```
+By default this writes to `./my_dataset/eval/<RUN_ID>/` and logs land in `./my_dataset/eval/<RUN_ID>/logs/`.
+
+Baseline fallback (compares to using the TORAX fallback action at each decision point):
+```bash
+DATASET_DIR=./my_dataset \
+  sbatch run_scripts/eval_baseline_cpu.sh
 ```
 
 Multiple checkpoints in parallel (one process per checkpoint, `john` CPU):
 ```bash
+DATASET_DIR=./my_dataset \
 ACTOR_CHECKPOINTS="run_a/iql_weights.pt run_b/checkpoint_step_50000.pt" \
-N_WORKERS=2 \
   sbatch run_scripts/eval_iql_actor_cpu_batch.sh
 ```
+By default this writes to `./my_dataset/eval_batch/<JOB_ID>/` and logs land in `./my_dataset/eval_batch/<JOB_ID>/logs/`.
 
 Or from a file (`#` lines are comments):
 ```bash
-CHECKPOINTS_FILE=my_checkpoints.txt N_WORKERS=4 \
+DATASET_DIR=./my_dataset \
+CHECKPOINTS_FILE=my_checkpoints.txt \
   sbatch run_scripts/eval_iql_actor_cpu_batch.sh
 ```
-Artifacts are written under `<OUTPUT_DIR>/` for single-checkpoint evals, or `<OUTPUT_ROOT>/` for batch evals (summary JSON, action trace, plots, movie, and TORAX logs).
+Artifacts are written under the same batch output root as above.
 
 ### Changed the reward metric — what to re-run
 
@@ -133,9 +201,8 @@ recompute rewards from richer simulator state.
 ```bash
 # 1. Recollect with the new reward logic (compact shards by default)
 N_TRAJECTORIES=1000 START_IDX=0 END_IDX=1000 \
-ARRAY_CONCURRENCY=32 \
 OUTPUT_BASE_DIR=./my_dataset_new_reward \
-DRY_RUN=0 SUBMIT_REPLAY_CACHE=1 SUBMIT_IQL=1 \
+SUBMIT_REPLAY_CACHE=1 SUBMIT_IQL=1 \
   ./run_scripts/submit_collect_trajectories_cpu_array.sh
 
 # 2. (If replay cache was not auto-submitted) Materialize it:
@@ -155,10 +222,9 @@ ACTOR_CHECKPOINT=./my_dataset_new_reward/iql/iql_weights.pt \
 
 ```bash
 N_TRAJECTORIES=5 START_IDX=0 END_IDX=5 \
-CPUS_PER_TASK=4 MEM_PER_NODE=128G ARRAY_CONCURRENCY=5 \
-GRID_SIZE=11 MAX_LOOP=1 \
 OUTPUT_BASE_DIR=./smoke_test \
-DRY_RUN=0 SUBMIT_GRID_SEARCH=1 SUBMIT_REPLAY_CACHE=1 SUBMIT_IQL=1 \
+GRID_SIZE=11 MAX_LOOP=1 \
+SUBMIT_GRID_SEARCH=1 SUBMIT_REPLAY_CACHE=1 SUBMIT_IQL=1 \
   ./run_scripts/submit_collect_trajectories_cpu_array.sh
 ```
 
@@ -209,6 +275,9 @@ renders plots/movie from the live `tmtx` object before the process exits.
     movie.mp4
   tokamaker_torax_logs/          # TORAX solver output
 ```
+
+Default single-checkpoint evals write under `<DATASET_DIR>/eval/<RUN_ID>/`.
+Default batch evals write under `<DATASET_DIR>/eval_batch/<JOB_ID>/`.
 
 Batch eval also writes `<OUTPUT_ROOT>/batch_eval_summary.json` with status and
 elapsed time for every checkpoint.

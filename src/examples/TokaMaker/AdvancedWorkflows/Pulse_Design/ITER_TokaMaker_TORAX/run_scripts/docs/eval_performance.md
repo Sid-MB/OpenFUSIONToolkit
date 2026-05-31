@@ -188,7 +188,7 @@ CHECKPOINTS_FILE=my_checkpoints.txt \
 from rl.eval import run_actor_eval_from_config
 result = run_actor_eval_from_config(
     actor_checkpoint="out/iql/<run>/iql_weights.pt",
-    output_dir="out/iql_eval/my_run",
+    output_dir="./my_dataset/eval/my_run",
     dataset_dir="./rl_dataset_eval_smoke_1_20260528_130200",
     max_loop=2,
     grid_size=51,

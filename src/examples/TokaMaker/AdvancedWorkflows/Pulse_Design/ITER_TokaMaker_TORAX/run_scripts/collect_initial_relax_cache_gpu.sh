@@ -6,8 +6,8 @@
 #SBATCH --mem=128G
 #SBATCH --cpus-per-task=4
 #SBATCH --partition=jag-standard
-#SBATCH --output=logs/%x-%j.out
-#SBATCH --error=logs/%x-%j.err
+#SBATCH --output=/dev/null
+#SBATCH --error=/dev/null
 
 # Purpose:
 #   Build one shared initial TORAX relax cache on a jag-standard GPU node and
@@ -47,6 +47,10 @@ OUTPUT_BASE_DIR="${OUTPUT_BASE_DIR:-./rl_dataset_delta_sampling_maxloop=2_grid_5
 # otherwise a keyed file in INITIAL_RELAX_CACHE_DIR is used (resolved below).
 INITIAL_RELAX_CACHE="${INITIAL_RELAX_CACHE:-}"
 INITIAL_RELAX_CACHE_DIR="${INITIAL_RELAX_CACHE_DIR:-}"
+RUN_LOG_DIR="${RUN_LOG_DIR:-${OUTPUT_BASE_DIR%/}/logs}"
+mkdir -p "${RUN_LOG_DIR}"
+exec > >(tee -a "${RUN_LOG_DIR}/collect_initial_relax_cache_gpu-${SLURM_JOB_ID:-$$}.out") \
+  2> >(tee -a "${RUN_LOG_DIR}/collect_initial_relax_cache_gpu-${SLURM_JOB_ID:-$$}.err" >&2)
 
 export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-4}"

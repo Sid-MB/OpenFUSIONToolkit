@@ -4,8 +4,8 @@
 #SBATCH --cpus-per-task=20
 #SBATCH --mem=128G
 #SBATCH --partition=john
-#SBATCH --output=logs/%x-%j.out
-#SBATCH --error=logs/%x-%j.err
+#SBATCH --output=/dev/null
+#SBATCH --error=/dev/null
 
 set -euo pipefail
 
@@ -19,6 +19,10 @@ cd "${PROJECT_DIR}"
 
 DATASET_DIR="${DATASET_DIR:?Set DATASET_DIR to the collected dataset root}"
 : "${SLURM_CPUS_PER_TASK:?SLURM_CPUS_PER_TASK must be set by Slurm or sbatch --cpus-per-task}"
+RUN_LOG_DIR="${RUN_LOG_DIR:-${DATASET_DIR%/}/logs}"
+mkdir -p "${RUN_LOG_DIR}"
+exec > >(tee -a "${RUN_LOG_DIR}/materialize_replay_cache-${SLURM_JOB_ID:-$$}.out") \
+  2> >(tee -a "${RUN_LOG_DIR}/materialize_replay_cache-${SLURM_JOB_ID:-$$}.err" >&2)
 
 export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK}"

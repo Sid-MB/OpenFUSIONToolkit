@@ -35,7 +35,7 @@
 #
 # Key optional env vars (all have defaults):
 #   N_WORKERS          parallel eval processes (default: 4)
-#   OUTPUT_ROOT        root dir for all per-eval output dirs (default: out/iql_eval_batch/<id>)
+#   OUTPUT_ROOT        root dir for all per-eval output dirs (default: <DATASET_DIR>/eval_batch/<id>)
 #   DATASET_DIR        dataset for normalizer reconstruction (optional if ckpt has normalizers)
 #   MAX_LOOP           MHD coupling loops per eval (default: 2)
 #   GRID_SIZE          TORAX radial grid points (default: 51)
@@ -49,8 +49,8 @@
 #SBATCH --cpus-per-task=20
 #SBATCH --mem=256G
 #SBATCH --partition=john
-#SBATCH --output=logs/%x-%j.out
-#SBATCH --error=logs/%x-%j.err
+#SBATCH --output=/dev/null
+#SBATCH --error=/dev/null
 
 set -euo pipefail
 
@@ -73,7 +73,11 @@ fi
 
 ACTOR_CHECKPOINTS="${ACTOR_CHECKPOINTS:-}"
 CHECKPOINTS_FILE="${CHECKPOINTS_FILE:-}"
-OUTPUT_ROOT="${OUTPUT_ROOT:-out/iql_eval_batch/${SLURM_JOB_ID:-$(date +%Y%m%d_%H%M%S)}}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-${DATASET_DIR%/}/eval_batch/${SLURM_JOB_ID:-$(date +%Y%m%d_%H%M%S)}}"
+RUN_LOG_DIR="${RUN_LOG_DIR:-${OUTPUT_ROOT%/}/logs}"
+mkdir -p "${RUN_LOG_DIR}"
+exec > >(tee -a "${RUN_LOG_DIR}/eval_iql_actor_cpu_batch-${SLURM_JOB_ID:-$$}.out") \
+  2> >(tee -a "${RUN_LOG_DIR}/eval_iql_actor_cpu_batch-${SLURM_JOB_ID:-$$}.err" >&2)
 WANDB_GROUP="${WANDB_GROUP:-${SLURM_JOB_ID:-$(date +%Y%m%d_%H%M%S)}}"
 DATASET_DIR="${DATASET_DIR:-}"
 WANDB_PROJECT="${WANDB_PROJECT:-iql-training}"

@@ -2,6 +2,7 @@
 
 For **data collection** use `submit_collect_trajectories_cpu_array.sh`.
 For **evaluation** (single checkpoint) use `eval_iql_actor_cpu.sh`.
+For **evaluation** (baseline fallback, no checkpoint) use `eval_baseline_cpu.sh`.
 For **evaluation** (many checkpoints in parallel) use `eval_iql_actor_cpu_batch.sh`.
 
 See also `docs/eval_performance.md` for the compile-once / persistent-cache
@@ -16,6 +17,11 @@ optimizations that make all eval scripts fast.
     pays compilation cost; later segments (and later runs) load from `.jax_cache/`.
   - Required env var: `ACTOR_CHECKPOINT=<path/to/iql_weights.pt>`
   - GPU counterpart: `eval_iql_actor.sh` (requests `jag-standard` partition).
+
+- `eval_baseline_cpu.sh` _(direct use: `sbatch run_scripts/eval_baseline_cpu.sh`)_
+  - Evaluates the built-in TORAX baseline fallback on `john` (CPU) with no checkpoint.
+  - Uses the same live postprocess path as the trained-actor eval so you get the same plots/movie.
+  - Required env var: `DATASET_DIR=<dataset root>`
 
 - `eval_iql_actor_cpu_batch.sh` _(direct use: `sbatch run_scripts/eval_iql_actor_cpu_batch.sh`)_
   - Evaluates **multiple** checkpoints in parallel on `john` (CPU).

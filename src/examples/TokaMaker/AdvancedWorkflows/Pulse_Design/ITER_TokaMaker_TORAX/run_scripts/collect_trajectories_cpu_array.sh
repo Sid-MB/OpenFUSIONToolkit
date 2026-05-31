@@ -5,8 +5,8 @@
 #SBATCH --mem=128G
 #SBATCH --partition=john
 #SBATCH --array=0-399%32
-#SBATCH --output=logs/%x-%A_%a.out
-#SBATCH --error=logs/%x-%A_%a.err
+#SBATCH --output=/dev/null
+#SBATCH --error=/dev/null
 
 # Purpose:
 #   Slurm array worker for CPU trajectory generation on john. Each array task
@@ -107,6 +107,11 @@ require_env N_WORKERS
 require_env CHUNK_SIZE
 require_env OUTPUT_BASE_DIR
 require_env USE_INITIAL_RELAX_CACHE
+
+RUN_LOG_DIR="${RUN_LOG_DIR:-${OUTPUT_BASE_DIR%/}/logs}"
+mkdir -p "${RUN_LOG_DIR}"
+exec > >(tee -a "${RUN_LOG_DIR}/collect_trajectories-${SLURM_ARRAY_JOB_ID:-$$}_${SLURM_ARRAY_TASK_ID:-0}.out") \
+  2> >(tee -a "${RUN_LOG_DIR}/collect_trajectories-${SLURM_ARRAY_JOB_ID:-$$}_${SLURM_ARRAY_TASK_ID:-0}.err" >&2)
 
 TOTAL_CPUS="${SLURM_CPUS_PER_TASK}"
 if [ -z "${THREADS_PER_WORKER:-}" ]; then

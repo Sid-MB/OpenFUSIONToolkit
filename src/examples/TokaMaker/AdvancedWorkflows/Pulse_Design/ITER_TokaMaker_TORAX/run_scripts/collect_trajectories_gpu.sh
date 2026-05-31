@@ -6,8 +6,8 @@
 #SBATCH --mem=128G
 #SBATCH --cpus-per-task=4
 #SBATCH --partition=jag-standard
-#SBATCH --output=logs/%x-%j.out
-#SBATCH --error=logs/%x-%j.err
+#SBATCH --output=/dev/null
+#SBATCH --error=/dev/null
 
 # Purpose:
 #   Run trajectories in a single GPU Slurm job on jag-standard. It uses
@@ -48,6 +48,10 @@ GRID_SIZE="${GRID_SIZE:-51}"
 TRAJECTORY_TIMEOUT_SECONDS="${TRAJECTORY_TIMEOUT_SECONDS:-7200}"
 RUN_ID="${SLURM_JOB_ID:-$(date +%Y%m%d_%H%M%S)}"
 OUTPUT_DIR="${OUTPUT_DIR:-./rl_dataset_delta_sampling_maxloop=2_grid_51_${OFT_SELECTED_FLAVOR}_${RUN_ID}}"
+RUN_LOG_DIR="${RUN_LOG_DIR:-${OUTPUT_DIR%/}/logs}"
+mkdir -p "${RUN_LOG_DIR}"
+exec > >(tee -a "${RUN_LOG_DIR}/collect_trajectories_gpu-${SLURM_JOB_ID:-$$}.out") \
+  2> >(tee -a "${RUN_LOG_DIR}/collect_trajectories_gpu-${SLURM_JOB_ID:-$$}.err" >&2)
 
 export PYTHONUNBUFFERED=1
 

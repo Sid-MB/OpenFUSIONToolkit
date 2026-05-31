@@ -39,7 +39,7 @@
 #     /bin/bash run_scripts/eval_iql_actor_cpu.sh
 #
 # Key optional env vars (all have defaults):
-#   OUTPUT_DIR               where results are written (default: out/iql_eval/<RUN_ID>)
+#   OUTPUT_DIR               where results are written (default: <DATASET_DIR>/eval/<RUN_ID>)
 #   MAX_LOOP                 MHD coupling loops (default: 2)
 #   GRID_SIZE                TORAX radial grid points (default: 51)
 #   WANDB_PROJECT            wandb project name (default: iql-training)
@@ -53,8 +53,8 @@
 #SBATCH --cpus-per-task=20
 #SBATCH --mem=128G
 #SBATCH --partition=john
-#SBATCH --output=logs/%x-%j.out
-#SBATCH --error=logs/%x-%j.err
+#SBATCH --output=/dev/null
+#SBATCH --error=/dev/null
 
 set -euo pipefail
 
@@ -71,7 +71,11 @@ source "${OFT_ROOT}/scripts/oft_arch/select_oft_install.sh"
 ACTOR_CHECKPOINT="${ACTOR_CHECKPOINT:?Set ACTOR_CHECKPOINT to iql_weights.pt or checkpoint_step_*.pt}"
 DATASET_DIR="${DATASET_DIR:-}"
 RUN_ID="${RUN_ID:-$(basename "${ACTOR_CHECKPOINT%.pt}")_eval_cpu_${SLURM_JOB_ID:-$(date +%Y%m%d_%H%M%S)}}"
-OUTPUT_DIR="${OUTPUT_DIR:-out/iql_eval/${RUN_ID}}"
+OUTPUT_DIR="${OUTPUT_DIR:-${DATASET_DIR%/}/eval/${RUN_ID}}"
+RUN_LOG_DIR="${RUN_LOG_DIR:-${OUTPUT_DIR%/}/logs}"
+mkdir -p "${RUN_LOG_DIR}"
+exec > >(tee -a "${RUN_LOG_DIR}/eval_iql_actor_cpu-${SLURM_JOB_ID:-$$}.out") \
+  2> >(tee -a "${RUN_LOG_DIR}/eval_iql_actor_cpu-${SLURM_JOB_ID:-$$}.err" >&2)
 WANDB_PROJECT="${WANDB_PROJECT:-iql-training}"
 RUN_NAME="${RUN_NAME:-${RUN_ID}}"
 WANDB_GROUP="${WANDB_GROUP:-${SLURM_JOB_ID:-${RUN_ID}}}"

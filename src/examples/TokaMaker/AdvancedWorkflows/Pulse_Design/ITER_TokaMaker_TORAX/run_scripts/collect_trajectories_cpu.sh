@@ -4,8 +4,8 @@
 #SBATCH --cpus-per-task=20
 #SBATCH --mem=128G
 #SBATCH --partition=john
-#SBATCH --output=logs/%x-%j.out
-#SBATCH --error=logs/%x-%j.err
+#SBATCH --output=/dev/null
+#SBATCH --error=/dev/null
 
 # Purpose:
 #   Run trajectories in a single non-array Slurm job on the john CPU partition.
@@ -51,6 +51,10 @@ SEED="${SEED:-42}"
 MAX_LOOP="${MAX_LOOP:-2}"
 GRID_SIZE="${GRID_SIZE:-51}"
 TRAJECTORY_TIMEOUT_SECONDS="${TRAJECTORY_TIMEOUT_SECONDS:-7200}"
+RUN_LOG_DIR="${RUN_LOG_DIR:-${OUTPUT_DIR%/}/logs}"
+mkdir -p "${RUN_LOG_DIR}"
+exec > >(tee -a "${RUN_LOG_DIR}/collect_trajectories_cpu-${SLURM_JOB_ID:-$$}.out") \
+  2> >(tee -a "${RUN_LOG_DIR}/collect_trajectories_cpu-${SLURM_JOB_ID:-$$}.err" >&2)
 
 # Force the CPU path even if this script is run from a GPU-capable login node.
 export CUDA_VISIBLE_DEVICES=-1

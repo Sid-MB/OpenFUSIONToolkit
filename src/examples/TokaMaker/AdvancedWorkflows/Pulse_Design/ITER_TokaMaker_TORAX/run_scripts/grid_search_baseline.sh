@@ -16,8 +16,8 @@
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=128G
 #SBATCH --partition=john
-#SBATCH --output=logs/%x-%j.out
-#SBATCH --error=logs/%x-%j.err
+#SBATCH --output=/dev/null
+#SBATCH --error=/dev/null
 
 set -euo pipefail
 
@@ -30,6 +30,10 @@ fi
 cd "${PROJECT_DIR}"
 
 : "${DATASET_DIR:?Set DATASET_DIR to the collected dataset root}"
+RUN_LOG_DIR="${RUN_LOG_DIR:-${DATASET_DIR%/}/logs}"
+mkdir -p "${RUN_LOG_DIR}"
+exec > >(tee -a "${RUN_LOG_DIR}/grid_search_baseline-${SLURM_JOB_ID:-$$}.out") \
+  2> >(tee -a "${RUN_LOG_DIR}/grid_search_baseline-${SLURM_JOB_ID:-$$}.err" >&2)
 
 export PYTHONUNBUFFERED=1
 

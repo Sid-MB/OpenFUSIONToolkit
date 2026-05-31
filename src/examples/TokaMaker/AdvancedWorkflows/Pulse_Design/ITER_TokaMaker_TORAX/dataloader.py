@@ -183,7 +183,8 @@ def load_json(path):
 
 def create_run_manifest(*, n_trajectories, seed, max_loop, grid_size,
                         decision_times, rl_times, action_bounds,
-                        sampler, start_idx=None, end_idx=None):
+                        sampler, observation_mode='legacy',
+                        start_idx=None, end_idx=None):
     return {
         'schema_version': DATASET_SCHEMA_VERSION,
         'created_at': utc_now_iso(),
@@ -191,6 +192,7 @@ def create_run_manifest(*, n_trajectories, seed, max_loop, grid_size,
         'seed': int(seed),
         'max_loop': int(max_loop),
         'grid_size': int(grid_size),
+        'observation_mode': str(observation_mode),
         'decision_times': [int(t) for t in decision_times],
         'rl_times': [int(t) for t in rl_times],
         'action_bounds': copy.deepcopy(action_bounds),
@@ -211,18 +213,24 @@ def create_run_manifest(*, n_trajectories, seed, max_loop, grid_size,
 
 
 def manifest_comparison_subset(manifest):
+    # Older manifests predate observation_mode; treat them as legacy so
+    # existing datasets remain reusable when the default schema is requested.
+    observation_mode = manifest.get('observation_mode', 'legacy')
     keys = (
         'schema_version',
         'n_trajectories',
         'seed',
         'max_loop',
         'grid_size',
+        'observation_mode',
         'decision_times',
         'rl_times',
         'action_bounds',
         'sampler',
     )
-    return {key: manifest.get(key) for key in keys}
+    subset = {key: manifest.get(key) for key in keys}
+    subset['observation_mode'] = observation_mode
+    return subset
 
 
 def compare_manifests(existing, expected):

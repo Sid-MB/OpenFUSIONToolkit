@@ -6,8 +6,8 @@
 #SBATCH --gres=gpu:1
 #SBATCH --constraint=48G
 #SBATCH --partition=jag-standard
-#SBATCH --output=logs/%x-%j.out
-#SBATCH --error=logs/%x-%j.err
+#SBATCH --output=/dev/null
+#SBATCH --error=/dev/null
 
 set -euo pipefail
 
@@ -25,6 +25,10 @@ ACTOR_CHECKPOINT="${ACTOR_CHECKPOINT:?Set ACTOR_CHECKPOINT to iql_weights.pt or 
 DATASET_DIR="${DATASET_DIR:-}"
 RUN_ID="${RUN_ID:-$(basename "${ACTOR_CHECKPOINT%.pt}")_eval_${SLURM_JOB_ID:-$(date +%Y%m%d_%H%M%S)}}"
 OUTPUT_DIR="${OUTPUT_DIR:-out/iql_eval/${RUN_ID}}"
+RUN_LOG_DIR="${RUN_LOG_DIR:-${OUTPUT_DIR%/}/logs}"
+mkdir -p "${RUN_LOG_DIR}"
+exec > >(tee -a "${RUN_LOG_DIR}/eval_iql_actor-${SLURM_JOB_ID:-$$}.out") \
+  2> >(tee -a "${RUN_LOG_DIR}/eval_iql_actor-${SLURM_JOB_ID:-$$}.err" >&2)
 WANDB_PROJECT="${WANDB_PROJECT:-iql-training}"
 RUN_NAME="${RUN_NAME:-${RUN_ID}}"
 WANDB_GROUP="${WANDB_GROUP:-${SLURM_JOB_ID:-${RUN_ID}}}"

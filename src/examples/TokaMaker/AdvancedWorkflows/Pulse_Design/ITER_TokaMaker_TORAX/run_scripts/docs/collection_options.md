@@ -13,7 +13,7 @@ Slurm and to `collect_trajectories_delta.py` (argparse).
 | `END_IDX` | — | Last trajectory index (exclusive) |
 | `N_TRAJECTORIES` | — | Total expected trajectories (used for seed-file generation) |
 | `CHUNK_SIZE` | `1` | Trajectories per array task (increase if array size > 1001) |
-| `ARRAY_CONCURRENCY` | — | Max simultaneously running array tasks |
+| `ARRAY_CONCURRENCY` | `64` | Max simultaneously running array tasks; lower it for smaller jobs or tighter clusters |
 | `SLURM_MAX_ARRAY_SIZE` | `1001` | Cluster limit; `sbatch --array` IDs must be < this |
 
 ### Resources (per array task)
@@ -48,7 +48,7 @@ overcommitting a single Slurm task.
 | `SAVE_REPLAY_SHARD` | `1` (argparse) | Write compact `replay_shards/*.npz` (preferred) |
 | `SAVE_FULL_ZARR` | `0` | Also write full rich TORAX Zarr traces |
 | `SAVE_JSON` | `0` | Also write legacy compact JSON files |
-| `OBSERVATION_MODE` | `legacy` | Observation schema for trajectory state construction: `legacy`, `prev_action`, or `plasma_only` |
+| `OBSERVATION_MODE` | `legacy` | Observation schema for trajectory state construction: use `prev_action` for normal new datasets; use `plasma_only` only for ablations or when you intentionally want no action history. |
 
 ### Dependent Jobs
 | Variable | Default | Description |
@@ -70,13 +70,15 @@ overcommitting a single Slurm task.
 | Variable | Default | Description |
 |---|---|---|
 | `OUTPUT_BASE_DIR` | auto-timestamped | Root directory for all outputs |
-| `RUN_LOG_DIR` | `logs/<basename>` | Grouped Slurm log directory |
+| `RUN_LOG_DIR` | `<OUTPUT_BASE_DIR>/logs` | Grouped Slurm log directory |
 | `DRY_RUN` | `0` | `1` to print derived shape without submitting |
 
 ## Full Output Tree
 
 ```
 <OUTPUT_BASE_DIR>/
+  .gitignore                            # ignores all generated run artifacts by default
+  logs/                                 # Slurm stdout/stderr for the run
   run_manifest.json                         # seed file, grid, MAX_LOOP, sampler
   all_actions.npy                           # action space array
   replay_shards/
@@ -107,10 +109,10 @@ overcommitting a single Slurm task.
 ## Slurm Log Locations
 
 ```
-logs/<run>/collect_trajectories-<array_job>_<task>.{out,err}
-logs/<run>/grid_search_baseline-<job>.out
-logs/<run>/materialize_replay_cache-<job>.out
-logs/<run>/train_iql-<job>.out
+<OUTPUT_BASE_DIR>/logs/collect_trajectories-<array_job>_<task>.{out,err}
+<OUTPUT_BASE_DIR>/logs/grid_search_baseline-<job>.out
+<OUTPUT_BASE_DIR>/logs/materialize_replay_cache-<job>.out
+<OUTPUT_BASE_DIR>/logs/train_iql-<job>.out
 ```
 
 ## Notes

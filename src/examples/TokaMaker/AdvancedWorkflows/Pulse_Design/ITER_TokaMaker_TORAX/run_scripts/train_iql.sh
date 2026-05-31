@@ -20,8 +20,8 @@
 #SBATCH --gres=gpu:1
 #SBATCH --constraint=48G
 #SBATCH --partition=jag-standard
-#SBATCH --output=logs/%x-%j.out
-#SBATCH --error=logs/%x-%j.err
+#SBATCH --output=/dev/null
+#SBATCH --error=/dev/null
 
 set -euo pipefail
 
@@ -36,6 +36,11 @@ OFT_ROOT="$(cd "${PROJECT_DIR}/../../../../../../" && pwd -P)"
 source "${OFT_ROOT}/scripts/oft_arch/select_oft_install.sh"
 
 : "${DATASET_DIR:?Set DATASET_DIR to the collected dataset root}"
+
+RUN_LOG_DIR="${RUN_LOG_DIR:-${DATASET_DIR%/}/logs}"
+mkdir -p "${RUN_LOG_DIR}"
+exec > >(tee -a "${RUN_LOG_DIR}/train_iql-${SLURM_JOB_ID:-$$}.out") \
+  2> >(tee -a "${RUN_LOG_DIR}/train_iql-${SLURM_JOB_ID:-$$}.err" >&2)
 
 export PYTHONUNBUFFERED=1
 if [ -n "${SLURM_CPUS_PER_TASK:-}" ]; then

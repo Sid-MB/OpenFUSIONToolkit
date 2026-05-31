@@ -153,7 +153,7 @@ require_env END_IDX
 N_WORKERS="${N_WORKERS:-1}"
 if [ "${REUSE_EXISTING_DATASET}" = "0" ]; then
   require_env CHUNK_SIZE
-  require_env ARRAY_CONCURRENCY
+  ARRAY_CONCURRENCY="${ARRAY_CONCURRENCY:-64}"
   require_env SLURM_MAX_ARRAY_SIZE
 fi
 # CPU and memory requests have defaults that work well; override per job class
@@ -164,8 +164,7 @@ require_env USE_INITIAL_RELAX_CACHE
 require_env OUTPUT_BASE_DIR
 
 if [ -z "${RUN_LOG_DIR:-}" ]; then
-  output_slug="$(basename "${OUTPUT_BASE_DIR%/}")"
-  RUN_LOG_DIR="logs/${output_slug}"
+  RUN_LOG_DIR="${OUTPUT_BASE_DIR%/}/logs"
 fi
 require_env RUN_LOG_DIR
 require_env DRY_RUN
@@ -300,6 +299,9 @@ fi
 
 mkdir -p "${OUTPUT_BASE_DIR}"
 mkdir -p "${RUN_LOG_DIR}"
+if [ ! -e "${OUTPUT_BASE_DIR}/.gitignore" ]; then
+  printf '*\n' > "${OUTPUT_BASE_DIR}/.gitignore"
+fi
 
 if [ "${REUSE_EXISTING_DATASET}" = "0" ]; then
   if [ -s "${OUTPUT_BASE_DIR}/run_manifest.json" ] || [ -d "${OUTPUT_BASE_DIR}/replay_shards" ]; then
