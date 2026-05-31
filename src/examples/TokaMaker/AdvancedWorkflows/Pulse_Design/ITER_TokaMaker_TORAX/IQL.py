@@ -79,7 +79,15 @@ class ValueNetwork(nn.Module):
         return self.net(state)
 
 class Actor(nn.Module):
-    def __init__(self, action_max, state_dim: int, action_dim: int, hidden_dim: int = 256):
+    def __init__(
+        self,
+        action_max,
+        state_dim: int,
+        action_dim: int,
+        hidden_dim: int = 256,
+        action_mode: str = "absolute",
+        action_context_indices=None,
+    ):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(state_dim, hidden_dim),
@@ -87,22 +95,35 @@ class Actor(nn.Module):
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, action_dim),
-            nn.Sigmoid()
         )
         self.register_buffer("action_max", torch.as_tensor(action_max, dtype=torch.float32))
+        self.action_mode = action_mode
+        self.action_context_indices = tuple(action_context_indices or [])
 
     def forward(self, state):
-        return self.net(state)
+        raw = self.net(state)
+        if self.action_mode == "residual_prev_action":
+            return torch.tanh(raw)
+        return torch.sigmoid(raw)
 
-    def act(self, state):
-        return self.net(state) * self.action_max
+    def act(self, state, prev_action=None):
+        raw = self.net(state)
+        if self.action_mode == "residual_prev_action":
+            delta = torch.tanh(raw) * self.action_max
+            if prev_action is None:
+                prev_action = torch.zeros_like(delta)
+            return torch.clamp(prev_action + delta, min=torch.zeros_like(delta), max=self.action_max)
+        return torch.sigmoid(raw) * self.action_max
 
 class IQL:
     def __init__(self, action_max, state_dim: int, action_dim: int, 
                  tau: float = 0.7, beta: float = 3.0, 
                  gamma: float = 0.99, lr: float = 1e-4,
                  hidden_dim: int = 256,
-                 device=None):
+                 device=None,
+                 action_mode: str = "absolute",
+                 action_context_indices=None,
+                 action_rate_penalty: float = 0.0):
         self.device = torch.device(device or "cpu")
         self.state_dim = state_dim
         self.action_dim = action_dim
@@ -114,7 +135,14 @@ class IQL:
         self.q2_target.load_state_dict(self.q2.state_dict())
         
         self.v = ValueNetwork(state_dim, hidden_dim).to(self.device)
-        self.actor = Actor(action_max, state_dim, action_dim, hidden_dim).to(self.device)
+        self.actor = Actor(
+            action_max,
+            state_dim,
+            action_dim,
+            hidden_dim,
+            action_mode=action_mode,
+            action_context_indices=action_context_indices,
+        ).to(self.device)
         
         self.q1_opt = torch.optim.Adam(self.q1.parameters(), lr=lr)
         self.q2_opt = torch.optim.Adam(self.q2.parameters(), lr=lr)
@@ -124,6 +152,13 @@ class IQL:
         self.tau = tau
         self.beta = beta
         self.gamma = gamma
+        self.action_rate_penalty = float(action_rate_penalty)
+        self._state_mean_tensor = None
+        self._state_std_tensor = None
+
+    def set_normalizers(self, state_mean, state_std):
+        self._state_mean_tensor = torch.as_tensor(state_mean, dtype=torch.float32, device=self.device)
+        self._state_std_tensor = torch.as_tensor(state_std, dtype=torch.float32, device=self.device)
 
     def soft_update_targets(self):
         """Polyak averaging for target networks"""
@@ -188,9 +223,22 @@ class IQL:
             adv = q - v
             exp_adv = torch.exp(self.beta * adv).clamp(max=100.0)
         
+        action_target = actions
         action_pred = self.actor(states)
-        bc_loss = F.mse_loss(action_pred, actions, reduction='none').sum(-1, keepdim=True)
-        actor_loss = (exp_adv * bc_loss).mean()
+        if self.actor.action_mode == "residual_prev_action" and self.actor.action_context_indices:
+            prev_action = torch.stack(
+                [
+                    (states[:, idx] * self._state_std_tensor[idx] + self._state_mean_tensor[idx]) / self.actor.action_max[i]
+                    for i, idx in enumerate(self.actor.action_context_indices)
+                ],
+                dim=-1,
+            )
+            action_target = actions - prev_action
+        bc_loss = F.mse_loss(action_pred, action_target, reduction='none').sum(-1, keepdim=True)
+        rate_loss = torch.zeros_like(bc_loss)
+        if self.action_rate_penalty > 0 and self.actor.action_mode == "residual_prev_action":
+            rate_loss = (action_pred ** 2).sum(dim=-1, keepdim=True)
+        actor_loss = (exp_adv * (bc_loss + self.action_rate_penalty * rate_loss)).mean()
         
         self.actor_opt.zero_grad()
         actor_loss.backward()
@@ -207,6 +255,7 @@ class IQL:
             "loss/v": v_loss.item(),
             "loss/actor": actor_loss.item(),
             "loss/bc_unweighted": bc_loss.mean().item(),
+            "loss/action_rate": rate_loss.mean().item(),
             "values/q_target_mean": target_q.mean().item(),
             "values/q1_mean": q1.mean().item(),
             "values/q2_mean": q2.mean().item(),
@@ -332,6 +381,15 @@ def evaluate_iql(iql, batch, include_histograms):
         q_data = torch.min(q1_data, q2_data)
         v_data = iql.v(states)
         policy_actions = iql.actor(states)
+        if iql.actor.action_mode == "residual_prev_action" and iql.actor.action_context_indices and iql._state_mean_tensor is not None:
+            prev_action = torch.stack(
+                [
+                    (states[:, idx] * iql._state_std_tensor[idx] + iql._state_mean_tensor[idx]) / iql.actor.action_max[i]
+                    for i, idx in enumerate(iql.actor.action_context_indices)
+                ],
+                dim=-1,
+            )
+            policy_actions = prev_action + policy_actions
         q1_policy = iql.q1(states, policy_actions)
         q2_policy = iql.q2(states, policy_actions)
         q_policy = torch.min(q1_policy, q2_policy)
@@ -377,6 +435,9 @@ def train_iql(
     eval_interval,
     eval_histogram_interval,
     normalizers,
+    checkpoint_eval_interval,
+    checkpoint_eval_metric,
+    checkpoint_eval_kwargs,
 ):
     dataloader = DataLoader(buffer, batch_size=batch_size, shuffle=True)
     
@@ -396,6 +457,8 @@ def train_iql(
             logger.warning("Skipping incompatible checkpoint %s: %s", resume_from, exc)
     
     batches = itertools.cycle(dataloader)
+    best_eval_score = None
+    best_eval_checkpoint = None
     for step in range(start_step, num_steps):
         batch = next(batches)
         metrics = iql.update(batch)
@@ -413,6 +476,7 @@ def train_iql(
                 wandb.log(eval_metrics, step=step)
         
         if checkpoint_interval > 0 and step % checkpoint_interval == 0 and step > 0:
+            checkpoint_path = Path(checkpoint_dir) / f"checkpoint_step_{step}.pt"
             torch.save({
                 'actor': iql.actor.state_dict(),
                 'q1': iql.q1.state_dict(),
@@ -424,9 +488,40 @@ def train_iql(
                 'action_max': iql.actor.action_max.cpu(),
                 'state_dim': iql.state_dim,
                 'action_dim': iql.action_dim,
+                'action_mode': getattr(iql.actor, "action_mode", "absolute"),
+                'action_rate_penalty': getattr(iql, "action_rate_penalty", 0.0),
                 **(normalizers or {}),
-            }, f'{checkpoint_dir}/checkpoint_step_{step}.pt')
+            }, checkpoint_path)
             logger.info("Saved checkpoint at step %s", step)
+            if checkpoint_eval_interval > 0 and step % checkpoint_eval_interval == 0:
+                try:
+                    from rl.eval import run_actor_eval_from_config
+
+                    eval_result = run_actor_eval_from_config(
+                        actor_checkpoint=str(checkpoint_path),
+                        output_dir=str(Path(checkpoint_dir) / f"checkpoint_eval_step_{step}"),
+                        render_plots=False,
+                        render_movie=False,
+                        render_summary=False,
+                        **(checkpoint_eval_kwargs or {}),
+                    )
+                    score = float(eval_result.get("metrics", {}).get(checkpoint_eval_metric, float("-inf")))
+                    if best_eval_score is None or score > best_eval_score:
+                        best_eval_score = score
+                        best_eval_checkpoint = str(checkpoint_path)
+                        with (Path(checkpoint_dir) / "best_closed_loop_checkpoint.json").open("w") as f:
+                            json.dump(
+                                {
+                                    "best_checkpoint": best_eval_checkpoint,
+                                    "best_score": best_eval_score,
+                                    "metric": checkpoint_eval_metric,
+                                    "step": step,
+                                },
+                                f,
+                                indent=2,
+                            )
+                except Exception as exc:
+                    logger.warning("Closed-loop checkpoint eval failed at step %s: %s", step, exc)
 
 def latest_checkpoint(checkpoint_dir):
     checkpoints = list(Path(checkpoint_dir).glob('checkpoint_step_*.pt'))
@@ -469,6 +564,10 @@ def train_from_config(
     actor_eval_grid_size,
     actor_eval_device,
     observation_mode,
+    action_mode,
+    action_rate_penalty,
+    checkpoint_eval_interval,
+    checkpoint_eval_metric,
     wandb_group=None,
 ):
     base_config = {
@@ -503,6 +602,10 @@ def train_from_config(
         "actor_eval_grid_size": actor_eval_grid_size,
         "actor_eval_device": actor_eval_device,
         "observation_mode": observation_mode,
+        "action_mode": action_mode,
+        "action_rate_penalty": action_rate_penalty,
+        "checkpoint_eval_interval": checkpoint_eval_interval,
+        "checkpoint_eval_metric": checkpoint_eval_metric,
     }
     wandb_init_kwargs = {"project": project, "config": base_config, "job_type": "train"}
     if run_name:
@@ -618,6 +721,17 @@ def train_from_config(
         seed=int(config["eval_seed"]),
         device=train_device,
     )
+    state_keys = specs["state_keys"]
+    action_context_indices = []
+    if config.get("observation_mode") == "prev_action":
+        for key in ("prev_ecrh", "prev_nbi"):
+            if key not in state_keys:
+                raise ValueError(
+                    f"observation_mode=prev_action requires {key!r} in dataset state_keys, got {state_keys}"
+                )
+            action_context_indices.append(state_keys.index(key))
+    elif config.get("observation_mode") == "legacy":
+        action_context_indices = []
     iql_agent = IQL(
         action_max,
         state_dim,
@@ -628,7 +742,11 @@ def train_from_config(
         lr=float(config["lr"]),
         hidden_dim=int(config["hidden_dim"]),
         device=train_device,
+        action_mode=str(config.get("action_mode", "absolute")),
+        action_context_indices=action_context_indices,
+        action_rate_penalty=float(config.get("action_rate_penalty", 0.0)),
     )
+    iql_agent.set_normalizers(normalizers["state_mean"], normalizers["state_std"])
 
     checkpoint_path = None
     if config["resume_from"] == 'auto':
@@ -652,6 +770,20 @@ def train_from_config(
             "state_mean": torch.as_tensor(normalizers["state_mean"]),
             "state_std": torch.as_tensor(normalizers["state_std"]),
         },
+        checkpoint_eval_interval=int(config.get("checkpoint_eval_interval", 0)),
+        checkpoint_eval_metric=str(config.get("checkpoint_eval_metric", "actor_eval/reward_total")),
+        checkpoint_eval_kwargs={
+            "dataset_dir": str(dataset_dir),
+            "project": project,
+            "run_name": f"{run.name or run.id}-checkpoint-eval",
+            "wandb_mode": "disabled",
+            "wandb_group": wandb_group,
+            "initial_relax_state": config.get("actor_eval_initial_relax_state"),
+            "initial_relax_cache_dir": config.get("actor_eval_initial_relax_cache_dir"),
+            "max_loop": int(config.get("actor_eval_max_loop", 0)),
+            "grid_size": int(config.get("actor_eval_grid_size", 51)),
+            "device": config.get("actor_eval_device"),
+        },
     )
 
     weights_path = output_dir / 'iql_weights.pt'
@@ -668,6 +800,11 @@ def train_from_config(
         'state_keys': specs["state_keys"],
         'state_dim': state_dim,
         'action_dim': action_dim,
+        'action_mode': str(config.get("action_mode", "absolute")),
+        'action_rate_penalty': float(config.get("action_rate_penalty", 0.0)),
+        'observation_mode': str(config.get("observation_mode", "legacy")),
+        'checkpoint_eval_interval': int(config.get("checkpoint_eval_interval", 0)),
+        'checkpoint_eval_metric': str(config.get("checkpoint_eval_metric", "actor_eval/reward_total")),
         'config': config,
     }, weights_path)
     logger.info("Saved final weights to %s", weights_path)
@@ -721,72 +858,227 @@ def modal_main():
 
 def parse_args(argv):
     parser = argparse.ArgumentParser(description="Train IQL on a collected TORAX trajectory dataset.")
-    parser.add_argument("--dataset_dir", required=True, help="Collected dataset root containing trajectories/")
-    parser.add_argument("--output_dir", default=None, help="Directory for checkpoints, config, and final weights")
-    parser.add_argument("--batch_size", type=int, default=128)
-    parser.add_argument("--num_steps", type=int, default=20000)
-    parser.add_argument("--project", default=os.environ.get("WANDB_PROJECT", "iql-training"))
-    parser.add_argument("--run_name", default=None)
+    parser.add_argument(
+        "--dataset_dir",
+        required=True,
+        help="Root of the collected offline dataset. Must contain the replay shards / trajectory files used for training.",
+    )
+    parser.add_argument(
+        "--output_dir",
+        default=None,
+        help="Directory for checkpoints, config, and final weights. Defaults to out/iql/<dataset_name>.",
+    )
+    parser.add_argument(
+        "--batch_size",
+        type=int,
+        default=128,
+        help="Minibatch size for offline IQL updates. Larger values are steadier but use more memory.",
+    )
+    parser.add_argument(
+        "--num_steps",
+        type=int,
+        default=20000,
+        help="Number of gradient steps. Increase for final runs; reduce for debugging / quick sweeps.",
+    )
+    parser.add_argument(
+        "--project",
+        default=os.environ.get("WANDB_PROJECT", "iql-training"),
+        help="Weights & Biases project name.",
+    )
+    parser.add_argument("--run_name", default=None, help="Optional W&B run name.")
     parser.add_argument(
         "--wandb_group",
         default=os.environ.get("WANDB_GROUP"),
-        help="W&B group name to tie related training/eval runs together.",
+        help="W&B group for related training/eval runs. Useful for tying checkpoints, evals, and ablations together.",
     )
-    parser.add_argument("--resume_from", default="auto", help="Checkpoint path, 'auto', or empty string to disable resume")
-    parser.add_argument("--wandb_mode", default=os.environ.get("WANDB_MODE"), help="Set to offline or disabled for debugging")
-    parser.add_argument("--checkpoint_interval", type=int, default=5000)
-    parser.add_argument("--log_interval", type=int, default=100)
-    parser.add_argument("--tau", type=float, default=0.7)
-    parser.add_argument("--beta", type=float, default=3.0)
-    parser.add_argument("--gamma", type=float, default=0.99)
-    parser.add_argument("--lr", type=float, default=1e-4)
-    parser.add_argument("--hidden_dim", type=int, default=256)
+    parser.add_argument(
+        "--resume_from",
+        default="auto",
+        help="Checkpoint path to resume from, 'auto' to use the latest checkpoint in output_dir, or empty string to disable resume.",
+    )
+    parser.add_argument(
+        "--wandb_mode",
+        default=os.environ.get("WANDB_MODE"),
+        help="W&B mode: online, offline, or disabled. Use offline for local debugging.",
+    )
+    parser.add_argument(
+        "--checkpoint_interval",
+        type=int,
+        default=5000,
+        help="Save a training checkpoint every N steps. Lower values are safer; higher values reduce I/O.",
+    )
+    parser.add_argument(
+        "--log_interval",
+        type=int,
+        default=100,
+        help="Log training metrics every N steps. Lower values give finer visibility at higher overhead.",
+    )
+    parser.add_argument(
+        "--tau",
+        type=float,
+        default=0.7,
+        help="Expectile for the value update. Higher values push V toward upper Q values more aggressively.",
+    )
+    parser.add_argument(
+        "--beta",
+        type=float,
+        default=3.0,
+        help="Advantage weight temperature for actor updates. Higher values make the policy more selective.",
+    )
+    parser.add_argument(
+        "--gamma",
+        type=float,
+        default=0.99,
+        help="Discount factor used in the offline TD target.",
+    )
+    parser.add_argument(
+        "--lr",
+        type=float,
+        default=1e-4,
+        help="Learning rate for all IQL optimizers.",
+    )
+    parser.add_argument(
+        "--hidden_dim",
+        type=int,
+        default=256,
+        help="Hidden width for the Q, V, and actor MLPs.",
+    )
     parser.add_argument(
         "--use_wandb_run_subdir",
         action=argparse.BooleanOptionalAction,
         default=True,
+        help="Write outputs into a W&B-run-specific subdirectory to avoid collisions between runs.",
     )
-    parser.add_argument("--eval_interval", type=int, default=1000)
-    parser.add_argument("--eval_batch_size", type=int, default=2048)
-    parser.add_argument("--eval_histogram_interval", type=int, default=5000)
-    parser.add_argument("--eval_seed", type=int, default=0)
+    parser.add_argument(
+        "--eval_interval",
+        type=int,
+        default=1000,
+        help="Run offline batch eval every N steps on held-out data.",
+    )
+    parser.add_argument(
+        "--eval_batch_size",
+        type=int,
+        default=2048,
+        help="Number of transitions used in each offline eval batch.",
+    )
+    parser.add_argument(
+        "--eval_histogram_interval",
+        type=int,
+        default=5000,
+        help="How often to attach expensive W&B histograms during offline eval.",
+    )
+    parser.add_argument(
+        "--eval_seed",
+        type=int,
+        default=0,
+        help="Seed used when sampling the offline eval batch.",
+    )
     parser.add_argument(
         "--device",
         default=os.environ.get("IQL_DEVICE", "auto"),
-        help="Training device: auto, cpu, cuda, cuda:0, etc.",
+        help="Training device: auto, cpu, cuda, cuda:0, etc. Use auto unless you have a reason to pin it.",
     )
     parser.add_argument(
         "--replay_cache_dir",
         default=None,
-        help="Optional compact replay cache directory. Defaults to <dataset_dir>/replay_cache.",
+        help="Optional compact replay cache directory. Use when dataset loading should be faster than reading the raw shards.",
     )
     parser.add_argument(
         "--use_replay_cache",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Use a compact replay cache when available.",
+        help="Use the compact replay cache when available. Disable only if you are debugging the raw dataset path.",
     )
     parser.add_argument(
         "--run_actor_eval",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Run a full TokaMaker_TORAX eval with fly(use_rl_actor=True) after training.",
+        help="Run a full closed-loop TORAX eval after training. Leave on for final runs; disable for fast training-only sweeps.",
     )
-    parser.add_argument("--actor_eval_output_dir", default=None)
-    parser.add_argument("--actor_eval_project", default=None)
-    parser.add_argument("--actor_eval_run_name", default=None)
-    parser.add_argument("--actor_eval_wandb_mode", default=os.environ.get("ACTOR_EVAL_WANDB_MODE"))
-    parser.add_argument("--actor_eval_wandb_group", default=os.environ.get("ACTOR_EVAL_WANDB_GROUP"))
-    parser.add_argument("--actor_eval_initial_relax_state", default=None)
-    parser.add_argument("--actor_eval_initial_relax_cache_dir", default=None)
-    parser.add_argument("--actor_eval_max_loop", type=int, default=2)
-    parser.add_argument("--actor_eval_grid_size", type=int, default=51)
-    parser.add_argument("--actor_eval_device", default=None)
+    parser.add_argument(
+        "--actor_eval_output_dir",
+        default=None,
+        help="Directory for the post-training closed-loop eval outputs.",
+    )
+    parser.add_argument(
+        "--actor_eval_project",
+        default=None,
+        help="W&B project for the post-training closed-loop eval. Defaults to the training project.",
+    )
+    parser.add_argument(
+        "--actor_eval_run_name",
+        default=None,
+        help="W&B run name for the post-training closed-loop eval.",
+    )
+    parser.add_argument(
+        "--actor_eval_wandb_mode",
+        default=os.environ.get("ACTOR_EVAL_WANDB_MODE"),
+        help="W&B mode for the post-training eval. Set offline/disabled if you do not want a second logged run.",
+    )
+    parser.add_argument(
+        "--actor_eval_wandb_group",
+        default=os.environ.get("ACTOR_EVAL_WANDB_GROUP"),
+        help="W&B group for the post-training eval. Useful for pairing train and eval runs.",
+    )
+    parser.add_argument(
+        "--actor_eval_initial_relax_state",
+        default=None,
+        help="Explicit initial-relax cache path for the actor eval. Use when you want to bypass cache resolution.",
+    )
+    parser.add_argument(
+        "--actor_eval_initial_relax_cache_dir",
+        default=None,
+        help="Directory containing keyed initial-relax caches used by the closed-loop eval.",
+    )
+    parser.add_argument(
+        "--actor_eval_max_loop",
+        type=int,
+        default=1,
+        help="Number of TORAX coupling loops used in the eval. Use 1 for the fast default path; use 2 only when you need the extra convergence check / benchmark parity.",
+    )
+    parser.add_argument(
+        "--actor_eval_grid_size",
+        type=int,
+        default=51,
+        help="TORAX radial grid size used for eval. Keep this aligned with the benchmark unless you are testing sensitivity.",
+    )
+    parser.add_argument(
+        "--actor_eval_device",
+        default=None,
+        help="Optional device override for actor eval. Usually leave unset so the eval wrapper can force CPU.",
+    )
+    parser.add_argument(
+        "--action_mode",
+        choices=["absolute", "residual_prev_action"],
+        default="residual_prev_action",
+        help="How the actor parameterizes heating commands. residual_prev_action is the preferred mode for smoother control; absolute matches the legacy checkpoint format.",
+    )
+    parser.add_argument(
+        "--action_rate_penalty",
+        type=float,
+        default=0.01,
+        help="Penalty weight on action changes when using residual_prev_action. Set to 0 to disable, or increase slightly if the policy is still too jumpy.",
+    )
+    parser.add_argument(
+        "--checkpoint_eval_interval",
+        type=int,
+        default=0,
+        help=(
+            "If >0, run closed-loop eval on saved checkpoints every N steps and keep the best score. "
+            "Use 0 for fast exploratory training, a coarse value like 5000-10000 for serious runs, "
+            "and a smaller value only if you want tighter checkpoint selection and can afford the extra eval cost."
+        ),
+    )
+    parser.add_argument(
+        "--checkpoint_eval_metric",
+        default="actor_eval/reward_total",
+        help="Metric name used to rank checkpoint evals. Use a closed-loop metric here, not a training loss, if you want the checkpoint selector to reflect deployment quality.",
+    )
     parser.add_argument(
         "--observation_mode",
         choices=["legacy", "prev_action", "plasma_only"],
         default="prev_action",
-        help="How trajectory observations are constructed from TORAX states and actions.",
+        help="How trajectory observations are constructed from TORAX states and actions. prev_action is the recommended non-leaky mode; legacy preserves the old behavior; plasma_only removes action history entirely.",
     )
     return parser.parse_args(argv)
 
@@ -831,6 +1123,10 @@ def train_kwargs_from_args(args):
         "actor_eval_grid_size": args.actor_eval_grid_size,
         "actor_eval_device": args.actor_eval_device,
         "observation_mode": args.observation_mode,
+        "action_mode": args.action_mode,
+        "action_rate_penalty": args.action_rate_penalty,
+        "checkpoint_eval_interval": args.checkpoint_eval_interval,
+        "checkpoint_eval_metric": args.checkpoint_eval_metric,
         "wandb_group": args.wandb_group,
     }
 

@@ -138,24 +138,20 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Run several IQL actor evaluations in parallel (one process per eval)."
     )
-    parser.add_argument("--actor_checkpoint", action="append",
-                        help="Checkpoint path; repeatable. Combine with --checkpoints_file.")
-    parser.add_argument("--checkpoints_file",
-                        help="File with one checkpoint path per line (# comments allowed).")
-    parser.add_argument("--output_root", default=None,
-                        help="Directory under which each eval writes <run_name>/. "
-                             "Defaults to out/iql_eval_batch/<timestamp>.")
-    parser.add_argument("--dataset_dir", default=None)
-    parser.add_argument("--project", default=os.environ.get("WANDB_PROJECT", "iql-training"))
-    parser.add_argument("--wandb_group", default=os.environ.get("WANDB_GROUP"))
-    parser.add_argument("--max_loop", type=int, default=2)
-    parser.add_argument("--grid_size", type=int, default=51)
+    parser.add_argument("--actor_checkpoint", action="append", help="Checkpoint path; repeatable. Combine with --checkpoints_file.")
+    parser.add_argument("--checkpoints_file", help="File with one checkpoint path per line (# comments allowed).")
+    parser.add_argument("--output_root", default=None, help="Directory under which each eval writes <run_name>/. Defaults to out/iql_eval_batch/<timestamp>.")
+    parser.add_argument("--dataset_dir", default=None, help="Dataset root used to rebuild missing normalizers for eval.")
+    parser.add_argument("--project", default=os.environ.get("WANDB_PROJECT", "iql-training"), help="W&B project for each eval run.")
+    parser.add_argument("--wandb_group", default=os.environ.get("WANDB_GROUP"), help="W&B group for all eval runs in the batch.")
+    parser.add_argument("--max_loop", type=int, default=1, help="Number of TORAX coupling loops used for each eval. Use 1 for routine evaluation; use 2 only when you want the extra convergence check.")
+    parser.add_argument("--grid_size", type=int, default=51, help="TORAX radial grid size used for each eval.")
     parser.add_argument("--n_workers", type=int,
                         default=int(os.environ.get("N_WORKERS", "1")))
-    parser.add_argument("--initial_relax_cache_dir", default=None)
-    parser.add_argument("--replay_cache_dir", default=None)
-    parser.add_argument("--no_replay_cache", action="store_true")
-    parser.add_argument("--allow_cpu_jax_on_gpu", action="store_true")
+    parser.add_argument("--initial_relax_cache_dir", default=None, help="Directory containing keyed initial-relax caches.")
+    parser.add_argument("--replay_cache_dir", default=None, help="Optional compact replay-cache directory for normalizer reconstruction.")
+    parser.add_argument("--no_replay_cache", action="store_true", help="Disable replay-cache use when reconstructing normalizers.")
+    parser.add_argument("--allow_cpu_jax_on_gpu", action="store_true", help="Allow CPU-backed JAX even if a GPU is visible.")
     parser.add_argument(
         "--rl_segment_timeout_seconds",
         type=float,
@@ -166,9 +162,9 @@ def parse_args():
         type=float,
         default=float(os.environ.get("RL_MAX_ACTION_POWER_W", "150000000")),
     )
-    parser.add_argument("--no_plots", action="store_true")
-    parser.add_argument("--no_movie", action="store_true")
-    parser.add_argument("--no_summary_artifacts", action="store_true")
+    parser.add_argument("--no_plots", action="store_true", help="Skip plot generation in the postprocess step.")
+    parser.add_argument("--no_movie", action="store_true", help="Skip movie generation in the postprocess step.")
+    parser.add_argument("--no_summary_artifacts", action="store_true", help="Skip summary re-rendering in the postprocess step.")
     return parser.parse_args()
 
 

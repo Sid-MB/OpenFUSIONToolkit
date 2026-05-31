@@ -1,5 +1,19 @@
 #!/usr/bin/env bash
 
+# Purpose:
+#   Train IQL on the collected TORAX dataset and optionally run a closed-loop
+#   actor eval after training.
+#
+# When to use:
+#   Use for offline RL training. Keep RUN_ACTOR_EVAL=1 for final runs and
+#   disable it for quick parameter sweeps.
+#
+# Example:
+#   DATASET_DIR=./rl_dataset_delta_sampling_maxloop=2_grid_51_preprocessed \
+#     ACTION_MODE=residual_prev_action OBSERVATION_MODE=prev_action \
+#     ACTION_RATE_PENALTY=0.01 CHECKPOINT_EVAL_INTERVAL=5000 \
+#     sbatch run_scripts/train_iql.sh
+
 #SBATCH --account=nlp
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=128G
@@ -91,6 +105,11 @@ add_arg ACTOR_EVAL_INITIAL_RELAX_CACHE_DIR --actor_eval_initial_relax_cache_dir
 add_arg ACTOR_EVAL_MAX_LOOP --actor_eval_max_loop
 add_arg ACTOR_EVAL_GRID_SIZE --actor_eval_grid_size
 add_arg ACTOR_EVAL_DEVICE --actor_eval_device
+add_arg ACTION_MODE --action_mode
+add_arg ACTION_RATE_PENALTY --action_rate_penalty
+add_arg CHECKPOINT_EVAL_INTERVAL --checkpoint_eval_interval
+add_arg CHECKPOINT_EVAL_METRIC --checkpoint_eval_metric
+add_arg OBSERVATION_MODE --observation_mode
 
 echo "Running on host: $(hostname)"
 echo "DATASET_DIR=${DATASET_DIR}"

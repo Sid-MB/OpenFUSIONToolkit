@@ -1108,62 +1108,59 @@ def worker_fn(run_id, all_actions, eqdsk_list, eqtimes, coil_bounds,
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--n_trajectories', type=int, default=500)
-    parser.add_argument('--output_dir',     type=str, default='./rl_dataset')
-    parser.add_argument('--seed',           type=int, default=42)
+    parser = argparse.ArgumentParser(description="Collect offline TORAX trajectories for IQL training.")
+    parser.add_argument('--n_trajectories', type=int, default=500, help='Number of trajectories to generate in the dataset.')
+    parser.add_argument('--output_dir',     type=str, default='./rl_dataset', help='Root output directory for the dataset artifacts.')
+    parser.add_argument('--seed',           type=int, default=42, help='Random seed for the LHS action sampler.')
     parser.add_argument('--n_workers',      type=int, default=1,
-                        help='Number of parallel worker processes')
+                        help='Number of parallel worker processes. Use 1 for simpler debugging.')
     parser.add_argument('--start_idx',      type=int, default=0,
-                        help='Resume from this trajectory index')
+                        help='Inclusive start trajectory index for resume / partial runs.')
     parser.add_argument('--end_idx',        type=int, default=None,
-                        help='Exclusive end trajectory index; defaults to n_trajectories')
+                        help='Exclusive end trajectory index. Defaults to n_trajectories.')
     parser.add_argument('--initial_relax_cache', type=str, default=None,
-                        help='Explicit path for the initial TORAX relax cache (legacy/override). '
-                             'When omitted, a keyed file inside --initial_relax_cache_dir is used.')
+                        help='Explicit path for the initial TORAX relax cache. Prefer the keyed cache dir unless you need a manual override.')
     parser.add_argument('--initial_relax_cache_dir', type=str, default=None,
                         help='Shared directory holding initial-relax caches keyed by '
                              '(grid_size, initial profiles, equilibrium). Defaults to the '
                              'INITIAL_RELAX_CACHE_DIR env var or <script_dir>/initial_relax_cache.')
     parser.add_argument('--print_initial_relax_cache_path', action='store_true',
-                        help='Print the resolved keyed initial-relax cache path and exit '
-                             '(no TokaMaker/JAX initialization).')
+                        help='Print the resolved keyed initial-relax cache path and exit without starting TokaMaker.')
     parser.add_argument('--no_initial_relax_cache', action='store_true',
-                        help='Disable shared initial relax cache and run initial relax per trajectory')
+                        help='Disable the shared initial-relax cache and rebuild it for each trajectory.')
     parser.add_argument('--build_initial_relax_cache_only', action='store_true',
-                        help='Build the shared initial relax cache and exit without running trajectories')
+                        help='Build the shared initial-relax cache and exit without running trajectories.')
     parser.add_argument('--init_dataset_only', action='store_true',
-                        help='Initialize run_manifest.json/all_actions.npy and exit')
+                        help='Initialize run_manifest.json and all_actions.npy, then exit.')
     parser.add_argument('--require_existing_dataset', action='store_true',
-                        help='Require run_manifest.json/all_actions.npy to already exist and match')
+                        help='Require the dataset manifest/actions to already exist and match this run.')
     parser.add_argument('--chunk_dir', type=str, default=None,
-                        help='Per-task directory for logs/status; output_dir remains the shared dataset root')
+                        help='Per-task directory for logs and status; output_dir remains the shared dataset root.')
     parser.add_argument('--allow_cpu_jax_on_gpu', action='store_true',
-                        help='Do not fail when an NVIDIA GPU is visible but JAX only sees CPU')
+                        help='Allow CPU-backed JAX even when an NVIDIA GPU is visible.')
     parser.add_argument('--max_loop', type=int, default=2,
-                        help='Maximum TokaMaker/TORAX coupling loop count per trajectory')
+                        help='Maximum TokaMaker/TORAX coupling loop count per trajectory.')
     parser.add_argument('--grid_size', type=int, default=51,
-                        help='TORAX radial grid size passed to set_TORAX_grid')
+                        help='TORAX radial grid size passed to set_TORAX_grid.')
     parser.add_argument('--observation_mode', choices=sorted(OBSERVATION_MODES), default='legacy',
-                        help='How to build trajectory observations: legacy includes current action, '
-                             'prev_action carries the prior decision explicitly, plasma_only removes action history.')
+                        help='How to build trajectory observations: legacy includes current action, prev_action carries the prior decision explicitly, plasma_only removes action history.')
     parser.add_argument('--trajectory_timeout_seconds', type=int, default=0,
-                        help='Abort a single trajectory after this many seconds; 0 disables timeout')
+                        help='Abort a single trajectory after this many seconds; 0 disables the timeout.')
     parser.add_argument('--save_replay_shard', dest='save_replay_shard', action='store_true',
                         default=True,
-                        help='Save compact per-trajectory replay_shards/trajectory_*.npz output (default)')
+                        help='Save compact per-trajectory replay_shards/trajectory_*.npz output (default).')
     parser.add_argument('--no_save_replay_shard', dest='save_replay_shard', action='store_false',
-                        help='Disable compact replay shard output')
+                        help='Disable compact replay shard output.')
     parser.add_argument('--save_full_zarr', dest='save_full_zarr', action='store_true',
                         default=False,
-                        help='Also save full TORAX scalars/profiles as one Zarr store per trajectory')
+                        help='Also save full TORAX scalars/profiles as one Zarr store per trajectory.')
     parser.add_argument('--no_save_full_zarr', dest='save_full_zarr', action='store_false',
-                        help='Disable per-trajectory full Zarr output (default)')
+                        help='Disable per-trajectory full Zarr output (default).')
     parser.add_argument('--save_json', dest='save_json', action='store_true',
                         default=False,
-                        help='Also save compact trajectory JSON files; disabled by default')
+                        help='Also save compact trajectory JSON files; disabled by default.')
     parser.add_argument('--no_save_json', dest='save_json', action='store_false',
-                        help='Disable compact trajectory JSON output (default)')
+                        help='Disable compact trajectory JSON output (default).')
     args = parser.parse_args()
 
     if args.n_workers < 1:

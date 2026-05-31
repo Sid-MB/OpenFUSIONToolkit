@@ -13,22 +13,22 @@ from dataloader import materialize_replay_cache, replay_cache_path
 
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("dataset_dir", type=Path, help="Collected trajectory dataset root")
+    parser.add_argument("dataset_dir", type=Path, help="Collected trajectory dataset root containing replay shards, JSON, or Zarr outputs.")
     parser.add_argument(
         "--cache_dir",
         type=Path,
         default=None,
-        help="Output cache directory. Defaults to <dataset_dir>/replay_cache.",
+        help="Output cache directory. Defaults to <dataset_dir>/replay_cache; override when sharing a cache across jobs.",
     )
     parser.add_argument(
         "--overwrite",
         action="store_true",
-        help="Replace an existing replay cache.",
+        help="Replace an existing replay cache. Leave off for safety when reusing a cache.",
     )
     parser.add_argument(
         "--no_progress",
         action="store_true",
-        help="Disable tqdm progress output.",
+        help="Disable tqdm progress output. Useful when logs need to stay compact.",
     )
     parser.add_argument(
         "--max_workers",
@@ -36,15 +36,14 @@ def parse_args():
         default=None,
         help=(
             "Number of parallel Zarr readers. Replay shards are collated serially. "
-            "Defaults to REPLAY_CACHE_WORKERS, "
-            "then SLURM_CPUS_PER_TASK, then os.cpu_count(). Use 1 for serial."
+            "Defaults to REPLAY_CACHE_WORKERS, then SLURM_CPUS_PER_TASK, then os.cpu_count(). Use 1 for serial or debugging."
         ),
     )
     parser.add_argument(
         "--worker_backend",
         choices=("process", "thread"),
         default=None,
-        help="Parallel worker backend. Defaults to REPLAY_CACHE_WORKER_BACKEND or process.",
+        help="Parallel worker backend. Use thread for lighter-weight I/O, process for isolation. Defaults to REPLAY_CACHE_WORKER_BACKEND or process.",
     )
     return parser.parse_args()
 

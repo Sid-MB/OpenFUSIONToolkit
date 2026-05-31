@@ -74,7 +74,7 @@ RUN_NAME="${RUN_NAME:-${RUN_ID}}"
 WANDB_GROUP="${WANDB_GROUP:-${SLURM_JOB_ID:-${RUN_ID}}}"
 INITIAL_RELAX_STATE="${INITIAL_RELAX_STATE:-}"
 INITIAL_RELAX_CACHE_DIR="${INITIAL_RELAX_CACHE_DIR:-}"
-MAX_LOOP="${MAX_LOOP:-2}"
+MAX_LOOP="${MAX_LOOP:-1}"
 GRID_SIZE="${GRID_SIZE:-51}"
 REPLAY_CACHE_DIR="${REPLAY_CACHE_DIR:-}"
 USE_REPLAY_CACHE="${USE_REPLAY_CACHE:-1}"
@@ -156,3 +156,9 @@ if [ "${USE_REPLAY_CACHE}" = "0" ]; then
 fi
 
 uv run python -m rl.eval "${ARGS[@]}"
+# Example:
+#   ACTOR_CHECKPOINT=out/iql/<run>/iql_weights.pt \
+#     DATASET_DIR=./rl_dataset_eval_smoke_1_20260528_130200 \
+#     WANDB_MODE=offline \
+#     sbatch run_scripts/eval_iql_actor_cpu.sh
+#

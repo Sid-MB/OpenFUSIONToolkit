@@ -1,5 +1,17 @@
 #!/usr/bin/env bash
 
+# Purpose:
+#   Rank already-generated TORAX trajectories and write a baseline summary.
+#   This is an analysis step, not a simulation step.
+#
+# When to use:
+#   Use after trajectory collection when you want a quick ranking of the
+#   dataset's best-observed returns.
+#
+# Example:
+#   DATASET_DIR=./rl_dataset_delta_sampling_maxloop=2_grid_51_preprocessed \
+#     sbatch run_scripts/grid_search_baseline.sh
+
 #SBATCH --account=nlp
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=128G
