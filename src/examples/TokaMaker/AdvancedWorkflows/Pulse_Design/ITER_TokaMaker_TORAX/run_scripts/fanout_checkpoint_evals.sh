@@ -9,6 +9,11 @@
 # Use this when you want checkpoint-by-checkpoint visibility without blocking
 # the training job itself.
 #
+# Default behavior:
+#   Fanout evals disable the persistent JAX compile cache unless you override
+#   OFT_DISABLE_JAX_COMPILE_CACHE=0. This keeps the rerun path focused on the
+#   native TORAX/JAX behavior instead of reusing a possibly incompatible cache.
+#
 # Required env vars:
 #   DATASET_DIR        dataset root used for the training run
 #   TRAIN_OUTPUT_DIR    directory containing checkpoint_step_*.pt (for example, <dataset>/iql/<run>)
@@ -45,6 +50,7 @@ GRID_SIZE="${GRID_SIZE:-51}"
 EVAL_WANDB_MODE="${EVAL_WANDB_MODE:-${WANDB_MODE:-}}"
 EVAL_WANDB_GROUP="${EVAL_WANDB_GROUP:-$(basename "${TRAIN_OUTPUT_DIR%/}")}"
 EVAL_WANDB_PROJECT="${EVAL_WANDB_PROJECT:-iql-training}"
+OFT_DISABLE_JAX_COMPILE_CACHE="${OFT_DISABLE_JAX_COMPILE_CACHE:-1}"
 DRY_RUN="${DRY_RUN:-0}"
 RUN_LOG_DIR="${RUN_LOG_DIR:-${OUTPUT_ROOT%/}/logs}"
 
@@ -61,6 +67,7 @@ echo "GRID_SIZE=${GRID_SIZE}"
 echo "EVAL_WANDB_PROJECT=${EVAL_WANDB_PROJECT}"
 echo "EVAL_WANDB_GROUP=${EVAL_WANDB_GROUP}"
 echo "EVAL_WANDB_MODE=${EVAL_WANDB_MODE:-<unset>}"
+echo "OFT_DISABLE_JAX_COMPILE_CACHE=${OFT_DISABLE_JAX_COMPILE_CACHE}"
 echo "DRY_RUN=${DRY_RUN}"
 
 shopt -s nullglob
@@ -98,6 +105,9 @@ for checkpoint in "${checkpoints[@]}"; do
   )
   if [ -n "${EVAL_WANDB_MODE}" ]; then
     export_args+=(WANDB_MODE="${EVAL_WANDB_MODE}")
+  fi
+  if [ "${OFT_DISABLE_JAX_COMPILE_CACHE}" = "1" ]; then
+    export_args+=(OFT_DISABLE_JAX_COMPILE_CACHE=1)
   fi
   if [ -n "${replay_cache_dir}" ]; then
     export_args+=(REPLAY_CACHE_DIR="${replay_cache_dir}")

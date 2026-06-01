@@ -14,3 +14,4 @@ slurm-*.out
 /rl_dataset_*/
 /checkpoints_*.txt
 /initial_relax_cache/
+/relax_cache_*/

@@ -499,16 +499,17 @@ def run_actor_eval_simulation(
             "actor_checkpoint": str(Path(actor_checkpoint).resolve()),
             "eval_actor_checkpoint": str(actor_path),
             "initial_relax_state": _bundle_safe(initial_relax_state),
-        "summary": _plain(summary),
-        "rewards": _plain(rewards),
-        "actions": _plain(actions),
-        "action_records": action_records,
-        "metrics": _plain(metrics),
-        "train_reward_config": _plain(train_reward_config),
-        "train_reward_config_source": train_reward_source,
-        "eval_reward_config": _plain(eval_reward_config),
-        "reward_config_match": reward_config_match,
-        "output_dir": str(output_dir),
+            "summary": _plain(summary),
+            "reward_total": float(np.sum(rewards)),
+            "rewards": _plain(rewards),
+            "actions": _plain(actions),
+            "action_records": action_records,
+            "metrics": _plain(metrics),
+            "train_reward_config": _plain(train_reward_config),
+            "train_reward_config_source": train_reward_source,
+            "eval_reward_config": _plain(eval_reward_config),
+            "reward_config_match": reward_config_match,
+            "output_dir": str(output_dir),
     }
         bundle = {
             "state": _bundle_safe(tmtx._state),
@@ -527,6 +528,20 @@ def run_actor_eval_simulation(
         with bundle_path.open("wb") as f:
             pickle.dump(bundle, f)
         result["bundle_path"] = str(bundle_path)
+
+        reward_config_path = output_dir / "actor_eval_reward_config.json"
+        reward_config_payload = {
+            "eval_reward_config": _plain(eval_reward_config),
+            "train_reward_config": _plain(train_reward_config),
+            "train_reward_config_source": train_reward_source,
+            "reward_config_match": bool(reward_config_match),
+            "allow_mismatched_rewards": bool(allow_mismatched_rewards),
+        }
+        with reward_config_path.open("w") as f:
+            json.dump(reward_config_payload, f, indent=2)
+        wandb.save(str(reward_config_path))
+        result["reward_config_path"] = str(reward_config_path)
+
         result_path = output_dir / "actor_eval_summary.json"
         with result_path.open("w") as f:
             json.dump(result, f, indent=2)

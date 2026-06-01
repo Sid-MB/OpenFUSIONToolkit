@@ -423,6 +423,7 @@ def save_reward_recalc_stats_atomic(dataset_dir, payload, data_tree):
 
     scalars = data_tree['scalars']
     summary = payload.get('summary') or {}
+    reward_total = float(payload.get('reward_total', np.sum([float(t.get('r', 0.0)) for t in payload.get('transitions', [])])))
     arrays = {
         'torax_time': np.asarray(scalars.coords['time'].values, dtype=np.float32),
         'decision_times': np.asarray(payload.get('decision_times', []), dtype=np.int32),
@@ -433,6 +434,7 @@ def save_reward_recalc_stats_atomic(dataset_dir, payload, data_tree):
         'fgw_n_e_line_avg': np.asarray(scalars['fgw_n_e_line_avg'].values, dtype=np.float32),
         'terminal_Q_flattop_avg': np.asarray([float(summary.get('Q_flattop_avg', 0.0))], dtype=np.float32),
         'terminal_flux_consumed_Wb': np.asarray([float(summary.get('flux_consumed_Wb', 0.0))], dtype=np.float32),
+        'reward_total': np.asarray([reward_total], dtype=np.float32),
         'run_id': np.asarray(run_id, dtype=np.int64),
         'timestamp': np.asarray(str(payload.get('timestamp') or ''), dtype=np.str_),
         'reward_config_json': np.asarray(

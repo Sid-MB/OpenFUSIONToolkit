@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
+#SBATCH --account=nlp
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=4G
+#SBATCH --partition=john
 #SBATCH --mail-user=siddharth@cs.stanford.edu
 #SBATCH --mail-type=FAIL
+#SBATCH --output=/dev/null
+#SBATCH --error=/dev/null
 # collection_wandb.sh — Log one completed dataset collection to a separate W&B project.
 #
 # This is a lightweight telemetry-only job. It reads the completed dataset root,
@@ -32,6 +38,7 @@ fi
 cd "${PROJECT_DIR}"
 
 DATASET_DIR="${DATASET_DIR:?Set DATASET_DIR to the completed dataset root}"
+export OFT_DISABLE_JAX_COMPILE_CACHE="${OFT_DISABLE_JAX_COMPILE_CACHE:-1}"
 WANDB_PROJECT="${WANDB_PROJECT:-iql-collection}"
 RUN_NAME="${RUN_NAME:-$(basename "${DATASET_DIR%/}")}"
 RUN_LOG_DIR="${RUN_LOG_DIR:-${DATASET_DIR%/}/logs}"

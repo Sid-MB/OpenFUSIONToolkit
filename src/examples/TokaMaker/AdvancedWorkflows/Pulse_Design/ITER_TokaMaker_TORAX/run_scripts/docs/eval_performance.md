@@ -158,10 +158,10 @@ ACTOR_CHECKPOINT=out/iql/<run>/iql_weights.pt \
   sbatch run_scripts/eval_iql_actor_cpu.sh
 
 # Run synchronously (blocks until done, useful for timing):
-ACTOR_CHECKPOINT=out/iql/<run>/iql_weights.pt \
+  ACTOR_CHECKPOINT=out/iql/<run>/iql_weights.pt \
   DATASET_DIR=./rl_dataset_eval_smoke_1_20260528_130200 \
   WANDB_MODE=offline \
-  srun --account=nlp --mem=128G --cpus-per-task=20 --partition=john \
+  srun --account=nlp --mem=128G --cpus-per-task=8 --partition=john \
   bash run_scripts/eval_iql_actor_cpu.sh
 ```
 

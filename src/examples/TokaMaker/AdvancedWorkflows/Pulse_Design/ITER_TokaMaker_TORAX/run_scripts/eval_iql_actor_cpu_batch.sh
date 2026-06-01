@@ -96,11 +96,9 @@ RL_MAX_ACTION_POWER_W="${RL_MAX_ACTION_POWER_W:-150000000}"
 export CUDA_VISIBLE_DEVICES=-1
 export JAX_PLATFORMS=cpu
 export JAX_PLATFORM_NAME=cpu
+export OFT_DISABLE_JAX_COMPILE_CACHE="${OFT_DISABLE_JAX_COMPILE_CACHE:-1}"
 export PYTHONUNBUFFERED=1
 export MP_CONTEXT="${MP_CONTEXT:-fork}"
-if [ "${OFT_DISABLE_JAX_COMPILE_CACHE:-0}" = "1" ]; then
-  export OFT_DISABLE_JAX_COMPILE_CACHE=1
-fi
 
 # Shared persistent XLA compilation cache: first worker compiles, the rest load it.
 export JAX_COMPILATION_CACHE_DIR="${JAX_COMPILATION_CACHE_DIR:-${PROJECT_DIR}/.jax_cache}"

@@ -77,6 +77,7 @@ exec > >(tee -a "${RUN_LOG_DIR}/collect_trajectories_cpu-${SLURM_JOB_ID:-$$}.out
 export CUDA_VISIBLE_DEVICES=-1
 export JAX_PLATFORMS=cpu
 export JAX_PLATFORM_NAME=cpu
+export OFT_DISABLE_JAX_COMPILE_CACHE="${OFT_DISABLE_JAX_COMPILE_CACHE:-1}"
 export PYTHONUNBUFFERED=1
 
 # Keep native math/OpenMP libraries from oversubscribing cores across workers.

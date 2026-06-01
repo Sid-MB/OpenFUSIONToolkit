@@ -27,4 +27,11 @@ export ACTION_RATE_PENALTY="${ACTION_RATE_PENALTY:-0}"
 export OBSERVATION_MODE="${OBSERVATION_MODE:-plasma_only}"
 export ACTION_MODE="${ACTION_MODE:-absolute}"
 
-exec "$(dirname "$0")/train_iql.sh" "$@"
+if [ -n "${SLURM_SUBMIT_DIR:-}" ] && [ -f "${SLURM_SUBMIT_DIR}/IQL.py" ]; then
+  PROJECT_DIR="$(cd "${SLURM_SUBMIT_DIR}" && pwd -P)"
+else
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+  PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd -P)"
+fi
+
+exec bash "${PROJECT_DIR}/run_scripts/train_iql.sh" "$@"

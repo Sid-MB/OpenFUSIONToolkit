@@ -219,6 +219,8 @@ COLLECTION_WANDB_PARTITION="${COLLECTION_WANDB_PARTITION:-john}"
 COLLECTION_WANDB_CPUS_PER_TASK="${COLLECTION_WANDB_CPUS_PER_TASK:-1}"
 COLLECTION_WANDB_MEM="${COLLECTION_WANDB_MEM:-4G}"
 COLLECTION_WANDB_TIME="${COLLECTION_WANDB_TIME:-00:10:00}"
+COLLECTION_PARTITION="${COLLECTION_PARTITION:-john}"
+COLLECTION_REQUEUE="${COLLECTION_REQUEUE:-1}"
 
 # Optional Slurm priority tweak for the trajectory array itself. Leave unset to
 # use the cluster's normal scheduling priority.
@@ -348,6 +350,7 @@ echo "SUBMIT_COLLECTION_WANDB=${SUBMIT_COLLECTION_WANDB}"
 echo "COLLECTION_WANDB_PROJECT=${COLLECTION_WANDB_PROJECT}"
 echo_env_or_argparse_default COLLECTION_WANDB_GROUP "unset"
 echo_env_or_argparse_default COLLECTION_WANDB_MODE "unset"
+echo "COLLECTION_REQUEUE=${COLLECTION_REQUEUE}"
 echo "DRY_RUN=${DRY_RUN}"
 
 if [ "${DRY_RUN}" != "0" ]; then
@@ -408,10 +411,16 @@ if [ "${REUSE_EXISTING_DATASET}" = "0" ]; then
     "${INIT_ARGS[@]}"
 
   dependency_args=()
-if [ "${USE_INITIAL_RELAX_CACHE}" != "0" ]; then
+  if [ "${USE_INITIAL_RELAX_CACHE}" != "0" ]; then
   echo "Submitting initial relax cache job..."
+  collection_requeue_args=()
+  if [ "${COLLECTION_REQUEUE}" != "0" ]; then
+    collection_requeue_args+=(--requeue)
+  fi
   collection_jid="$(
       sbatch --parsable \
+        "${collection_requeue_args[@]}" \
+        --partition="${COLLECTION_PARTITION}" \
         --output="${RUN_LOG_DIR}/collect_initial_relax_cache-%j.out" \
         --error="${RUN_LOG_DIR}/collect_initial_relax_cache-%j.err" \
         "${SCRIPT_DIR}/collect_initial_relax_cache_cpu.sh"
@@ -423,8 +432,14 @@ if [ "${USE_INITIAL_RELAX_CACHE}" != "0" ]; then
   fi
 
   echo "Submitting dependent trajectory array (${ARRAY_SPEC})..."
+  collection_requeue_args=()
+  if [ "${COLLECTION_REQUEUE}" != "0" ]; then
+    collection_requeue_args+=(--requeue)
+  fi
   collection_jid="$(
     sbatch --parsable \
+      "${collection_requeue_args[@]}" \
+      --partition="${COLLECTION_PARTITION}" \
       "${dependency_args[@]}" \
       --cpus-per-task="${CPUS_PER_TASK}" \
       --mem="${MEM_PER_NODE}" \

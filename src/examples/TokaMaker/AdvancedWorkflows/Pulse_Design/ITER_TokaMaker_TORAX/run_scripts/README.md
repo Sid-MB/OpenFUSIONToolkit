@@ -129,6 +129,10 @@ submission, not the number of jobs running at once.
 `SLURM_NICE` defaults to `10` for the trajectory array job. Set it to `0` if
 you want the normal priority path.
 
+Single-checkpoint CPU evals now default to `8` CPUs per task in
+`eval_iql_actor_cpu.sh` and `eval_baseline_cpu.sh`, which matches the observed
+runtime behavior more closely than the old 20-CPU request.
+
 ---
 
 ## Output Locations

@@ -51,7 +51,7 @@
 #   ALLOW_MISMATCHED_REWARDS  set to 1 only when you intentionally want to evaluate against a different reward config
 
 #SBATCH --account=nlp
-#SBATCH --cpus-per-task=20
+#SBATCH --cpus-per-task=8
 #SBATCH --mem=128G
 #SBATCH --partition=john
 #SBATCH --mail-user=siddharth@cs.stanford.edu
@@ -92,7 +92,7 @@ USE_REPLAY_CACHE="${USE_REPLAY_CACHE:-1}"
 RL_SEGMENT_TIMEOUT_SECONDS="${RL_SEGMENT_TIMEOUT_SECONDS:-1800}"
 RL_MAX_ACTION_POWER_W="${RL_MAX_ACTION_POWER_W:-150000000}"
 
-CPUS_PER_TASK="${SLURM_CPUS_PER_TASK:-20}"
+CPUS_PER_TASK="${SLURM_CPUS_PER_TASK:-8}"
 TOTAL_CPUS="${CPUS_PER_TASK}"
 THREADS_PER_WORKER="${THREADS_PER_WORKER:-${TOTAL_CPUS}}"
 THREADS_PER_WORKER="$(oft_cap_thread_budget "${THREADS_PER_WORKER}" "single-checkpoint eval")"
@@ -101,14 +101,12 @@ THREADS_PER_WORKER="$(oft_cap_thread_budget "${THREADS_PER_WORKER}" "single-chec
 export CUDA_VISIBLE_DEVICES=-1
 export JAX_PLATFORMS=cpu
 export JAX_PLATFORM_NAME=cpu
+export OFT_DISABLE_JAX_COMPILE_CACHE="${OFT_DISABLE_JAX_COMPILE_CACHE:-1}"
 export PYTHONUNBUFFERED=1
 
 # Persistent XLA compilation cache: the single TORAX compile is reused across
 # processes/runs (e.g. a later batch worker loads it from disk instead of recompiling).
 export JAX_COMPILATION_CACHE_DIR="${JAX_COMPILATION_CACHE_DIR:-${PROJECT_DIR}/.jax_cache}"
-if [ "${OFT_DISABLE_JAX_COMPILE_CACHE:-0}" = "1" ]; then
-  export OFT_DISABLE_JAX_COMPILE_CACHE=1
-fi
 
 # Keep native math/OpenMP libraries from oversubscribing cores.
 export OMP_NUM_THREADS="${THREADS_PER_WORKER}"

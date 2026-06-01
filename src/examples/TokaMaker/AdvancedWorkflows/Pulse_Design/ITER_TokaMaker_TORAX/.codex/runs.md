@@ -1,131 +1,108 @@
 # Active Runs Memory
 
-This file tracks the currently active or queued Slurm jobs in this workspace,
-why they exist, and what to do with the outputs once they finish.
+This file tracks the current Slurm jobs and the small set of completed
+reference runs that matter for ongoing analysis in this workspace.
 
-Current state was last refreshed from `squeue` in the project root.
+Last refreshed from `squeue` and the current output tree on 2026-06-01.
 
-## 1. `15710794` and `15710797` - full `prev_action` collection
+## Active Jobs
 
-- `15710794`: shared initial-relax cache for the full `prev_action` dataset.
-- `15710797`: trajectory collection array for the full `prev_action` dataset.
-- Purpose: produce a fresh production dataset with `OBSERVATION_MODE=prev_action` and reward-recalc stats enabled by default.
-- Bigger context: this is the production schema the later IQL training should be judged against.
-- Current state: the cache job is pending and the array is still waiting on it.
+### 1. `15712247` and `15712238` - full `prev_action` collection pipeline
+
+- `15712247`: shared initial-relax cache for the fresh `prev_action` rerun.
+- `15712087`: trajectory collection array for the fresh `prev_action` rerun.
+- Purpose: produce a fresh production dataset with `OBSERVATION_MODE=prev_action` and the current no-cache CPU defaults.
+- Current state: cache job is running; array is pending on it.
 - When finished:
-  - validate that `run_prev_action_full_recollect_20260531_1825/` contains the manifest, replay shards, replay cache, and training outputs.
-  - prefer this dataset for future retraining when the goal is actor-conditioned control.
-  - use it as the main reference for comparing against the smoke and plasma-only runs.
-- Analysis:
-  - inspect collection completeness first.
-  - then compare replay-cache statistics and training / eval curves against the smoke baseline.
-  - if the actor looks saturated or unstable, use this run to study whether the full dataset changed that behavior.
+  - validate `run_prev_action_full_recollect_20260531_1825/`
+  - prefer this dataset for future retraining when actor-conditioned control is the goal
 
-## 2. `15710798` and `15710801` - full `prev_action` downstream pipeline
+### 2. `15712237` and `15712087` - full `prev_action` downstream pipeline
 
-- `15710798`: replay-cache materialization for the full `prev_action` dataset.
-- `15710801`: IQL training job chained after the full collection.
-- Purpose: turn the fresh full dataset into a trainable replay cache and train the actor.
-- Bigger context: this is the first full production IQL run on the new schema.
+- `15712237`: replay-cache materialization for the full `prev_action` dataset.
+- `15712238`: IQL training job chained after the full collection.
+- Purpose: turn the fresh dataset into a trainable replay cache and train the actor.
+- Current state: both waiting on dependencies.
 - When finished:
-  - capture the final checkpoint and the automatically triggered actor eval outputs.
-  - compare its eval artifacts to the smoke run and the legacy-compatible baseline.
-- Analysis:
-  - use the actor eval outputs as the main signal for controller quality.
-  - check action saturation, smoothness, and closed-loop convergence.
-  - if the post-training eval diverges from the notebook-style baseline, inspect the closed-loop trajectory, not just the scalar loss.
+  - capture the final checkpoint and the automatically triggered actor eval outputs
+  - compare against the smoke run and the full final checkpoint eval
 
-## 3. `15710795` and `15710796` - full `plasma_only` collection
+### 3. `15712248` and `15712102` - full `plasma_only` collection pipeline
 
-- `15710795`: shared initial-relax cache for the full `plasma_only` dataset.
-- `15710796`: trajectory collection array for the full `plasma_only` dataset.
-- Purpose: produce an ablation dataset with no action history in the observation.
-- Bigger context: this is the cleanest test of whether previous-action feedback is part of the policy's smoothness / saturation behavior.
-- Current state: the cache job is pending and the array is still waiting on it.
+- `15712248`: shared initial-relax cache for the fresh `plasma_only` rerun.
+- `15712102`: trajectory collection array for the fresh `plasma_only` rerun.
+- Purpose: ablation dataset with no action history in the observation, using the current no-cache CPU defaults.
+- Current state: cache job is running; array is pending on it.
 - When finished:
-  - validate the dataset root `run_plasma_only_full_recollect_20260531_1825/`.
-  - train and evaluate against it if the downstream jobs finish.
-- Analysis:
-  - compare against the `prev_action` full run.
-  - if this produces less self-reinforcing behavior, that supports removing or weakening action-history leakage in future runs.
+  - validate `run_plasma_only_full_recollect_20260531_1825/`
+  - compare against the `prev_action` full run
 
-## 4. `15710799` and `15710800` - full `plasma_only` downstream pipeline
+### 4. `15712249` and `15712104` - full `plasma_only` downstream pipeline
 
-- `15710799`: replay-cache materialization for the `plasma_only` dataset.
-- `15710800`: IQL training job chained after the plasma-only collection.
+- `15712249`: replay-cache materialization for the `plasma_only` dataset.
+- `15712104`: IQL training job chained after the plasma-only collection.
 - Purpose: train the ablation model on the no-action-history schema.
-- Bigger context: this is the ablation counterpart to the full `prev_action` production run.
+- Current state: waiting on dependencies.
 - When finished:
-  - compare its checkpoint and eval outputs against the `prev_action` run.
-  - decide whether the action-history feature is helping or just smoothing the policy in a self-reinforcing way.
-- Analysis:
-  - this is the most informative run for testing whether `prev_action` should stay in the observation.
+  - compare its checkpoint and eval outputs against the `prev_action` run
 
-## 5. `15691772` - smoke-based full training run
+### 5. `15712250` - dependency helper
 
-- `15691772`: IQL training job reusing the completed smoke dataset.
-- Purpose: get a full training pass without recollecting data.
-- Bigger context: this is the low-risk, reuse-first check that the training/eval plumbing still works.
+- `15712250`: wait-for helper job chained off the fresh collection reruns.
+- Purpose: keep the refresh chain visible while the cache jobs settle.
+- Current state: pending on dependencies.
+
+### 6. `15712038` - CPU eval rerun on `john` with current reward config
+
+- `15712038`: actor-side eval rerun on `john` against
+  `run_smb_prev_action_smoke_20260530_222522/` using the current
+  `RLRewardConfig` defaults.
+- Purpose: regenerate the eval artifact bundle so reward provenance is explicit.
+- Current state: running on `john11`.
 - When finished:
-  - inspect the checkpoint and the automatically triggered eval outputs in the smoke dataset root.
-  - use it as a fast sanity check for the training/eval contract.
-- Analysis:
-  - this is a good place to compare training dynamics against the fresh full runs.
-  - if this behaves well but the fresh full run does not, the difference is likely in the dataset schema or coverage, not the basic trainer.
+  - inspect `actor_eval_summary.json`, `actor_eval_actions.json`, and the plots/movie
 
-## 6. `15710559` and `15691315` - CPU eval comparisons on `john`
+### 7. `15712236` - separate `sc-loprio` parallelism test
 
-- `15710559`: cache-disabled actor-side eval retry on `john`.
-- `15691315`: another actor eval pending on resources.
-- Purpose: compare baseline notebook-style behavior against the trained actor on the same seed EQDSKs and shortened window, and isolate whether the persistent JAX cache is contributing to the native crash.
-- Bigger context: this is the most direct check for whether the actor or the eval path is what causes convergence problems.
+- `15712236`: independent `collect_trajectories_cpu_array.sh` run on `sc-loprio`.
+- Purpose: test a different scheduler / allocation shape, not part of the main RL pipelines.
+- Current state: pending or running separately from the main collection chains.
+
+### 8. `15712434` - low-smoothness smoke eval on `john`
+
+- `15712434`: CPU eval of the low-smoothness smoke checkpoint
+  `out/iql/train_low_smoothness_smoke_20260531/f329um07/iql_weights.pt`
+  using the standard notebook-style eval wrapper on `john`.
+- Purpose: compare the reduced-smoothing ablation against the reference smoke
+  and full checkpoints once the rollout completes.
+- Current state: pending on cluster resources.
 - When finished:
-  - compare the first divergence point between baseline and actor.
-  - treat it as a debugging artifact, not as the final benchmark.
-- Analysis:
-  - use this to isolate solver/runtime issues from policy behavior.
-  - if both baseline and actor fail on the same backend path, the problem is lower-level than the policy.
+  - inspect `actor_eval_summary.json`, `actor_eval_actions.json`, and the
+    generated plots/movie in `out/iql_eval/low_smoothness_smoke_20260531/`
 
-## 7. `15691331` and `15691452` - dependency wait jobs
+## Completed Reference Runs
 
-- These are queued wait-for jobs tied to earlier dependency chains.
-- Purpose: keep the main pipeline flow moving when upstream jobs complete.
-- Bigger context: they are bookkeeping, not model signal.
-- When finished:
-  - only inspect them if a downstream job appears stuck or never starts.
-- Analysis:
-  - these do not provide model insight on their own.
+### Smoke live-render eval
 
-## 8. `15710802` and `15710803` - collection telemetry sidecars
+- Job: `15688944`
+- Output: `out/iql_eval/smoke_live_render_docfix_20260531/`
+- Status: completed successfully
+- Notes:
+  - canonical notebook-style eval path
+  - earlier local attempt on `jagupard32` was interrupted when the host was killed
 
-- `15710802`: collection W&B telemetry for the `plasma_only` dataset.
-- `15710803`: collection W&B telemetry for the `prev_action` dataset.
-- Purpose: log dataset-level collection metadata to the separate `iql-collection` project without mixing it into training/eval.
-- Bigger context: useful for tracking dataset builds, but not part of model training itself.
-- When finished:
-  - inspect only if you need the dataset provenance dashboard.
+### Final full-checkpoint eval
 
-## 9. `15688937` - interactive shell session
+- Job: `15691315`
+- Output: `out/iql_eval/full_final_checkpoint_20260531/`
+- Status: completed successfully
+- Evaluated checkpoint:
+  - `out/iql/rl_dataset_delta_sampling_maxloop=2_grid_51_full_zarr_2000_20260527_123853_gpu_iql/8l1ywupe/iql_weights.pt`
 
-- Purpose: live human-driven debugging session in the `jag` allocation.
-- Bigger context: useful for ad hoc inspection, but not a pipeline artifact.
-- When finished:
-  - no model analysis needed; it is just the shell session ending.
+## Notes
 
-## General analysis rules
-
-- Prefer the full `prev_action` and `plasma_only` production runs for substantive comparisons.
-- Use the smoke-backed training run as the reuse baseline.
-- Use the CPU baseline-vs-actor compare only to diagnose convergence/runtime issues, not to judge final model quality.
-- For any completed training run, the important outputs are:
-  - the final checkpoint
-  - the automatically triggered eval
-  - the eval summary JSON
-  - the action trace JSON
-  - the plot/movie artifacts
-- For any completed collection run, the important outputs are:
-  - `run_manifest.json`
-  - `all_actions.npy`
-  - `replay_shards/`
-  - `replay_cache/` if it was materialized
-  - `logs/`
+- For notebook-style plots/movie, use `run_scripts/eval_iql_actor_cpu.sh`.
+- For training ablations with less smoothing, use
+  `run_scripts/train_iql_low_smoothness.sh`.
+- The finished full checkpoint eval is the main reference point for comparison
+  against the grid-search baseline.

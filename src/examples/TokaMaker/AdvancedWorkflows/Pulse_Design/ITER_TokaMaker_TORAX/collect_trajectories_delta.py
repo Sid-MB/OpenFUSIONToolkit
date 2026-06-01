@@ -981,12 +981,14 @@ def sampler_manifest_fields():
 
 def trajectory_payload(transitions, summary, action_row, run_id,
                        reward_config=None):
+    reward_total = float(sum(float(t.get('r', 0.0)) for t in transitions))
     payload = {
         'run_id':      run_id,
         'timestamp':   datetime.now().isoformat(),
         'actions_raw': action_row.tolist(),   # (21, 2) array in W
         'transitions': transitions,            # list of 21 dicts
         'summary':     summary,
+        'reward_total': reward_total,
         'observation_mode': summary.get('observation_mode', 'legacy') if isinstance(summary, dict) else 'legacy',
         'decision_times': [int(t) for t in DECISION_TIMES],
         'rl_times': [int(t) for t in RL_TIMES],

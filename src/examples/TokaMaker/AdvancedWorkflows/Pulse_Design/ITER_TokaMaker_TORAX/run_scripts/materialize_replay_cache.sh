@@ -28,6 +28,7 @@ exec > >(tee -a "${RUN_LOG_DIR}/materialize_replay_cache-${SLURM_JOB_ID:-$$}.out
   2> >(tee -a "${RUN_LOG_DIR}/materialize_replay_cache-${SLURM_JOB_ID:-$$}.err" >&2)
 
 export PYTHONUNBUFFERED=1
+export OFT_DISABLE_JAX_COMPILE_CACHE="${OFT_DISABLE_JAX_COMPILE_CACHE:-1}"
 THREADS_PER_WORKER="$(oft_cap_thread_budget "${SLURM_CPUS_PER_TASK}" "replay-cache materialization")"
 export OMP_NUM_THREADS="${THREADS_PER_WORKER}"
 export OPENBLAS_NUM_THREADS="${THREADS_PER_WORKER}"
