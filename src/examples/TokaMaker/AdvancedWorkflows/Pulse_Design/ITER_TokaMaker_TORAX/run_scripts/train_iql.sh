@@ -46,6 +46,8 @@ fi
 cd "${PROJECT_DIR}"
 OFT_ROOT="$(cd "${PROJECT_DIR}/../../../../../../" && pwd -P)"
 source "${OFT_ROOT}/scripts/oft_arch/select_oft_install.sh"
+export UV_CACHE_DIR="${SLURM_TMPDIR:-/tmp/$USER/uv_cache}"
+mkdir -p "${UV_CACHE_DIR}"
 
 : "${DATASET_DIR:?Set DATASET_DIR to the collected dataset root}"
 
@@ -90,6 +92,7 @@ add_bool_arg() {
 
 add_arg OUTPUT_DIR --output_dir
 add_arg BATCH_SIZE --batch_size
+add_arg TRAIN_SEED --train_seed
 add_arg NUM_STEPS --num_steps
 add_arg WANDB_PROJECT --project
 add_arg RUN_NAME --run_name

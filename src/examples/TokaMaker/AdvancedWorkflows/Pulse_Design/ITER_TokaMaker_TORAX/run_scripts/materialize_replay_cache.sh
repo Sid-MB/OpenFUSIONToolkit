@@ -19,6 +19,8 @@ else
 fi
 cd "${PROJECT_DIR}"
 source "${PROJECT_DIR}/run_scripts/lib/threading.sh"
+export UV_CACHE_DIR="${SLURM_TMPDIR:-/tmp/$USER/uv_cache}"
+mkdir -p "${UV_CACHE_DIR}"
 
 DATASET_DIR="${DATASET_DIR:?Set DATASET_DIR to the collected dataset root}"
 : "${SLURM_CPUS_PER_TASK:?SLURM_CPUS_PER_TASK must be set by Slurm or sbatch --cpus-per-task}"

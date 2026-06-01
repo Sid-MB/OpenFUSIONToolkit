@@ -288,7 +288,6 @@ EXPORT_NAMES=(
   OUTPUT_BASE_DIR
   USE_INITIAL_RELAX_CACHE
 )
-append_export SEED
 append_export MAX_LOOP
 append_export GRID_SIZE
 append_export TRAJECTORY_TIMEOUT_SECONDS
@@ -306,7 +305,6 @@ echo "RUN_LOG_DIR=${RUN_LOG_DIR}"
 echo_env_or_argparse_default INITIAL_RELAX_CACHE "argparse/default unused when cache disabled"
 echo "N_WORKERS=${N_WORKERS}"
 echo "CHUNK_SIZE=${CHUNK_SIZE}"
-echo_env_or_argparse_default SEED "argparse default"
 echo "REQUESTED_TRAJECTORIES=${REQUESTED_TRAJECTORIES}"
 echo "ARRAY_TASK_COUNT=${ARRAY_TASK_COUNT}"
 echo "ARRAY_SPEC=${ARRAY_SPEC}"
@@ -390,7 +388,6 @@ if [ "${REUSE_EXISTING_DATASET}" = "0" ]; then
     --output_dir "${OUTPUT_BASE_DIR}"
     --init_dataset_only
   )
-  add_arg SEED --seed
   add_arg MAX_LOOP --max_loop
   add_arg GRID_SIZE --grid_size
   add_arg TRAJECTORY_TIMEOUT_SECONDS --trajectory_timeout_seconds

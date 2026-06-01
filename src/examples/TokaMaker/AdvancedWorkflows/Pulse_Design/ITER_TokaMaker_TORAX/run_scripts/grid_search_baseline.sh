@@ -30,6 +30,8 @@ else
   PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd -P)"
 fi
 cd "${PROJECT_DIR}"
+export UV_CACHE_DIR="${SLURM_TMPDIR:-/tmp/$USER/uv_cache}"
+mkdir -p "${UV_CACHE_DIR}"
 
 : "${DATASET_DIR:?Set DATASET_DIR to the collected dataset root}"
 RUN_LOG_DIR="${RUN_LOG_DIR:-${DATASET_DIR%/}/logs}"

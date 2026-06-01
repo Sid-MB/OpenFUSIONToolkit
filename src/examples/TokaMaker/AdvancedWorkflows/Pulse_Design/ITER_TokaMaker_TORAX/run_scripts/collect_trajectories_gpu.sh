@@ -59,7 +59,6 @@ N_WORKERS="${N_WORKERS:-${SLURM_CPUS_PER_TASK:-1}}"
 N_TRAJECTORIES="${N_TRAJECTORIES:-1000}"
 START_IDX="${START_IDX:-600}"
 END_IDX="${END_IDX:-${N_TRAJECTORIES}}"
-SEED="${SEED:-42}"
 MAX_LOOP="${MAX_LOOP:-2}"
 GRID_SIZE="${GRID_SIZE:-51}"
 TRAJECTORY_TIMEOUT_SECONDS="${TRAJECTORY_TIMEOUT_SECONDS:-7200}"
@@ -78,7 +77,6 @@ echo "N_WORKERS=${N_WORKERS}"
 echo "N_TRAJECTORIES=${N_TRAJECTORIES}"
 echo "START_IDX=${START_IDX}"
 echo "END_IDX=${END_IDX}"
-echo "SEED=${SEED}"
 echo "MAX_LOOP=${MAX_LOOP}"
 echo "GRID_SIZE=${GRID_SIZE}"
 echo "TRAJECTORY_TIMEOUT_SECONDS=${TRAJECTORY_TIMEOUT_SECONDS}"
@@ -90,7 +88,6 @@ add_bool_arg SAVE_STATS_FOR_REWARD_RECALC --save_stats_for_reward_recalc --no_sa
 
 uv run --extra cuda13 python collect_trajectories_delta.py \
   --n_trajectories "${N_TRAJECTORIES}" \
-  --seed "${SEED}" \
   --start_idx "${START_IDX}" \
   --end_idx "${END_IDX}" \
   --n_workers "${N_WORKERS}" \

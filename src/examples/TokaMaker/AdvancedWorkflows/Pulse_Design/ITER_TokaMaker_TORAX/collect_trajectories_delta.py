@@ -45,6 +45,7 @@ from contextlib import contextmanager, redirect_stdout
 from functools import partial
 import shutil
 import subprocess
+import secrets
 
 from dataloader import (
     create_run_manifest,
@@ -52,10 +53,12 @@ from dataloader import (
     default_reward_config,
     ensure_dataset_dirs,
     initialize_dataset,
+    load_json,
     record_task_status,
     require_dataset,
     save_failure_atomic,
     save_full_trajectory_zarr_atomic,
+    save_reward_recalc_stats_atomic,
     save_replay_shard_atomic,
     save_trajectory_atomic,
     full_trajectory_zarr_path,
@@ -282,7 +285,7 @@ def sample_actions_lhs(n_trajectories, seed):
     n_decision = len(DECISION_TIMES)  # 21
     n_params = n_decision * 2
 
-    sampler = qmc.LatinHypercube(d=n_params, seed=seed)
+    sampler = qmc.LatinHypercube(d=n_params, rng=np.random.default_rng(seed))
     samples = sampler.random(n=n_trajectories)
 
     # Scale to [-delta_max, +delta_max]
@@ -1143,7 +1146,12 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Collect offline TORAX trajectories for IQL training.")
     parser.add_argument('--n_trajectories', type=int, default=500, help='Number of trajectories to generate in the dataset.')
     parser.add_argument('--output_dir',     type=str, default='./rl_dataset', help='Root output directory for the dataset artifacts.')
-    parser.add_argument('--seed',           type=int, default=42, help='Random seed for the LHS action sampler.')
+    parser.add_argument(
+        '--seed',
+        type=int,
+        default=None,
+        help='Random seed for the LHS action sampler. Leave unset to have the launcher generate one and record it in the run manifest for reproducibility.',
+    )
     parser.add_argument('--n_workers',      type=int, default=1,
                         help='Number of parallel worker processes. Use 1 for simpler debugging.')
     parser.add_argument('--start_idx',      type=int, default=0,
@@ -1250,6 +1258,21 @@ if __name__ == '__main__':
         log_dir = os.path.abspath(os.path.join(args.output_dir, 'tokamaker_torax_logs'))
     os.makedirs(log_dir, exist_ok=True)
 
+    existing_manifest = None
+    if os.path.exists(paths['manifest']):
+        existing_manifest = load_json(paths['manifest'])
+    if existing_manifest is not None:
+        if args.seed is None:
+            args.seed = int(existing_manifest['seed'])
+            print(f'Reusing dataset seed={args.seed} from {paths["manifest"]}')
+        elif int(existing_manifest.get('seed', -1)) != int(args.seed):
+            raise ValueError(
+                f"Dataset seed mismatch: existing={existing_manifest.get('seed')!r}, "
+                f"expected={args.seed!r}"
+            )
+    elif args.seed is None:
+        args.seed = secrets.randbelow(2**32)
+        print(f'Generated random seed={args.seed}')
     print(f'Sampling {args.n_trajectories} trajectories with LHS (seed={args.seed})')
     expected_actions = sample_actions_lhs(args.n_trajectories, seed=args.seed)
     expected_manifest = create_run_manifest(

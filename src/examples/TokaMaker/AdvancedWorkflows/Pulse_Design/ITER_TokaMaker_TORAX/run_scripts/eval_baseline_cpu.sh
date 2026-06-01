@@ -51,6 +51,8 @@ cd "${PROJECT_DIR}"
 OFT_ROOT="$(cd "${PROJECT_DIR}/../../../../../../" && pwd -P)"
 source "${OFT_ROOT}/scripts/oft_arch/select_oft_install.sh"
 source "${PROJECT_DIR}/run_scripts/lib/threading.sh"
+export UV_CACHE_DIR="${SLURM_TMPDIR:-/tmp/$USER/uv_cache}"
+mkdir -p "${UV_CACHE_DIR}"
 
 DATASET_DIR="${DATASET_DIR:?Set DATASET_DIR to the collected dataset root}"
 RUN_ID="${RUN_ID:-baseline_eval_${SLURM_JOB_ID:-$(date +%Y%m%d_%H%M%S)}}"

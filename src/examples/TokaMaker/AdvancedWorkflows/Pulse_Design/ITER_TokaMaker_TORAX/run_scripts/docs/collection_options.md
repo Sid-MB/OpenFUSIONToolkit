@@ -11,7 +11,7 @@ Slurm and to `collect_trajectories_delta.py` (argparse).
 |---|---|---|
 | `START_IDX` | — | First trajectory index (inclusive) |
 | `END_IDX` | — | Last trajectory index (exclusive) |
-| `N_TRAJECTORIES` | — | Total expected trajectories (used for seed-file generation) |
+| `N_TRAJECTORIES` | — | Total expected trajectories (used to size the action sampler) |
 | `CHUNK_SIZE` | `1` | Trajectories per array task (increase if array size > 1001) |
 | `ARRAY_CONCURRENCY` | `64` | Max simultaneously running array tasks; lower it for smaller jobs or tighter clusters |
 | `SLURM_MAX_ARRAY_SIZE` | `1001` | Cluster limit; `sbatch --array` IDs must be < this |
@@ -141,6 +141,8 @@ normal collection shape is `N_WORKERS=1` and `CPUS_PER_TASK=4`.
   `observation_mode` before it skips recollection.
 - The exact reward config used at collection time is saved in
   `run_manifest.json` and mirrored into `replay_cache/replay_manifest.json`.
+- The seed is generated in `collect_trajectories_delta.py` when omitted by the
+  caller, then recorded in `run_manifest.json` so a run can be reproduced later.
 - The collection path now also saves `reward_recalc_stats/*.npz` by default.
   Those bundles hold the minimum scalar traces needed to rewrite the dataset
   with a new reward config later, without rerunning TORAX.

@@ -281,7 +281,7 @@ SUBMIT_GRID_SEARCH=1 SUBMIT_REPLAY_CACHE=1 SUBMIT_IQL=1 \
 
 ```
 <OUTPUT_BASE_DIR>/
-  run_manifest.json              # dataset metadata (seed, grid, MAX_LOOP)
+  run_manifest.json              # dataset metadata (seed generated in Python, grid, MAX_LOOP)
   replay_shards/*.npz            # per-trajectory data (states, actions, rewards)
   reward_recalc_stats/*.npz      # compact scalar traces for future reward updates
   grid_search/                   # best-observed baseline (SUBMIT_GRID_SEARCH=1)

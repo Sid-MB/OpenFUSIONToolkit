@@ -22,7 +22,7 @@
 #
 # Direct-use example, only when you intentionally want manual sbatch control:
 #   export OUTPUT_BASE_DIR=./rl_dataset_delta_sampling_manual
-#   export N_TRAJECTORIES=1000 SEED=42 MAX_LOOP=2 GRID_SIZE=51
+#   export N_TRAJECTORIES=1000 MAX_LOOP=2 GRID_SIZE=51
 #   uv run python collect_trajectories_delta.py \
 #     --n_trajectories "${N_TRAJECTORIES}" --seed "${SEED}" \
 #     --output_dir "${OUTPUT_BASE_DIR}" --max_loop "${MAX_LOOP}" \
@@ -58,6 +58,8 @@ cd "${PROJECT_DIR}"
 OFT_ROOT="$(cd "${PROJECT_DIR}/../../../../../../" && pwd -P)"
 source "${OFT_ROOT}/scripts/oft_arch/select_oft_install.sh"
 source "${PROJECT_DIR}/run_scripts/lib/threading.sh"
+export UV_CACHE_DIR="${SLURM_TMPDIR:-/tmp/$USER/uv_cache}"
+mkdir -p "${UV_CACHE_DIR}"
 
 require_env() {
   local name="$1"

@@ -3,7 +3,9 @@ import argparse
 import json
 import os
 import sys
+import random
 from pathlib import Path
+from typing import cast
 
 import modal
 import numpy as np
@@ -20,6 +22,10 @@ from log import get_logger
 
 app = modal.App("iql-training")
 logger = get_logger(__name__)
+
+
+def _random_seed32() -> int:
+    return int.from_bytes(os.urandom(4), "little")
 
 def _env_flag(name: str, default: bool = False) -> bool:
     raw = os.environ.get(name)
@@ -117,11 +123,12 @@ class Actor(nn.Module):
     def act(self, state, prev_action=None):
         raw = self.net(state)
         if self.action_mode == "residual_prev_action":
-            delta = torch.tanh(raw) * self.action_max
+            action_max = cast(torch.Tensor, self.action_max)
+            delta = torch.tanh(raw) * action_max
             if prev_action is None:
                 prev_action = torch.zeros_like(delta)
-            return torch.clamp(prev_action + delta, min=torch.zeros_like(delta), max=self.action_max)
-        return torch.sigmoid(raw) * self.action_max
+            return torch.maximum(torch.zeros_like(delta), torch.minimum(prev_action + delta, action_max))
+        return torch.sigmoid(raw) * cast(torch.Tensor, self.action_max)
 
 class IQL:
     def __init__(self, action_max, state_dim: int, action_dim: int, 
@@ -234,6 +241,8 @@ class IQL:
         action_target = actions
         action_pred = self.actor(states)
         if self.actor.action_mode == "residual_prev_action" and self.actor.action_context_indices:
+            assert self._state_mean_tensor is not None
+            assert self._state_std_tensor is not None
             prev_action = torch.stack(
                 [
                     (states[:, idx] * self._state_std_tensor[idx] + self._state_mean_tensor[idx]) / self.actor.action_max[i]
@@ -548,6 +557,7 @@ def train_from_config(
     wandb_mode,
     checkpoint_interval,
     log_interval,
+    train_seed,
     tau,
     beta,
     gamma,
@@ -584,6 +594,7 @@ def train_from_config(
         "dataset_dir": str(dataset_dir),
         "output_dir": str(output_dir),
         "use_wandb_run_subdir": use_wandb_run_subdir,
+        "train_seed": train_seed,
         "batch_size": batch_size,
         "num_steps": num_steps,
         "checkpoint_interval": checkpoint_interval,
@@ -629,6 +640,23 @@ def train_from_config(
 
     run = wandb.init(**wandb_init_kwargs)
     config = dict(run.config)
+    if config.get("train_seed") is None:
+        train_seed = _random_seed32()
+        run.config.update({"train_seed": int(train_seed)}, allow_val_change=True)
+        config = dict(run.config)
+        logger.info("IQL generated train_seed=%s", train_seed)
+    else:
+        train_seed = int(config["train_seed"])
+        logger.info("IQL train_seed=%s", train_seed)
+    random.seed(train_seed)
+    np.random.seed(train_seed)
+    torch.manual_seed(train_seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(train_seed)
+    try:
+        torch.use_deterministic_algorithms(True, warn_only=True)
+    except Exception:
+        pass
 
     dataset_dir = Path(config["dataset_dir"]).resolve()
     output_dir = Path(config["output_dir"]).resolve()
@@ -680,6 +708,14 @@ def train_from_config(
         "state_keys": specs["state_keys"],
         "dataset_reward_config": reward_config_to_dict(specs.get("reward_config")),
     }
+    if config.get("eval_seed") is None:
+        eval_seed = _random_seed32()
+        run.config.update({"eval_seed": int(eval_seed)}, allow_val_change=True)
+        config = dict(run.config)
+        logger.info("IQL generated eval_seed=%s", eval_seed)
+    else:
+        eval_seed = int(config["eval_seed"])
+        logger.info("IQL eval_seed=%s", eval_seed)
     run.config.update(dataset_config, allow_val_change=True)
     config = dict(run.config)
     with (output_dir / "iql_config.json").open("w") as f:
@@ -731,7 +767,7 @@ def train_from_config(
     eval_batch = make_eval_batch(
         buffer,
         eval_batch_size=int(config["eval_batch_size"]),
-        seed=int(config["eval_seed"]),
+        seed=eval_seed,
         device=train_device,
     )
     state_keys = specs["state_keys"]
@@ -890,10 +926,16 @@ def parse_args(argv):
         help="Minibatch size for offline IQL updates. Larger values are steadier but use more memory.",
     )
     parser.add_argument(
+        "--train_seed",
+        type=int,
+        default=None,
+        help="Seed for training-time randomness. Leave unset to generate one in Python and persist it in the training config for reproducibility.",
+    )
+    parser.add_argument(
         "--num_steps",
         type=int,
-        default=20000,
-        help="Number of gradient steps. Increase for final runs; reduce for debugging / quick sweeps.",
+        default=40000,
+        help="Number of gradient steps. Increase for longer final runs; reduce for debugging / quick sweeps.",
     )
     parser.add_argument(
         "--project",
@@ -989,8 +1031,8 @@ def parse_args(argv):
     parser.add_argument(
         "--eval_seed",
         type=int,
-        default=0,
-        help="Seed used when sampling the offline eval batch.",
+        default=None,
+        help="Seed used when sampling the offline eval batch. Leave unset to generate one in Python and record it in the training config.",
     )
     parser.add_argument(
         "--device",
@@ -1118,6 +1160,7 @@ def train_kwargs_from_args(args):
     return {
         "dataset_dir": dataset_dir,
         "output_dir": output_dir,
+        "train_seed": args.train_seed,
         "batch_size": args.batch_size,
         "num_steps": args.num_steps,
         "project": args.project,

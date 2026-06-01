@@ -33,6 +33,8 @@ fi
 cd "${PROJECT_DIR}"
 OFT_ROOT="$(cd "${PROJECT_DIR}/../../../../../../" && pwd -P)"
 source "${OFT_ROOT}/scripts/oft_arch/select_oft_install.sh"
+export UV_CACHE_DIR="${SLURM_TMPDIR:-/tmp/$USER/uv_cache}"
+mkdir -p "${UV_CACHE_DIR}"
 
 TOTAL_CPUS="${SLURM_CPUS_PER_TASK:-20}"
 THREADS_PER_WORKER="${THREADS_PER_WORKER:-${TOTAL_CPUS}}"
@@ -41,7 +43,6 @@ PARTITION_NAME="${SLURM_JOB_PARTITION:-${SLURM_PARTITION:-john}}"
 N_TRAJECTORIES="${N_TRAJECTORIES:-1000}"
 START_IDX="${START_IDX:-0}"
 END_IDX="${END_IDX:-${N_TRAJECTORIES}}"
-SEED="${SEED:-42}"
 MAX_LOOP="${MAX_LOOP:-2}"
 GRID_SIZE="${GRID_SIZE:-51}"
 OBSERVATION_MODE="${OBSERVATION_MODE:-legacy}"
@@ -83,7 +84,6 @@ echo "PARTITION_NAME=${PARTITION_NAME}"
 echo "N_TRAJECTORIES=${N_TRAJECTORIES}"
 echo "START_IDX=${START_IDX}"
 echo "END_IDX=${END_IDX}"
-echo "SEED=${SEED}"
 echo "MAX_LOOP=${MAX_LOOP}"
 echo "GRID_SIZE=${GRID_SIZE}"
 echo "OBSERVATION_MODE=${OBSERVATION_MODE}"
@@ -99,7 +99,6 @@ mkdir -p "${OUTPUT_BASE_DIR}"
 
 uv run python collect_trajectories_delta.py \
   --n_trajectories "${N_TRAJECTORIES}" \
-  --seed "${SEED}" \
   --start_idx "${START_IDX}" \
   --end_idx "${START_IDX}" \
   --n_workers 1 \

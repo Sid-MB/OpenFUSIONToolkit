@@ -36,6 +36,8 @@ else
   PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd -P)"
 fi
 cd "${PROJECT_DIR}"
+export UV_CACHE_DIR="${SLURM_TMPDIR:-/tmp/$USER/uv_cache}"
+mkdir -p "${UV_CACHE_DIR}"
 
 DATASET_DIR="${DATASET_DIR:?Set DATASET_DIR to the completed dataset root}"
 export OFT_DISABLE_JAX_COMPILE_CACHE="${OFT_DISABLE_JAX_COMPILE_CACHE:-1}"
