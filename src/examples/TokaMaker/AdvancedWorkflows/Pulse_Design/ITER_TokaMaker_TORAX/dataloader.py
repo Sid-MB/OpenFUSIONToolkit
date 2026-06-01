@@ -21,6 +21,17 @@ FAILURES_DIRNAME = 'failures'
 CHUNKS_DIRNAME = 'chunks'
 REPLAY_CACHE_DIRNAME = 'replay_cache'
 REPLAY_CACHE_VERSION = 1
+DEFAULT_REWARD_CONFIG = {
+    'q95_min': 3.0,
+    'beta_n_max': 2.8,
+    'fgw_max': 0.85,
+    'step_reward_weight': 1.0,
+    'q95_penalty_weight': 0.15,
+    'beta_n_penalty_weight': 1.67,
+    'fgw_penalty_weight': 3.0,
+    'q_flattop_weight': 1.0,
+    'flux_weight': 0.001,
+}
 
 
 class DatasetMismatchError(RuntimeError):
@@ -67,6 +78,10 @@ def _normalize_for_json(value):
     if isinstance(value, np.ndarray):
         return value.tolist()
     return value
+
+
+def default_reward_config():
+    return copy.deepcopy(DEFAULT_REWARD_CONFIG)
 
 
 def stable_json_dumps(payload):
@@ -184,6 +199,7 @@ def load_json(path):
 def create_run_manifest(*, n_trajectories, seed, max_loop, grid_size,
                         decision_times, rl_times, action_bounds,
                         sampler, observation_mode='legacy',
+                        reward_config=None,
                         start_idx=None, end_idx=None):
     return {
         'schema_version': DATASET_SCHEMA_VERSION,
@@ -197,6 +213,7 @@ def create_run_manifest(*, n_trajectories, seed, max_loop, grid_size,
         'rl_times': [int(t) for t in rl_times],
         'action_bounds': copy.deepcopy(action_bounds),
         'sampler': copy.deepcopy(sampler),
+        'reward_config': copy.deepcopy(reward_config or default_reward_config()),
         'requested_range': {
             'start_idx': None if start_idx is None else int(start_idx),
             'end_idx': None if end_idx is None else int(end_idx),
@@ -223,6 +240,7 @@ def manifest_comparison_subset(manifest):
         'max_loop',
         'grid_size',
         'observation_mode',
+        'reward_config',
         'decision_times',
         'rl_times',
         'action_bounds',
@@ -230,6 +248,7 @@ def manifest_comparison_subset(manifest):
     )
     subset = {key: manifest.get(key) for key in keys}
     subset['observation_mode'] = observation_mode
+    subset['reward_config'] = copy.deepcopy(manifest.get('reward_config', default_reward_config()))
     return subset
 
 
@@ -974,6 +993,7 @@ def infer_replay_cache_specs(cache_dir):
         'cache_dir': str(Path(cache_dir).resolve()),
         'source_dataset_dir': manifest.get('source_dataset_dir'),
         'source_format': manifest.get('source_format'),
+        'reward_config': manifest.get('reward_config', default_reward_config()),
         'materialize_max_workers': manifest.get('materialize_max_workers'),
         'materialize_worker_backend': manifest.get('materialize_worker_backend'),
         'explicit_next_state_store_count': int(manifest.get('explicit_next_state_store_count', 0)),
@@ -1473,6 +1493,7 @@ def materialize_replay_cache(dataset_dir, cache_dir=None, *, overwrite=False,
             'created_at': utc_now_iso(),
             'source_dataset_dir': str(dataset_dir),
             'source_format': specs['selected_format'],
+            'reward_config': copy.deepcopy(load_json(dataset_paths(dataset_dir)['manifest']).get('reward_config', default_reward_config())),
             'materialize_max_workers': int(max_workers),
             'materialize_worker_backend': worker_backend,
             'num_trajectories': int(specs['num_trajectories']),

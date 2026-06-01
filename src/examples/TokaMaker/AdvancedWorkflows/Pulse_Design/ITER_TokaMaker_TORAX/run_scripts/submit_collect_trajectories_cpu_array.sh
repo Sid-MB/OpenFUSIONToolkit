@@ -27,6 +27,9 @@ set -euo pipefail
 # Shell wrappers intentionally do not assign run defaults. Collection defaults
 # live in collect_trajectories_delta.py argparse; set an env var here only when
 # the shell needs it for Slurm shape/dependencies or when overriding argparse.
+# Optional W&B telemetry is submitted automatically to a separate collection
+# project once the dataset exists; keep it on by default so collection runs are
+# visible without changing the training/eval W&B project.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd -P)"
@@ -207,6 +210,10 @@ require_env DRY_RUN
 require_env SUBMIT_GRID_SEARCH
 require_env SUBMIT_REPLAY_CACHE
 require_env SUBMIT_IQL
+SUBMIT_COLLECTION_WANDB="${SUBMIT_COLLECTION_WANDB:-1}"
+COLLECTION_WANDB_PROJECT="${COLLECTION_WANDB_PROJECT:-iql-collection}"
+COLLECTION_WANDB_GROUP="${COLLECTION_WANDB_GROUP:-$(basename "${OUTPUT_BASE_DIR%/}")}"
+COLLECTION_WANDB_MODE="${COLLECTION_WANDB_MODE:-${WANDB_MODE:-}}"
 
 # Optional Slurm priority tweak for the trajectory array itself. Leave unset to
 # use the cluster's normal scheduling priority.
@@ -330,6 +337,10 @@ echo_env_or_argparse_default REPLAY_CACHE_WORKER_BACKEND "materialize argparse d
 echo_env_or_argparse_default OVERWRITE_REPLAY_CACHE "materialize argparse default"
 echo_env_or_argparse_default REPLAY_CACHE_DIR "materialize argparse default"
 echo "SUBMIT_IQL=${SUBMIT_IQL}"
+echo "SUBMIT_COLLECTION_WANDB=${SUBMIT_COLLECTION_WANDB}"
+echo "COLLECTION_WANDB_PROJECT=${COLLECTION_WANDB_PROJECT}"
+echo_env_or_argparse_default COLLECTION_WANDB_GROUP "unset"
+echo_env_or_argparse_default COLLECTION_WANDB_MODE "unset"
 echo "DRY_RUN=${DRY_RUN}"
 
 if [ "${DRY_RUN}" != "0" ]; then
@@ -509,4 +520,28 @@ if [ "${SUBMIT_IQL}" != "0" ]; then
       "${SCRIPT_DIR}/train_iql.sh"
   )"
   echo "iql_jid=${iql_jid}"
+fi
+
+if [ "${SUBMIT_COLLECTION_WANDB}" != "0" ]; then
+  echo "Submitting separate collection W&B telemetry job..."
+  collection_wandb_export="ALL,DATASET_DIR=${OUTPUT_BASE_DIR},WANDB_PROJECT=${COLLECTION_WANDB_PROJECT}"
+  if [ -n "${COLLECTION_WANDB_GROUP:-}" ]; then
+    collection_wandb_export+=",WANDB_GROUP=${COLLECTION_WANDB_GROUP}"
+  fi
+  if [ -n "${COLLECTION_WANDB_MODE:-}" ]; then
+    collection_wandb_export+=",WANDB_MODE=${COLLECTION_WANDB_MODE}"
+  fi
+  collection_wandb_args=()
+  if [ -n "${collection_jid}" ]; then
+    collection_wandb_args+=(--dependency=afterok:${collection_jid})
+  fi
+  collection_wandb_jid="$(
+    sbatch --parsable \
+      "${collection_wandb_args[@]}" \
+      --export="${collection_wandb_export}" \
+      --output="${RUN_LOG_DIR}/collection_wandb-%j.out" \
+      --error="${RUN_LOG_DIR}/collection_wandb-%j.err" \
+      "${SCRIPT_DIR}/collection_wandb.sh"
+  )"
+  echo "collection_wandb_jid=${collection_wandb_jid}"
 fi

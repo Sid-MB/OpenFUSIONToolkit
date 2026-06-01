@@ -4,6 +4,7 @@ For **data collection** use `submit_collect_trajectories_cpu_array.sh`.
 For **evaluation** (single checkpoint) use `eval_iql_actor_cpu.sh`.
 For **evaluation** (baseline fallback, no checkpoint) use `eval_baseline_cpu.sh`.
 For **evaluation** (many checkpoints in parallel) use `eval_iql_actor_cpu_batch.sh`.
+For **post-training checkpoint fanout** use `fanout_checkpoint_evals.sh`.
 
 See also `docs/eval_performance.md` for the compile-once / persistent-cache
 optimizations that make all eval scripts fast.
@@ -40,6 +41,13 @@ optimizations that make all eval scripts fast.
   - Defaults to `ACTION_RATE_PENALTY=0`, `OBSERVATION_MODE=plasma_only`,
     and `ACTION_MODE=absolute`.
   - Use this when testing whether the default actor setup is over-regularized.
+
+- `fanout_checkpoint_evals.sh` _(direct use: run after training, or from a
+  dependency)_
+  - Scans a training output directory for `checkpoint_step_*.pt` files and
+    submits one CPU eval job per checkpoint.
+  - Use this when you want checkpoint-by-checkpoint closed-loop plots and movies
+    without blocking training.
 
 ## Trajectory Collection Entrypoint
 

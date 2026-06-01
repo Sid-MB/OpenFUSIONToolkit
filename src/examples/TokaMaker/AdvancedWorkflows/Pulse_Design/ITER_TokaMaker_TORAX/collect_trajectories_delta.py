@@ -48,6 +48,7 @@ import subprocess
 from dataloader import (
     create_run_manifest,
     dataset_paths,
+    default_reward_config,
     ensure_dataset_dirs,
     initialize_dataset,
     record_task_status,
@@ -1212,6 +1213,7 @@ if __name__ == '__main__':
         action_bounds=action_manifest_fields(),
         sampler=sampler_manifest_fields(),
         observation_mode=args.observation_mode,
+        reward_config=default_reward_config(),
         start_idx=args.start_idx,
         end_idx=args.end_idx,
     )

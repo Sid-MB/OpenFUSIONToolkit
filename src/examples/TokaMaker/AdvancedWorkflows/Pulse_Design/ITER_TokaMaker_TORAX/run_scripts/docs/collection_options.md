@@ -138,6 +138,8 @@ normal collection shape is `N_WORKERS=1` and `CPUS_PER_TASK=4`.
 - Reuse is schema-specific. `legacy`, `prev_action`, and `plasma_only`
   datasets are not interchangeable, so the submit helper checks
   `observation_mode` before it skips recollection.
+- The exact reward config used at collection time is saved in
+  `run_manifest.json` and mirrored into `replay_cache/replay_manifest.json`.
 - `MaxArraySize=1001` on this cluster means array task IDs `0..1000`; increase
   `CHUNK_SIZE` or split the range when you need more tasks.
 - Scale throughput with `ARRAY_CONCURRENCY`, not `N_WORKERS`. Each worker in a

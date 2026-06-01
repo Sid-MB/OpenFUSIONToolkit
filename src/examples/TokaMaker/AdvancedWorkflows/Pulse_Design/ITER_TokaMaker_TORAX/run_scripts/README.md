@@ -57,6 +57,11 @@ TORAX/TokaMaker closed-loop simulation for every requested trajectory. Set
 `REUSE_EXISTING_DATASET=0` only when you explicitly want a fresh collection.
 `legacy`, `prev_action`, and `plasma_only` outputs are not interchangeable.
 
+Collection telemetry is logged automatically to a separate W&B project so the
+dataset-build pipeline stays visible without mixing it into the training/eval
+project. It logs one run per completed dataset root; it does not add
+per-trajectory W&B traffic.
+
 ```bash
 REUSE_EXISTING_DATASET=0 \
 N_TRAJECTORIES=1000 START_IDX=0 END_IDX=1000 \
@@ -104,6 +109,13 @@ These are the main knobs you usually change for a run.
 | `N_WORKERS` | `4` for batch eval | Raise or lower parallel eval fan-out. |
 | `MAX_LOOP` | `1` for baseline, `2` for actor evals | Match the collection settings you want to compare against. |
 | `GRID_SIZE` | `51` | Match the dataset or run a smaller smoke test. |
+
+Training now saves checkpoints every 1000 steps by default. That gives you
+finer recovery points without materially changing training cost. If you want
+full closed-loop plots for each checkpoint, use
+`run_scripts/fanout_checkpoint_evals.sh` after training; it submits one CPU
+eval job per `checkpoint_step_*.pt` file and writes the plots/movie into a
+separate eval tree.
 
 Standalone CPU jobs on `john` default to `20` CPUs per task request, but the
 wrappers now cap the effective thread count to the physical cores visible on
@@ -217,6 +229,8 @@ Artifacts are written under the same batch output root as above.
 Rewards are computed by `compute_reward()` in `collect_trajectories_delta.py`
 and **baked into `replay_shards/*.npz` at collection time**. The replay cache
 materializer only aggregates those saved values; it does not recompute them.
+The exact reward config is now stored in `run_manifest.json` and mirrored into
+`replay_cache/replay_manifest.json`.
 
 **You must recollect trajectories** to apply a new reward function. The normal
 path is still the compact replay shards (`SAVE_FULL_ZARR=0`); do not enable

@@ -11,8 +11,14 @@
 # Example:
 #   DATASET_DIR=./rl_dataset_delta_sampling_maxloop=2_grid_51_preprocessed \
 #     ACTION_MODE=residual_prev_action OBSERVATION_MODE=prev_action \
-#     ACTION_RATE_PENALTY=0.01 CHECKPOINT_EVAL_INTERVAL=5000 \
+#     ACTION_RATE_PENALTY=0.01 CHECKPOINT_INTERVAL=1000 \
 #     sbatch run_scripts/train_iql.sh
+#
+# If you want checkpoint-by-checkpoint closed-loop plots without blocking
+# training, run the fanout helper after training:
+#   DATASET_DIR=./run_<date> \
+#     TRAIN_OUTPUT_DIR=./out/iql/<run>/<wandb_run_id> \
+#     ./run_scripts/fanout_checkpoint_evals.sh
 
 #SBATCH --account=nlp
 #SBATCH --cpus-per-task=4

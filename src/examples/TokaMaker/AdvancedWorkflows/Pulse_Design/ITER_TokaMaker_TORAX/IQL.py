@@ -908,8 +908,12 @@ def parse_args(argv):
     parser.add_argument(
         "--checkpoint_interval",
         type=int,
-        default=5000,
-        help="Save a training checkpoint every N steps. Lower values are safer; higher values reduce I/O.",
+        default=1000,
+        help=(
+            "Save a training checkpoint every N steps. Use 1000 for the normal default when you want "
+            "frequent recovery points and side-by-side analysis; increase it only when checkpoint I/O "
+            "becomes a problem on very long runs."
+        ),
     )
     parser.add_argument(
         "--log_interval",
