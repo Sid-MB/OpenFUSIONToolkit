@@ -110,6 +110,7 @@ normal collection shape is `N_WORKERS=1` and `CPUS_PER_TASK=4`.
     rewards.npy
     dones.npy
     replay_manifest.json
+  reward_recalc_stats/                    # present by default; compact scalar traces for reward updates
 ```
 
 ## Slurm Log Locations
@@ -140,6 +141,9 @@ normal collection shape is `N_WORKERS=1` and `CPUS_PER_TASK=4`.
   `observation_mode` before it skips recollection.
 - The exact reward config used at collection time is saved in
   `run_manifest.json` and mirrored into `replay_cache/replay_manifest.json`.
+- The collection path now also saves `reward_recalc_stats/*.npz` by default.
+  Those bundles hold the minimum scalar traces needed to rewrite the dataset
+  with a new reward config later, without rerunning TORAX.
 - `MaxArraySize=1001` on this cluster means array task IDs `0..1000`; increase
   `CHUNK_SIZE` or split the range when you need more tasks.
 - Scale throughput with `ARRAY_CONCURRENCY`, not `N_WORKERS`. Each worker in a
@@ -147,3 +151,6 @@ normal collection shape is `N_WORKERS=1` and `CPUS_PER_TASK=4`.
 - The relax cache (`USE_INITIAL_RELAX_CACHE=1`) is keyed by hash of
   `grid_size`, initial profiles, and equilibrium inputs; identical runs reuse
   the same file. See `docs/cache_and_gpu.md` for details.
+- `update_trajectories.py` rewrites a dataset into a reward-variant copy when
+  you want to change `RLRewardConfig` without recollecting trajectories. It
+  requires the saved `reward_recalc_stats/*.npz` bundles.

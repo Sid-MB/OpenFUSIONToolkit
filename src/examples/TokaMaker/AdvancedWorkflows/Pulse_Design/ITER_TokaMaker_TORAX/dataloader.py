@@ -1,8 +1,11 @@
 import copy
+import ast
 import json
 import os
 import shutil
 import tempfile
+import sys
+from dataclasses import asdict
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,19 +22,9 @@ FULL_TRAJECTORIES_DIRNAME = 'full_trajectories'
 REPLAY_SHARDS_DIRNAME = 'replay_shards'
 FAILURES_DIRNAME = 'failures'
 CHUNKS_DIRNAME = 'chunks'
+REWARD_RECALC_STATS_DIRNAME = 'reward_recalc_stats'
 REPLAY_CACHE_DIRNAME = 'replay_cache'
 REPLAY_CACHE_VERSION = 1
-DEFAULT_REWARD_CONFIG = {
-    'q95_min': 3.0,
-    'beta_n_max': 2.8,
-    'fgw_max': 0.85,
-    'step_reward_weight': 1.0,
-    'q95_penalty_weight': 0.15,
-    'beta_n_penalty_weight': 1.67,
-    'fgw_penalty_weight': 3.0,
-    'q_flattop_weight': 1.0,
-    'flux_weight': 0.001,
-}
 
 
 class DatasetMismatchError(RuntimeError):
@@ -53,6 +46,7 @@ def dataset_paths(dataset_dir):
         'replay_shards': root / REPLAY_SHARDS_DIRNAME,
         'failures': root / FAILURES_DIRNAME,
         'chunks': root / CHUNKS_DIRNAME,
+        'reward_recalc_stats': root / REWARD_RECALC_STATS_DIRNAME,
         'replay_cache': root / REPLAY_CACHE_DIRNAME,
     }
 
@@ -65,6 +59,7 @@ def ensure_dataset_dirs(dataset_dir):
     paths['replay_shards'].mkdir(parents=True, exist_ok=True)
     paths['failures'].mkdir(parents=True, exist_ok=True)
     paths['chunks'].mkdir(parents=True, exist_ok=True)
+    paths['reward_recalc_stats'].mkdir(parents=True, exist_ok=True)
     return paths
 
 
@@ -81,7 +76,55 @@ def _normalize_for_json(value):
 
 
 def default_reward_config():
-    return copy.deepcopy(DEFAULT_REWARD_CONFIG)
+    try:
+        from OpenFUSIONToolkit.TokaMaker.pulse_design import RLRewardConfig
+        return asdict(RLRewardConfig())
+    except Exception:
+        source_path = Path(__file__).resolve().parents[6] / 'src/python/OpenFUSIONToolkit/TokaMaker/pulse_design.py'
+        if source_path.is_file():
+            tree = ast.parse(source_path.read_text())
+            for node in tree.body:
+                if isinstance(node, ast.ClassDef) and node.name == 'RLRewardConfig':
+                    values = {}
+                    for stmt in node.body:
+                        if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name) and stmt.value is not None:
+                            target = stmt.target.id
+                            if isinstance(stmt.value, ast.Constant):
+                                values[target] = stmt.value.value
+                    if values:
+                        return values
+        return {
+            'q95_min': 3.0,
+            'beta_n_max': 2.8,
+            'fgw_max': 0.85,
+            'step_reward_weight': 1.0,
+            'q95_penalty_weight': 1.2,
+            'beta_n_penalty_weight': 1.0,
+            'fgw_penalty_weight': 2.0,
+            'q_flattop_weight': 1.0,
+            'flux_weight': 0.012,
+        }
+
+
+def reward_config_to_dict(reward_config=None):
+    """Return a JSON-serializable reward config dict.
+
+    Accepts the existing dict form, dataclass instances such as
+    ``RLRewardConfig()``, or ``None`` for the current defaults.
+    """
+    if reward_config is None:
+        return default_reward_config()
+    if isinstance(reward_config, dict):
+        return copy.deepcopy(reward_config)
+    if hasattr(reward_config, '__dataclass_fields__'):
+        return copy.deepcopy(asdict(reward_config))
+    if hasattr(reward_config, '__dict__'):
+        return copy.deepcopy({
+            key: value
+            for key, value in vars(reward_config).items()
+            if not key.startswith('_')
+        })
+    return copy.deepcopy(reward_config)
 
 
 def stable_json_dumps(payload):
@@ -225,6 +268,7 @@ def create_run_manifest(*, n_trajectories, seed, max_loop, grid_size,
             'replay_shards': REPLAY_SHARDS_DIRNAME,
             'failures': FAILURES_DIRNAME,
             'chunks': CHUNKS_DIRNAME,
+            'reward_recalc_stats': REWARD_RECALC_STATS_DIRNAME,
         },
     }
 
@@ -343,6 +387,10 @@ def full_trajectory_zarr_path(dataset_dir, run_id):
     return dataset_paths(dataset_dir)['full_trajectories'] / f'trajectory_{int(run_id):04d}.zarr'
 
 
+def reward_recalc_stats_path(dataset_dir, run_id):
+    return dataset_paths(dataset_dir)['reward_recalc_stats'] / f'trajectory_{int(run_id):04d}.npz'
+
+
 def replay_shard_path(dataset_dir, run_id):
     return dataset_paths(dataset_dir)['replay_shards'] / f'trajectory_{int(run_id):04d}.npz'
 
@@ -356,6 +404,88 @@ def save_trajectory_atomic(dataset_dir, payload):
     path = trajectory_path(dataset_dir, run_id)
     atomic_write_json_once(path, payload)
     return str(path)
+
+
+def save_reward_recalc_stats_atomic(dataset_dir, payload, data_tree):
+    run_id = int(payload['run_id'])
+    path = reward_recalc_stats_path(dataset_dir, run_id)
+    if path.exists():
+        raise FileExistsError(f'File already exists: {path}')
+    if data_tree is None:
+        raise ValueError('save_stats_for_reward_recalc=True requires a TORAX data_tree')
+
+    scalars = data_tree['scalars']
+    summary = payload.get('summary') or {}
+    arrays = {
+        'torax_time': np.asarray(scalars.coords['time'].values, dtype=np.float32),
+        'decision_times': np.asarray(payload.get('decision_times', []), dtype=np.int32),
+        'rl_times': np.asarray(payload.get('rl_times', []), dtype=np.int32),
+        'Q_fusion': np.asarray(scalars['Q_fusion'].values, dtype=np.float32),
+        'q95': np.asarray(scalars['q95'].values, dtype=np.float32),
+        'beta_N': np.asarray(scalars['beta_N'].values, dtype=np.float32),
+        'fgw_n_e_line_avg': np.asarray(scalars['fgw_n_e_line_avg'].values, dtype=np.float32),
+        'terminal_Q_flattop_avg': np.asarray([float(summary.get('Q_flattop_avg', 0.0))], dtype=np.float32),
+        'terminal_flux_consumed_Wb': np.asarray([float(summary.get('flux_consumed_Wb', 0.0))], dtype=np.float32),
+        'run_id': np.asarray(run_id, dtype=np.int64),
+        'timestamp': np.asarray(str(payload.get('timestamp') or ''), dtype=np.str_),
+        'reward_config_json': np.asarray(
+            json.dumps(reward_config_to_dict(payload.get('reward_config')), sort_keys=True),
+            dtype=np.str_,
+        ),
+    }
+    atomic_save_npz_once(path, **arrays)
+    return str(path)
+
+
+def load_reward_recalc_stats(stats_path):
+    with np.load(stats_path, allow_pickle=False) as data:
+        return {key: data[key] for key in data.files}
+
+
+def recompute_reward_series_from_stats(stats, rl_times, reward_config=None):
+    """Recompute the per-decision reward series from saved scalar traces.
+
+    The saved stats bundle is intentionally compact: it stores the TORAX scalar
+    traces needed to re-score each RL interval without rerunning the physics.
+    """
+    if isinstance(stats, (str, Path)):
+        stats = load_reward_recalc_stats(stats)
+
+    cfg = reward_config_to_dict(reward_config)
+    boundaries = np.asarray(rl_times, dtype=float).ravel()
+    if boundaries.size < 2:
+        raise ValueError('rl_times must contain at least two interval boundaries')
+
+    torax_time = np.asarray(stats['torax_time'], dtype=float).ravel()
+    q_fusion = np.asarray(stats['Q_fusion'], dtype=float).ravel()
+    q95 = np.asarray(stats['q95'], dtype=float).ravel()
+    beta_n = np.asarray(stats['beta_N'], dtype=float).ravel()
+    fgw = np.asarray(stats['fgw_n_e_line_avg'], dtype=float).ravel()
+    q_flattop_avg = float(np.asarray(stats['terminal_Q_flattop_avg'], dtype=float).reshape(-1)[0])
+    flux_consumed_wb = float(np.asarray(stats['terminal_flux_consumed_Wb'], dtype=float).reshape(-1)[0])
+
+    rewards = np.empty(boundaries.size - 1, dtype=np.float32)
+    safety_start_time = float(boundaries[0])
+
+    for idx, (t_start, t_end) in enumerate(zip(boundaries[:-1], boundaries[1:])):
+        mask = (torax_time >= t_start) & (torax_time <= t_end)
+        if np.any(mask):
+            step_reward = np.log(float(np.nanmean(q_fusion[mask])) + 1.0)
+        else:
+            step_reward = 0.0
+
+        penalty = 0.0
+        if t_start >= safety_start_time:
+            penalty += float(cfg['q95_penalty_weight']) * float(np.sum(np.maximum(float(cfg['q95_min']) - q95[mask], 0.0)))
+            penalty += float(cfg['beta_n_penalty_weight']) * float(np.sum(np.maximum(beta_n[mask] - float(cfg['beta_n_max']), 0.0)))
+            penalty += float(cfg['fgw_penalty_weight']) * float(np.sum(np.maximum(fgw[mask] - float(cfg['fgw_max']), 0.0)))
+
+        reward = float(cfg['step_reward_weight']) * step_reward - penalty
+        if idx == boundaries.size - 2:
+            reward += float(cfg['q_flattop_weight']) * q_flattop_avg - float(cfg['flux_weight']) * flux_consumed_wb
+        rewards[idx] = np.float32(reward)
+
+    return rewards
 
 
 def _xarray_node_to_dataset(node):
@@ -1100,6 +1230,12 @@ def describe_dataset_with_replay_cache(directory, cache_dir=None, prefer_cache=T
     description.update({
         'replay_cache_dir': str(cache_path),
         'replay_cache_used': False,
+        'reward_config': copy.deepcopy(
+            load_json(dataset_paths(directory)['manifest']).get(
+                'reward_config',
+                default_reward_config(),
+            )
+        ),
     })
     return description
 

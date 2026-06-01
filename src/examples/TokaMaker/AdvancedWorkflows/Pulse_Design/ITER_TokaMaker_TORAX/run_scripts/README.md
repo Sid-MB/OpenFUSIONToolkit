@@ -227,35 +227,37 @@ Artifacts are written under the same batch output root as above.
 ### Changed the reward metric — what to re-run
 
 Rewards are computed by `compute_reward()` in `collect_trajectories_delta.py`
-and **baked into `replay_shards/*.npz` at collection time**. The replay cache
-materializer only aggregates those saved values; it does not recompute them.
-The exact reward config is now stored in `run_manifest.json` and mirrored into
-`replay_cache/replay_manifest.json`.
+and baked into `replay_shards/*.npz` at collection time. The collection step
+now also saves the minimum scalar traces needed to recalculate rewards later in
+`reward_recalc_stats/*.npz` when `save_stats_for_reward_recalc=True` (the
+default). The replay cache materializer still only aggregates saved values; it
+does not recompute them.
 
-**You must recollect trajectories** to apply a new reward function. The normal
-path is still the compact replay shards (`SAVE_FULL_ZARR=0`); do not enable
-full Zarr unless you explicitly need deeper forensic traces or want to
-recompute rewards from richer simulator state.
+The exact reward config is stored in `run_manifest.json` and mirrored into
+`replay_cache/replay_manifest.json`. If a dataset has `reward_recalc_stats/`,
+you can rewrite it into a reward-specific variant without rerunning TORAX by
+using `update_trajectories.py`.
 
 ```bash
-# 1. Recollect with the new reward logic (compact shards by default)
-N_TRAJECTORIES=1000 START_IDX=0 END_IDX=1000 \
-OUTPUT_BASE_DIR=./my_dataset_new_reward \
-SUBMIT_REPLAY_CACHE=1 SUBMIT_IQL=1 \
-  ./run_scripts/submit_collect_trajectories_cpu_array.sh
+# 1. Rewrite the dataset under a reward-variant directory.
+uv run python update_trajectories.py ./my_dataset
 
-# 2. (If replay cache was not auto-submitted) Materialize it:
-DATASET_DIR=./my_dataset_new_reward OVERWRITE_REPLAY_CACHE=1 \
-  sbatch run_scripts/materialize_replay_cache.sh
-
-# 3. Retrain IQL
-DATASET_DIR=./my_dataset_new_reward \
+# 2. Train IQL on the rewritten dataset variant that the script prints.
+DATASET_DIR=./my_dataset/reward_variants/reward_<hash> \
   sbatch run_scripts/train_iql.sh
 
-# 4. Re-evaluate
-ACTOR_CHECKPOINT=./my_dataset_new_reward/iql/iql_weights.pt \
+# 3. Re-evaluate from the matching checkpoint path under that same variant.
+ACTOR_CHECKPOINT=./my_dataset/reward_variants/reward_<hash>/iql/iql_weights.pt \
   sbatch run_scripts/eval_iql_actor_cpu.sh
 ```
+
+Replace `<hash>` with the variant name printed by `update_trajectories.py`.
+The script prints the exact reward-variant output directory at the end.
+
+If the dataset does not have `reward_recalc_stats/*.npz`, you still need to
+recollect trajectories to change the reward function. The normal path remains
+the compact replay shards (`SAVE_FULL_ZARR=0`); do not enable full Zarr unless
+you explicitly need deeper forensic traces.
 
 ### Smoke test (5 trajectories, quick end-to-end check)
 
@@ -277,6 +279,7 @@ SUBMIT_GRID_SEARCH=1 SUBMIT_REPLAY_CACHE=1 SUBMIT_IQL=1 \
 <OUTPUT_BASE_DIR>/
   run_manifest.json              # dataset metadata (seed, grid, MAX_LOOP)
   replay_shards/*.npz            # per-trajectory data (states, actions, rewards)
+  reward_recalc_stats/*.npz      # compact scalar traces for future reward updates
   grid_search/                   # best-observed baseline (SUBMIT_GRID_SEARCH=1)
     grid_search_leaderboard.csv
     best_trajectory.json
@@ -284,6 +287,7 @@ SUBMIT_GRID_SEARCH=1 SUBMIT_REPLAY_CACHE=1 SUBMIT_IQL=1 \
     states/actions/rewards/...npy
   failures/failed_run_*.json     # error details for any failed trajectories
   full_trajectories/*.zarr       # rich TORAX traces (SAVE_FULL_ZARR=1 only)
+  reward_variants/               # reward-rewritten dataset copies from update_trajectories.py
 ```
 
 ### IQL Training (`train_iql.sh`)

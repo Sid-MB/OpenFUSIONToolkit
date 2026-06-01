@@ -165,6 +165,7 @@ echo_env_or_argparse_default TRAJECTORY_TIMEOUT_SECONDS
 echo_env_or_argparse_default SAVE_REPLAY_SHARD
 echo_env_or_argparse_default SAVE_FULL_ZARR
 echo_env_or_argparse_default SAVE_JSON
+echo_env_or_argparse_default SAVE_STATS_FOR_REWARD_RECALC
 echo "CHUNK_START=${CHUNK_START}"
 echo "CHUNK_END=${CHUNK_END}"
 echo "OFT_NUM_THREADS=${OFT_NUM_THREADS}"
@@ -201,6 +202,7 @@ add_arg TRAJECTORY_TIMEOUT_SECONDS --trajectory_timeout_seconds
 add_bool_output_arg SAVE_REPLAY_SHARD --save_replay_shard --no_save_replay_shard
 add_bool_output_arg SAVE_FULL_ZARR --save_full_zarr --no_save_full_zarr
 add_bool_output_arg SAVE_JSON --save_json --no_save_json
+add_bool_output_arg SAVE_STATS_FOR_REWARD_RECALC --save_stats_for_reward_recalc --no_save_stats_for_reward_recalc
 
 if [ "${USE_INITIAL_RELAX_CACHE}" != "0" ]; then
   # INITIAL_RELAX_CACHE is normally exported by the submit helper; resolve the

@@ -37,6 +37,21 @@ OFT_ROOT="$(cd "${PROJECT_DIR}/../../../../../../" && pwd -P)"
 source "${OFT_ROOT}/scripts/oft_arch/select_oft_install.sh"
 source "${PROJECT_DIR}/run_scripts/lib/threading.sh"
 
+add_bool_arg() {
+  local env_name="$1"
+  local true_flag="$2"
+  local false_flag="$3"
+  local value="${!env_name:-}"
+  if [ -z "${value}" ]; then
+    return
+  fi
+  if [ "${value}" = "0" ] || [ "${value}" = "false" ] || [ "${value}" = "False" ]; then
+    COLLECT_ARGS+=("${false_flag}")
+  else
+    COLLECT_ARGS+=("${true_flag}")
+  fi
+}
+
 CPUS_PER_TASK="${SLURM_CPUS_PER_TASK:-20}"
 TOTAL_CPUS="${CPUS_PER_TASK}"
 N_WORKERS="${N_WORKERS:-1}"
@@ -87,9 +102,13 @@ echo "SEED=${SEED}"
 echo "MAX_LOOP=${MAX_LOOP}"
 echo "GRID_SIZE=${GRID_SIZE}"
 echo "TRAJECTORY_TIMEOUT_SECONDS=${TRAJECTORY_TIMEOUT_SECONDS}"
+echo "SAVE_STATS_FOR_REWARD_RECALC=${SAVE_STATS_FOR_REWARD_RECALC:-<argparse default>}"
 echo "OFT_SELECTED_FLAVOR=${OFT_SELECTED_FLAVOR}"
 echo "OFT_SELECTED_INSTALL=${OFT_SELECTED_INSTALL}"
 echo "OUTPUT_DIR=${OUTPUT_DIR}"
+
+COLLECT_ARGS=()
+add_bool_arg SAVE_STATS_FOR_REWARD_RECALC --save_stats_for_reward_recalc --no_save_stats_for_reward_recalc
 
 uv run python collect_trajectories_delta.py \
   --n_trajectories "${N_TRAJECTORIES}" \
@@ -101,4 +120,5 @@ uv run python collect_trajectories_delta.py \
   --max_loop "${MAX_LOOP}" \
   --grid_size "${GRID_SIZE}" \
   --trajectory_timeout_seconds "${TRAJECTORY_TIMEOUT_SECONDS}" \
+  "${COLLECT_ARGS[@]}" \
   "$@"

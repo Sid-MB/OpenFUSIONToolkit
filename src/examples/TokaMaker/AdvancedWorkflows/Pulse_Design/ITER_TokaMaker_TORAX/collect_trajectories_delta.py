@@ -20,6 +20,7 @@ Output layout:
     output_dir/run_manifest.json
     output_dir/all_actions.npy
     output_dir/replay_shards/trajectory_<run_id>.npz
+    output_dir/reward_recalc_stats/trajectory_<run_id>.npz  # optional, default on
     output_dir/full_trajectories/trajectory_<run_id>.zarr
     output_dir/trajectories/trajectory_<run_id>.json  # optional, with --save_json
     output_dir/failures/failed_run_<run_id>.json
@@ -88,10 +89,10 @@ BETA_N_MAX  = 2.8
 FGW_MAX     = 0.85
 
 # Terminal reward weight on flux consumption
-FLUX_WEIGHT = 0.001  # R_terminal = Q_flattop_avg - FLUX_WEIGHT * flux_consumed_Wb
-Q95_PENALTY_WEIGHT = 0.15
-BETA_N_PENALTY_WEIGHT = 1.67
-FGW_PENALTY_WEIGHT = 3
+FLUX_WEIGHT = 0.012  # R_terminal = Q_flattop_avg - FLUX_WEIGHT * flux_consumed_Wb
+Q95_PENALTY_WEIGHT = 1.2
+BETA_N_PENALTY_WEIGHT = 1.0
+FGW_PENALTY_WEIGHT = 2.0
 
 # Pellet schedule (fixed to baseline)
 PELLET_S_TOTAL = {0: 0, 90: 5e21, 450: 5e21, 451: 0}
@@ -978,7 +979,8 @@ def sampler_manifest_fields():
     }
 
 
-def trajectory_payload(transitions, summary, action_row, run_id):
+def trajectory_payload(transitions, summary, action_row, run_id,
+                       reward_config=None):
     payload = {
         'run_id':      run_id,
         'timestamp':   datetime.now().isoformat(),
@@ -986,20 +988,34 @@ def trajectory_payload(transitions, summary, action_row, run_id):
         'transitions': transitions,            # list of 21 dicts
         'summary':     summary,
         'observation_mode': summary.get('observation_mode', 'legacy') if isinstance(summary, dict) else 'legacy',
+        'decision_times': [int(t) for t in DECISION_TIMES],
+        'rl_times': [int(t) for t in RL_TIMES],
+        'reward_config': copy.deepcopy(reward_config or default_reward_config()),
     }
     return payload
 
 
-def save_trajectory(transitions, summary, action_row, run_id, dataset_dir):
+def save_trajectory(transitions, summary, action_row, run_id, dataset_dir,
+                    reward_config=None):
     """Save one trajectory as an atomically published JSON file."""
-    payload = trajectory_payload(transitions, summary, action_row, run_id)
+    payload = trajectory_payload(
+        transitions, summary, action_row, run_id, reward_config=reward_config
+    )
     return save_trajectory_atomic(dataset_dir, payload)
 
 
 def save_trajectory_outputs(transitions, summary, action_row, run_id, dataset_dir,
                             data_tree, save_replay_shard,
-                            save_full_zarr, save_json):
-    payload = trajectory_payload(transitions, summary, action_row, run_id)
+                            save_full_zarr, save_json,
+                            save_stats_for_reward_recalc,
+                            reward_config=None):
+    payload = trajectory_payload(
+        transitions, summary, action_row, run_id, reward_config=reward_config
+    )
+    stats_path = None
+    if save_stats_for_reward_recalc:
+        stats_path = save_reward_recalc_stats_atomic(dataset_dir, payload, data_tree)
+
     shard_path = None
     if save_replay_shard:
         shard_path = save_replay_shard_atomic(dataset_dir, payload)
@@ -1019,7 +1035,11 @@ def save_trajectory_outputs(transitions, summary, action_row, run_id, dataset_di
             json_path=json_path,
         )
 
-    paths = [str(path) for path in (shard_path, json_path, zarr_path) if path is not None]
+    paths = [
+        str(path)
+        for path in (stats_path, shard_path, json_path, zarr_path)
+        if path is not None
+    ]
     if not paths:
         raise ValueError('At least one trajectory output format must be enabled')
     return ' | '.join(paths)
@@ -1029,7 +1049,8 @@ def worker_fn(run_id, all_actions, eqdsk_list, eqtimes, coil_bounds,
               x_points, diverted_isoflux_pts, Ip_targets, ne_init, Te_init,
               psi_sample, dataset_dir, initial_relax_cache, log_dir,
               max_loop, grid_size, trajectory_timeout_seconds, save_replay_shard,
-              save_full_zarr, save_json, observation_mode):
+              save_full_zarr, save_json, save_stats_for_reward_recalc,
+              observation_mode, reward_config):
     """Run and save one trajectory using this worker's initialized TokaMaker."""
     global _mygs
     worker_t0 = time.time()
@@ -1046,6 +1067,12 @@ def worker_fn(run_id, all_actions, eqdsk_list, eqtimes, coil_bounds,
             if existing_path.exists():
                 raise FileExistsError(
                     f'trajectory output already exists before run starts: {existing_path}'
+                )
+        if save_stats_for_reward_recalc:
+            existing_stats_path = dataset_paths(dataset_dir)['reward_recalc_stats'] / f'trajectory_{int(run_id):04d}.npz'
+            if existing_stats_path.exists():
+                raise FileExistsError(
+                    f'reward-recalc stats output already exists before run starts: {existing_stats_path}'
                 )
         if save_full_zarr:
             existing_zarr_path = full_trajectory_zarr_path(dataset_dir, run_id)
@@ -1079,6 +1106,8 @@ def worker_fn(run_id, all_actions, eqdsk_list, eqtimes, coil_bounds,
                 save_replay_shard=save_replay_shard,
                 save_full_zarr=save_full_zarr,
                 save_json=save_json,
+                save_stats_for_reward_recalc=save_stats_for_reward_recalc,
+                reward_config=reward_config,
             )
             save_elapsed = time.time() - save_t0
             return run_id, True, {
@@ -1162,11 +1191,29 @@ if __name__ == '__main__':
                         help='Also save compact trajectory JSON files; disabled by default.')
     parser.add_argument('--no_save_json', dest='save_json', action='store_false',
                         help='Disable compact trajectory JSON output (default).')
+    parser.add_argument(
+        '--save_stats_for_reward_recalc',
+        dest='save_stats_for_reward_recalc',
+        action='store_true',
+        default=True,
+        help='Save the compact per-trajectory scalar traces needed to recalculate rewards later if RLRewardConfig changes. Keep this on for normal dataset collection; turn it off only when you explicitly do not want reward reweighting support.',
+    )
+    parser.add_argument(
+        '--no_save_stats_for_reward_recalc',
+        dest='save_stats_for_reward_recalc',
+        action='store_false',
+        help='Skip the reward-recalc stats bundle. Use only when storage or collection speed matters more than future reward updates.',
+    )
     args = parser.parse_args()
 
     if args.n_workers < 1:
         raise ValueError('--n_workers must be >= 1')
-    if not args.save_replay_shard and not args.save_full_zarr and not args.save_json:
+    if (
+        not args.save_replay_shard
+        and not args.save_full_zarr
+        and not args.save_json
+        and not args.save_stats_for_reward_recalc
+    ):
         raise ValueError('At least one output format must be enabled')
 
     cwd = os.getcwd()
@@ -1319,6 +1366,7 @@ if __name__ == '__main__':
             'save_replay_shard': bool(args.save_replay_shard),
             'save_full_zarr': bool(args.save_full_zarr),
             'save_json': bool(args.save_json),
+            'save_stats_for_reward_recalc': bool(args.save_stats_for_reward_recalc),
         },
     )
 
@@ -1393,6 +1441,8 @@ if __name__ == '__main__':
                     save_replay_shard=args.save_replay_shard,
                     save_full_zarr=args.save_full_zarr,
                     save_json=args.save_json,
+                    save_stats_for_reward_recalc=args.save_stats_for_reward_recalc,
+                    reward_config=default_reward_config(),
                 )
                 save_elapsed = time.time() - save_t0
                 total_trajectory_elapsed = simulation_elapsed + save_elapsed
@@ -1460,7 +1510,9 @@ if __name__ == '__main__':
             save_replay_shard=args.save_replay_shard,
             save_full_zarr=args.save_full_zarr,
             save_json=args.save_json,
+            save_stats_for_reward_recalc=args.save_stats_for_reward_recalc,
             observation_mode=args.observation_mode,
+            reward_config=default_reward_config(),
         )
 
         mp_context = os.environ.get('MP_CONTEXT', 'fork')
@@ -1551,6 +1603,7 @@ if __name__ == '__main__':
             'save_replay_shard': bool(args.save_replay_shard),
             'save_full_zarr': bool(args.save_full_zarr),
             'save_json': bool(args.save_json),
+            'save_stats_for_reward_recalc': bool(args.save_stats_for_reward_recalc),
             'trajectory_timings': trajectory_timings,
         },
     )

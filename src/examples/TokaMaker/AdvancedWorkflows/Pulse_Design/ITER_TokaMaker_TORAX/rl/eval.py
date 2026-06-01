@@ -18,6 +18,13 @@ from rl.eval_sim import run_actor_eval_simulation
 logger = get_logger(__name__)
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() not in {"", "0", "false", "no", "off"}
+
+
 def run_actor_eval_from_config(
     actor_checkpoint,
     output_dir=None,
@@ -34,6 +41,7 @@ def run_actor_eval_from_config(
     replay_cache_dir=None,
     prefer_replay_cache=True,
     allow_cpu_jax_on_gpu=False,
+    allow_mismatched_rewards=False,
     rl_segment_timeout_seconds=1800,
     rl_max_action_power_w=150.0e6,
     render_plots=True,
@@ -63,6 +71,7 @@ def run_actor_eval_from_config(
         replay_cache_dir=replay_cache_dir,
         prefer_replay_cache=prefer_replay_cache,
         allow_cpu_jax_on_gpu=allow_cpu_jax_on_gpu,
+        allow_mismatched_rewards=allow_mismatched_rewards,
         rl_segment_timeout_seconds=rl_segment_timeout_seconds,
         rl_max_action_power_w=rl_max_action_power_w,
     )
@@ -97,6 +106,15 @@ def parse_args():
     parser.add_argument("--replay_cache_dir", default=None, help="Optional compact replay-cache directory used to rebuild normalizers.")
     parser.add_argument("--no_replay_cache", action="store_true", help="Disable use of the replay cache when rebuilding normalizers.")
     parser.add_argument("--allow_cpu_jax_on_gpu", action="store_true", help="Allow CPU-backed JAX even if a GPU is visible.")
+    parser.add_argument(
+        "--allow_mismatched_rewards",
+        action=argparse.BooleanOptionalAction,
+        default=_env_flag("ALLOW_MISMATCHED_REWARDS", False),
+        help=(
+            "Allow eval to proceed even when the checkpoint's recorded training reward config differs from the current eval runtime reward config. "
+            "Leave this off for normal runs so reward-drift is caught early; turn it on only for deliberate legacy comparisons or reward-change ablations."
+        ),
+    )
     parser.add_argument(
         "--rl_segment_timeout_seconds",
         type=float,
@@ -138,6 +156,7 @@ def main():
         replay_cache_dir=args.replay_cache_dir,
         prefer_replay_cache=not args.no_replay_cache,
         allow_cpu_jax_on_gpu=args.allow_cpu_jax_on_gpu,
+        allow_mismatched_rewards=args.allow_mismatched_rewards,
         rl_segment_timeout_seconds=args.rl_segment_timeout_seconds,
         rl_max_action_power_w=args.rl_max_action_power_w,
         render_plots=not args.no_plots,

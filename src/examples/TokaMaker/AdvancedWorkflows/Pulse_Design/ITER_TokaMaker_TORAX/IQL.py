@@ -13,13 +13,19 @@ import torch.nn.functional as F
 import wandb
 from torch.utils.data import Dataset, DataLoader
 
-from dataloader import describe_dataset_with_replay_cache, load_d4rl_dataset
+from dataloader import describe_dataset_with_replay_cache, load_d4rl_dataset, reward_config_to_dict
 from log import get_logger
 
 # Things to also look at: src/python/OpenFUSIONToolkit/TokaMaker/pulse_design.py [path is from repo root]. Make sure if you edit pulse_design.py that you run rebuild.sh to update the Python package.
 
 app = modal.App("iql-training")
 logger = get_logger(__name__)
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() not in {"", "0", "false", "no", "off"}
 
 image = modal.Image.debian_slim().pip_install(
     "modal", "torch", "numpy", "wandb"
@@ -571,6 +577,7 @@ def train_from_config(
     action_rate_penalty,
     checkpoint_eval_interval,
     checkpoint_eval_metric,
+    allow_mismatched_rewards=False,
     wandb_group=None,
 ):
     base_config = {
@@ -610,6 +617,7 @@ def train_from_config(
         "action_rate_penalty": action_rate_penalty,
         "checkpoint_eval_interval": checkpoint_eval_interval,
         "checkpoint_eval_metric": checkpoint_eval_metric,
+        "allow_mismatched_rewards": allow_mismatched_rewards,
     }
     wandb_init_kwargs = {"project": project, "config": base_config, "job_type": "train"}
     if run_name:
@@ -670,6 +678,7 @@ def train_from_config(
         "dataset_replay_cache_used": specs.get("replay_cache_used", False),
         "dataset_replay_cache_dir": specs.get("replay_cache_dir"),
         "state_keys": specs["state_keys"],
+        "dataset_reward_config": reward_config_to_dict(specs.get("reward_config")),
     }
     run.config.update(dataset_config, allow_val_change=True)
     config = dict(run.config)
@@ -787,6 +796,7 @@ def train_from_config(
             "max_loop": int(config.get("actor_eval_max_loop", 0)),
             "grid_size": int(config.get("actor_eval_grid_size", 51)),
             "device": config.get("actor_eval_device"),
+            "allow_mismatched_rewards": bool(config.get("allow_mismatched_rewards", False)),
         },
     )
 
@@ -836,6 +846,7 @@ def train_from_config(
             max_loop=int(config.get("actor_eval_max_loop", 0)),
             grid_size=int(config.get("actor_eval_grid_size", 51)),
             device=config.get("actor_eval_device"),
+            allow_mismatched_rewards=bool(config.get("allow_mismatched_rewards", False)),
         )
     else:
         wandb.finish()
@@ -1068,6 +1079,15 @@ def parse_args(argv):
         help="Penalty weight on action changes when using residual_prev_action. Set to 0 to disable, or increase slightly if the policy is still too jumpy.",
     )
     parser.add_argument(
+        "--allow_mismatched_rewards",
+        action=argparse.BooleanOptionalAction,
+        default=_env_flag("ALLOW_MISMATCHED_REWARDS", False),
+        help=(
+            "Allow eval to continue even when the checkpoint's recorded training reward config differs from the current eval runtime reward config. "
+            "Leave this off for normal runs so reward drift fails fast; turn it on only for deliberate legacy comparisons or reward-change ablations."
+        ),
+    )
+    parser.add_argument(
         "--checkpoint_eval_interval",
         type=int,
         default=0,
@@ -1133,6 +1153,7 @@ def train_kwargs_from_args(args):
         "observation_mode": args.observation_mode,
         "action_mode": args.action_mode,
         "action_rate_penalty": args.action_rate_penalty,
+        "allow_mismatched_rewards": args.allow_mismatched_rewards,
         "checkpoint_eval_interval": args.checkpoint_eval_interval,
         "checkpoint_eval_metric": args.checkpoint_eval_metric,
         "wandb_group": args.wandb_group,

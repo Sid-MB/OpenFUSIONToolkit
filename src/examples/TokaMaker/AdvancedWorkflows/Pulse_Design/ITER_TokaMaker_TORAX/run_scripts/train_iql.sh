@@ -8,6 +8,10 @@
 #   Use for offline RL training. Keep RUN_ACTOR_EVAL=1 for final runs and
 #   disable it for quick parameter sweeps.
 #
+#   Set ALLOW_MISMATCHED_REWARDS=1 only when you intentionally want train-time
+#   checkpoint evals or the final post-training eval to proceed across a reward
+#   config change. Leave it off for normal runs so reward drift fails fast.
+#
 # Example:
 #   DATASET_DIR=./rl_dataset_delta_sampling_maxloop=2_grid_51_preprocessed \
 #     ACTION_MODE=residual_prev_action OBSERVATION_MODE=prev_action \
@@ -118,6 +122,7 @@ add_arg ACTOR_EVAL_GRID_SIZE --actor_eval_grid_size
 add_arg ACTOR_EVAL_DEVICE --actor_eval_device
 add_arg ACTION_MODE --action_mode
 add_arg ACTION_RATE_PENALTY --action_rate_penalty
+add_bool_arg ALLOW_MISMATCHED_REWARDS --allow_mismatched_rewards --no-allow_mismatched_rewards
 add_arg CHECKPOINT_EVAL_INTERVAL --checkpoint_eval_interval
 add_arg CHECKPOINT_EVAL_METRIC --checkpoint_eval_metric
 add_arg OBSERVATION_MODE --observation_mode
@@ -126,6 +131,7 @@ echo "Running on host: $(hostname)"
 echo "DATASET_DIR=${DATASET_DIR}"
 echo "OFT_SELECTED_FLAVOR=${OFT_SELECTED_FLAVOR}"
 echo "OFT_SELECTED_INSTALL=${OFT_SELECTED_INSTALL}"
+echo "ALLOW_MISMATCHED_REWARDS=${ALLOW_MISMATCHED_REWARDS:-0}"
 echo "IQL args: ${args[*]}"
 nvidia-smi || true
 

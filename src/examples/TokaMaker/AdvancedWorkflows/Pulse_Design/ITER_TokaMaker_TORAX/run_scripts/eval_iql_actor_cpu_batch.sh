@@ -44,6 +44,7 @@
 #   JAX_COMPILATION_CACHE_DIR persistent XLA cache root (runtime namespaces by build fingerprint; default: ./.jax_cache)
 #   MP_CONTEXT         multiprocessing start method: fork (default) or spawn
 #   DISABLE_JAX_COMPILE_CACHE set to 1 to disable the persistent cache
+#   ALLOW_MISMATCHED_REWARDS set to 1 only when you intentionally want to evaluate checkpoints against a different reward config
 
 #SBATCH --account=nlp
 #SBATCH --cpus-per-task=20
@@ -126,6 +127,7 @@ echo "MAX_LOOP=${MAX_LOOP}"
 echo "GRID_SIZE=${GRID_SIZE}"
 echo "JAX_COMPILATION_CACHE_DIR(base)=${JAX_COMPILATION_CACHE_DIR}"
 echo "MP_CONTEXT=${MP_CONTEXT}"
+echo "ALLOW_MISMATCHED_REWARDS=${ALLOW_MISMATCHED_REWARDS:-0}"
 
 ARGS=(
   --output_root "${OUTPUT_ROOT}"

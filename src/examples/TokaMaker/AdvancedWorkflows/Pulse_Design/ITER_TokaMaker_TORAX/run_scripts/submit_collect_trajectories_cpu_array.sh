@@ -214,6 +214,11 @@ SUBMIT_COLLECTION_WANDB="${SUBMIT_COLLECTION_WANDB:-1}"
 COLLECTION_WANDB_PROJECT="${COLLECTION_WANDB_PROJECT:-iql-collection}"
 COLLECTION_WANDB_GROUP="${COLLECTION_WANDB_GROUP:-$(basename "${OUTPUT_BASE_DIR%/}")}"
 COLLECTION_WANDB_MODE="${COLLECTION_WANDB_MODE:-${WANDB_MODE:-}}"
+COLLECTION_WANDB_ACCOUNT="${COLLECTION_WANDB_ACCOUNT:-nlp}"
+COLLECTION_WANDB_PARTITION="${COLLECTION_WANDB_PARTITION:-john}"
+COLLECTION_WANDB_CPUS_PER_TASK="${COLLECTION_WANDB_CPUS_PER_TASK:-1}"
+COLLECTION_WANDB_MEM="${COLLECTION_WANDB_MEM:-4G}"
+COLLECTION_WANDB_TIME="${COLLECTION_WANDB_TIME:-00:10:00}"
 
 # Optional Slurm priority tweak for the trajectory array itself. Leave unset to
 # use the cluster's normal scheduling priority.
@@ -288,6 +293,7 @@ append_export TRAJECTORY_TIMEOUT_SECONDS
 append_export SAVE_REPLAY_SHARD
 append_export SAVE_FULL_ZARR
 append_export SAVE_JSON
+append_export SAVE_STATS_FOR_REWARD_RECALC
 append_export INITIAL_RELAX_CACHE
 append_export INITIAL_RELAX_CACHE_DIR
 append_export OBSERVATION_MODE
@@ -321,6 +327,7 @@ echo_env_or_argparse_default TRAJECTORY_TIMEOUT_SECONDS "argparse default"
 echo_env_or_argparse_default SAVE_REPLAY_SHARD "argparse default"
 echo_env_or_argparse_default SAVE_FULL_ZARR "argparse default"
 echo_env_or_argparse_default SAVE_JSON "argparse default"
+echo_env_or_argparse_default SAVE_STATS_FOR_REWARD_RECALC "argparse default"
 echo_env_or_argparse_default OBSERVATION_MODE "argparse default"
 echo "SUBMIT_GRID_SEARCH=${SUBMIT_GRID_SEARCH}"
 echo_env_or_argparse_default GRID_SEARCH_MEM "unset"
@@ -388,6 +395,7 @@ if [ "${REUSE_EXISTING_DATASET}" = "0" ]; then
   add_bool_arg SAVE_REPLAY_SHARD --save_replay_shard --no_save_replay_shard
   add_bool_arg SAVE_FULL_ZARR --save_full_zarr --no_save_full_zarr
   add_bool_arg SAVE_JSON --save_json --no_save_json
+  add_bool_arg SAVE_STATS_FOR_REWARD_RECALC --save_stats_for_reward_recalc --no_save_stats_for_reward_recalc
   if [ "${USE_INITIAL_RELAX_CACHE}" = "0" ]; then
     INIT_ARGS+=(--no_initial_relax_cache)
   elif [ -n "${INITIAL_RELAX_CACHE:-}" ]; then
@@ -537,6 +545,11 @@ if [ "${SUBMIT_COLLECTION_WANDB}" != "0" ]; then
   fi
   collection_wandb_jid="$(
     sbatch --parsable \
+      --account="${COLLECTION_WANDB_ACCOUNT}" \
+      --partition="${COLLECTION_WANDB_PARTITION}" \
+      --cpus-per-task="${COLLECTION_WANDB_CPUS_PER_TASK}" \
+      --mem="${COLLECTION_WANDB_MEM}" \
+      --time="${COLLECTION_WANDB_TIME}" \
       "${collection_wandb_args[@]}" \
       --export="${collection_wandb_export}" \
       --output="${RUN_LOG_DIR}/collection_wandb-%j.out" \

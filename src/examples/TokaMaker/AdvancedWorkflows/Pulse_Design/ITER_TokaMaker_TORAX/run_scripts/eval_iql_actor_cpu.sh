@@ -48,6 +48,7 @@
 #   JAX_COMPILATION_CACHE_DIR persistent XLA cache root (runtime namespaces by build fingerprint; default: ./.jax_cache)
 #   RL_SEGMENT_TIMEOUT_SECONDS per-segment wall-clock timeout (default: 1800)
 #   OFT_DISABLE_JAX_COMPILE_CACHE set to 1 to disable the persistent cache when debugging a cache/runtime mismatch
+#   ALLOW_MISMATCHED_REWARDS  set to 1 only when you intentionally want to evaluate against a different reward config
 
 #SBATCH --account=nlp
 #SBATCH --cpus-per-task=20
@@ -140,6 +141,7 @@ echo "RL_SEGMENT_TIMEOUT_SECONDS=${RL_SEGMENT_TIMEOUT_SECONDS}"
 echo "RL_MAX_ACTION_POWER_W=${RL_MAX_ACTION_POWER_W}"
 echo "CPUS_PER_TASK=${CPUS_PER_TASK}"
 echo "TOTAL_CPUS=${TOTAL_CPUS}"
+echo "ALLOW_MISMATCHED_REWARDS=${ALLOW_MISMATCHED_REWARDS:-0}"
 
 ARGS=(
   --actor_checkpoint "${ACTOR_CHECKPOINT}"

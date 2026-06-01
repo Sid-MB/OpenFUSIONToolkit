@@ -21,7 +21,7 @@ import torch
 import wandb
 
 from IQL import ReplayBuffer, normalize_buffer
-from dataloader import describe_dataset_with_replay_cache, load_d4rl_dataset
+from dataloader import describe_dataset_with_replay_cache, load_d4rl_dataset, reward_config_to_dict
 from log import get_logger
 
 logger = get_logger(__name__)
@@ -43,6 +43,83 @@ def _jax_cache_workaround_note() -> str:
         "the persistent JAX cache. This is only a hint for catchable Python "
         "exceptions; native segfaults still bypass Python exception handling."
     )
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() not in {"", "0", "false", "no", "off"}
+
+
+def _load_checkpoint_reward_config(actor_checkpoint, ckpt):
+    """Return the reward config recorded with the checkpoint, if available.
+
+    We prefer the config saved inside the checkpoint itself. Older checkpoints
+    may only have a sibling `iql_config.json`, so we fall back to that. If no
+    provenance exists, return ``None`` and let the caller fail with a helpful
+    mismatch message unless the user explicitly allows mismatched rewards.
+    """
+    checkpoint_config = ckpt.get("config")
+    if isinstance(checkpoint_config, dict):
+        for key in ("dataset_reward_config", "reward_config"):
+            if checkpoint_config.get(key) is not None:
+                return reward_config_to_dict(checkpoint_config.get(key)), f"checkpoint config field {key}"
+
+    config_path = Path(actor_checkpoint).resolve().parent / "iql_config.json"
+    if config_path.is_file():
+        try:
+            with config_path.open() as handle:
+                saved_config = json.load(handle)
+            if isinstance(saved_config, dict):
+                for key in ("dataset_reward_config", "reward_config"):
+                    if saved_config.get(key) is not None:
+                        return reward_config_to_dict(saved_config.get(key)), f"{config_path} field {key}"
+        except Exception as exc:
+            logger.warning("Could not read %s for reward provenance: %s", config_path, exc)
+    return None, None
+
+
+def _reward_config_mismatch_message(*, actor_checkpoint, train_reward_config, train_reward_source,
+                                    eval_reward_config, allow_mismatched_rewards):
+    train_text = json.dumps(train_reward_config, sort_keys=True, indent=2) if train_reward_config is not None else "<unavailable>"
+    eval_text = json.dumps(eval_reward_config, sort_keys=True, indent=2) if eval_reward_config is not None else "<unavailable>"
+    return (
+        "Reward configuration mismatch detected for actor eval.\n"
+        f"  checkpoint: {actor_checkpoint}\n"
+        f"  checkpoint reward provenance: {train_reward_source or 'unavailable'}\n"
+        f"  allow_mismatched_rewards: {bool(allow_mismatched_rewards)}\n"
+        "\n"
+        "The checkpoint was trained with:\n"
+        f"{train_text}\n"
+        "\n"
+        "The current eval runtime will use:\n"
+        f"{eval_text}\n"
+        "\n"
+        "If you intentionally want to evaluate across a reward change, rerun with "
+        "`ALLOW_MISMATCHED_REWARDS=1` or pass `--allow_mismatched_rewards` to the eval CLI."
+    )
+
+
+def _check_reward_config_match(*, actor_checkpoint, train_reward_config, train_reward_source,
+                               eval_reward_config, allow_mismatched_rewards):
+    train_cfg = reward_config_to_dict(train_reward_config) if train_reward_config is not None else None
+    eval_cfg = reward_config_to_dict(eval_reward_config) if eval_reward_config is not None else None
+    mismatch = train_cfg is None or eval_cfg is None or train_cfg != eval_cfg
+    if not mismatch:
+        return True
+    message = _reward_config_mismatch_message(
+        actor_checkpoint=actor_checkpoint,
+        train_reward_config=train_cfg,
+        train_reward_source=train_reward_source,
+        eval_reward_config=eval_cfg,
+        allow_mismatched_rewards=allow_mismatched_rewards,
+    )
+    warnings.warn(message, RuntimeWarning, stacklevel=2)
+    if not allow_mismatched_rewards:
+        raise RuntimeError(message)
+    logger.warning("Proceeding despite reward mismatch because allow_mismatched_rewards is enabled.")
+    return False
 
 
 def _plain(value):
@@ -197,6 +274,7 @@ def run_actor_eval_simulation(
     replay_cache_dir=None,
     prefer_replay_cache=True,
     allow_cpu_jax_on_gpu=False,
+    allow_mismatched_rewards=False,
     rl_segment_timeout_seconds=1800,
     rl_max_action_power_w=150.0e6,
 ):
@@ -222,6 +300,15 @@ def run_actor_eval_simulation(
         dataset_dir=dataset_dir,
         replay_cache_dir=replay_cache_dir,
         prefer_replay_cache=prefer_replay_cache,
+    )
+    train_reward_config, train_reward_source = _load_checkpoint_reward_config(actor_checkpoint, ckpt)
+    eval_reward_config = reward_config_to_dict(None)
+    reward_config_match = _check_reward_config_match(
+        actor_checkpoint=actor_checkpoint,
+        train_reward_config=train_reward_config,
+        train_reward_source=train_reward_source,
+        eval_reward_config=eval_reward_config,
+        allow_mismatched_rewards=allow_mismatched_rewards,
     )
     if device is not None:
         os.environ["CUDA_VISIBLE_DEVICES"] = str(device)
@@ -273,6 +360,11 @@ def run_actor_eval_simulation(
         "action_dim": int(ckpt.get("action_dim", 2)),
         "state_keys": ckpt.get("state_keys"),
         "dataset_specs": dataset_specs,
+        "train_reward_config": train_reward_config,
+        "train_reward_config_source": train_reward_source,
+        "eval_reward_config": eval_reward_config,
+        "reward_config_match": reward_config_match,
+        "allow_mismatched_rewards": bool(allow_mismatched_rewards),
         "rl_segment_timeout_seconds": rl_segment_timeout_seconds,
         "rl_max_action_power_w": rl_max_action_power_w,
         "jax_compilation_cache_root": str(
@@ -407,13 +499,17 @@ def run_actor_eval_simulation(
             "actor_checkpoint": str(Path(actor_checkpoint).resolve()),
             "eval_actor_checkpoint": str(actor_path),
             "initial_relax_state": _bundle_safe(initial_relax_state),
-            "summary": _plain(summary),
-            "rewards": _plain(rewards),
-            "actions": _plain(actions),
-            "action_records": action_records,
-            "metrics": _plain(metrics),
-            "output_dir": str(output_dir),
-        }
+        "summary": _plain(summary),
+        "rewards": _plain(rewards),
+        "actions": _plain(actions),
+        "action_records": action_records,
+        "metrics": _plain(metrics),
+        "train_reward_config": _plain(train_reward_config),
+        "train_reward_config_source": train_reward_source,
+        "eval_reward_config": _plain(eval_reward_config),
+        "reward_config_match": reward_config_match,
+        "output_dir": str(output_dir),
+    }
         bundle = {
             "state": _bundle_safe(tmtx._state),
             "tm_times": list(getattr(tmtx, "_tm_times", [])),
