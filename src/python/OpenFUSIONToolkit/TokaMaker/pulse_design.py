@@ -201,22 +201,6 @@ BASE_CONFIG = {
     },
 }
 
-
-@dataclass
-class RLRewardConfig:
-    # Safety thresholds
-    q95_min:               float = 3.0
-    beta_n_max:            float = 2.8
-    fgw_max:               float = 0.85
-    # Reward weights: keep in sync with preprocess_run.ipynb.
-    step_reward_weight:    float = 1.0
-    q95_penalty_weight:    float = 1.2
-    beta_n_penalty_weight: float = 1.0
-    fgw_penalty_weight:    float = 2.0
-    # Terminal bonus weights: keep in sync with preprocess_run.ipynb.
-    q_flattop_weight:      float = 1.0
-    flux_weight:           float = 0.012
-
 # Setup output re-direct from TORAX to log file, suppressing frivolous warnings.
 # Errors will still be output in terminal.
 # This is the first step, needs to be given self._log_file once that is configured in self.fly().
