@@ -6,6 +6,8 @@
 #SBATCH --mem=128G
 #SBATCH --cpus-per-task=4
 #SBATCH --partition=jag-standard
+#SBATCH --mail-user=siddharth@cs.stanford.edu
+#SBATCH --mail-type=FAIL
 #SBATCH --output=/dev/null
 #SBATCH --error=/dev/null
 

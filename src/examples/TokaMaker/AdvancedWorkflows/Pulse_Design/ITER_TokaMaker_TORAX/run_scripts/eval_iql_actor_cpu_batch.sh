@@ -50,6 +50,8 @@
 #SBATCH --cpus-per-task=20
 #SBATCH --mem=256G
 #SBATCH --partition=john
+#SBATCH --mail-user=siddharth@cs.stanford.edu
+#SBATCH --mail-type=FAIL
 #SBATCH --output=/dev/null
 #SBATCH --error=/dev/null
 

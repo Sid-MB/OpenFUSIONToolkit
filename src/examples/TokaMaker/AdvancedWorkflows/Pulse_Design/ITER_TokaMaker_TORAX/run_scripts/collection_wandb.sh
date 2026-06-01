@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+#SBATCH --mail-user=siddharth@cs.stanford.edu
+#SBATCH --mail-type=FAIL
 # collection_wandb.sh — Log one completed dataset collection to a separate W&B project.
 #
 # This is a lightweight telemetry-only job. It reads the completed dataset root,

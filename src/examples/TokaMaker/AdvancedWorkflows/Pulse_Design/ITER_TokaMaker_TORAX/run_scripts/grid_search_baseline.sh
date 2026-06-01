@@ -16,6 +16,8 @@
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=128G
 #SBATCH --partition=john
+#SBATCH --mail-user=siddharth@cs.stanford.edu
+#SBATCH --mail-type=FAIL
 #SBATCH --output=/dev/null
 #SBATCH --error=/dev/null
 
