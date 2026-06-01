@@ -1,0 +1,20 @@
+Log file: /juice2/scr2/siddharth/OpenFUSIONToolkit/src/examples/TokaMaker/AdvancedWorkflows/Pulse_Design/ITER_TokaMaker_TORAX/run_smb_prev_action_smoke_20260530_222522/vwgpce31/checkpoint_evals/step_10000/tokamaker_torax_logs/TokaMaker_TORAX_log_checkpoint_step_10000_2026-05-31_174823.log
+Diverted window: t=[80, 500] s (6/10 timesteps)
+
+============================================================
+ TokaMaker_TORAX  
+ run_name = checkpoint_step_10000 | t=[0.0, 600.0] s | 10 timepoints | dt=5 s | max_loop=1 | RL actor (/juice2/scr2/siddharth/OpenFUSIONToolkit/src/examples/TokaMaker/AdvancedWorkflows/Pulse_Design/ITER_TokaMaker_TORAX/run_smb_prev_action_smoke_20260530_222522/vwgpce31/checkpoint_step_10000.pt)
+
+============================================================
+  Initial TORAX relax: loading cached state
+============================================================
+Initial TORAX relax state loaded from /juice2/scr2/siddharth/OpenFUSIONToolkit/src/examples/TokaMaker/AdvancedWorkflows/Pulse_Design/ITER_TokaMaker_TORAX/initial_relax_cache/initial_relax_568b58f010fd7259.json
+
+============================================================
+  Loop 1
+============================================================
+Loaded RL actor from /juice2/scr2/siddharth/OpenFUSIONToolkit/src/examples/TokaMaker/AdvancedWorkflows/Pulse_Design/ITER_TokaMaker_TORAX/run_smb_prev_action_smoke_20260530_222522/vwgpce31/checkpoint_step_10000.pt
+  TORAX RL: cold-start t=[0, 80] s (defaults)
+	TX: 5/5 initial EQDSKs valid
+  TORAX RL run: t=[0, 80] s (cold-start) ...
+TORAX RL run: t=[0, 80] s (cold-start)

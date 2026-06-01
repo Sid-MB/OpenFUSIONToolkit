@@ -1,0 +1,163 @@
+Running on host: john11.stanford.edu
+OFT_SELECTED_FLAVOR=john
+OFT_SELECTED_INSTALL=/juice2/scr2/siddharth/OpenFUSIONToolkit/install_release_john
+ACTOR_CHECKPOINT=./run_smb_prev_action_smoke_20260530_222522/vwgpce31/iql_weights.pt
+DATASET_DIR=./run_smb_prev_action_smoke_20260530_222522
+OUTPUT_DIR=./run_smb_prev_action_smoke_20260530_222522/eval/iql_weights_eval_cpu_rerun_20260531_232555
+WANDB_PROJECT=iql-training
+RUN_NAME=iql_weights_eval_cpu_rerun_20260531_232555
+WANDB_GROUP=15712038
+INITIAL_RELAX_STATE=
+INITIAL_RELAX_CACHE_DIR=<default>
+MAX_LOOP=1
+GRID_SIZE=51
+TOTAL_CPUS=20
+THREADS_PER_WORKER=16
+PHYSICAL_CORES=16
+CUDA_VISIBLE_DEVICES=-1
+JAX_PLATFORMS=cpu
+JAX_COMPILATION_CACHE_DIR(base)=/juice2/scr2/siddharth/OpenFUSIONToolkit/src/examples/TokaMaker/AdvancedWorkflows/Pulse_Design/ITER_TokaMaker_TORAX/.jax_cache
+REPLAY_CACHE_DIR=
+USE_REPLAY_CACHE=1
+RL_SEGMENT_TIMEOUT_SECONDS=1800
+RL_MAX_ACTION_POWER_W=150000000
+CPUS_PER_TASK=20
+TOTAL_CPUS=20
+ALLOW_MISMATCHED_REWARDS=1
+JAX backend check skipped: CUDA_VISIBLE_DEVICES=-1
+#----------------------------------------------
+Open FUSION Toolkit Initialized
+Development branch:    siddharth/setup-scripts
+Revision id:           86ffe94
+Parallelization Info:
+  Not compiled with MPI
+  # of OpenMP threads =   16
+Integer Precisions    =    4   8
+Float Precisions      =    4   8  10
+Complex Precisions    =    4   8
+LA backend            = native
+#----------------------------------------------
+
+
+**** Loading OFT surface mesh
+
+**** Generating surface grid level  1
+  Generating boundary domain linkage
+  Mesh statistics:
+    Area         =  2.859E+02
+    # of points  =    4757
+    # of edges   =   14156
+    # of cells   =    9400
+    # of boundary points =     112
+    # of boundary edges  =     112
+    # of boundary cells  =     112
+  Resolution statistics:
+    hmin =  9.924E-03
+    hrms =  2.826E-01
+    hmax =  8.466E-01
+  Surface grounded at vertex     870
+
+
+**** Creating Lagrange FE space
+  Order  =    2
+  Minlev =   -1
+
+ Computing flux BC matrix 
+ Inverting real matrix
+   Time =    4.6528139999999999E-003
+  Log file: /juice2/scr2/siddharth/OpenFUSIONToolkit/src/examples/TokaMaker/AdvancedWorkflows/Pulse_Design/ITER_TokaMaker_TORAX/run_smb_prev_action_smoke_20260530_222522/eval/iql_weights_eval_cpu_rerun_20260531_232555/tokamaker_torax_logs/TokaMaker_TORAX_log_iql_weights_eval_cpu_rerun_20260531_232555_2026-05-31_233229.log
+
+============================================================
+ TokaMaker_TORAX  
+ run_name = iql_weights_eval_cpu_rerun_20260531_232555 | t=[0.0, 600.0] s | 10 timepoints | dt=5 s | max_loop=1 | RL actor (/juice2/scr2/siddharth/OpenFUSIONToolkit/src/examples/TokaMaker/AdvancedWorkflows/Pulse_Design/ITER_TokaMaker_TORAX/run_smb_prev_action_smoke_20260530_222522/vwgpce31/iql_weights.pt)
+
+============================================================
+  Initial TORAX relax: loading cached state
+============================================================
+
+============================================================
+  Loop 1
+============================================================
+  TORAX RL: cold-start t=[0, 80] s (defaults)
+  TORAX RL run: t=[0, 80] s (cold-start) ...
+  TORAX RL: cold-start t=[0, 100] s (through next decision)
+  TORAX RL run: t=[0, 100] s (cold-start) ...
+  TORAX RL: cold-start t=[0, 120] s (through next decision)
+  TORAX RL run: t=[0, 120] s (cold-start) ...
+  TORAX RL: cold-start t=[0, 140] s (through next decision)
+  TORAX RL run: t=[0, 140] s (cold-start) ...
+  TORAX RL: cold-start t=[0, 160] s (through next decision)
+  TORAX RL run: t=[0, 160] s (cold-start) ...
+  TORAX RL: cold-start t=[0, 180] s (through next decision)
+  TORAX RL run: t=[0, 180] s (cold-start) ...
+  TORAX RL: cold-start t=[0, 200] s (through next decision)
+  TORAX RL run: t=[0, 200] s (cold-start) ...
+  TORAX RL: cold-start t=[0, 220] s (through next decision)
+  TORAX RL run: t=[0, 220] s (cold-start) ...
+  TORAX RL: cold-start t=[0, 240] s (through next decision)
+  TORAX RL run: t=[0, 240] s (cold-start) ...
+  TORAX RL: cold-start t=[0, 260] s (through next decision)
+  TORAX RL run: t=[0, 260] s (cold-start) ...
+  TORAX RL: cold-start t=[0, 280] s (through next decision)
+  TORAX RL run: t=[0, 280] s (cold-start) ...
+  TORAX RL: cold-start t=[0, 300] s (through next decision)
+  TORAX RL run: t=[0, 300] s (cold-start) ...
+  TORAX RL: cold-start t=[0, 320] s (through next decision)
+  TORAX RL run: t=[0, 320] s (cold-start) ...
+  TORAX RL: cold-start t=[0, 340] s (through next decision)
+  TORAX RL run: t=[0, 340] s (cold-start) ...
+  TORAX RL: cold-start t=[0, 360] s (through next decision)
+  TORAX RL run: t=[0, 360] s (cold-start) ...
+  TORAX RL: cold-start t=[0, 380] s (through next decision)
+  TORAX RL run: t=[0, 380] s (cold-start) ...
+  TORAX RL: cold-start t=[0, 400] s (through next decision)
+  TORAX RL run: t=[0, 400] s (cold-start) ...
+  TORAX RL: cold-start t=[0, 420] s (through next decision)
+  TORAX RL run: t=[0, 420] s (cold-start) ...
+  TORAX RL: cold-start t=[0, 440] s (through next decision)
+  TORAX RL run: t=[0, 440] s (cold-start) ...
+  TORAX RL: cold-start t=[0, 460] s (through next decision)
+  TORAX RL run: t=[0, 460] s (cold-start) ...
+  TORAX RL: cold-start t=[0, 480] s (through next decision)
+  TORAX RL run: t=[0, 480] s (cold-start) ...
+  TORAX RL: final cold-start t=[0, 600] s
+  TORAX RL run: t=[0, 600] s (cold-start) ...
+  TORAX RL cold-start done (cflux=160.3938 Wb)
+  TokaMaker: solving 10 equilibria...
+  TokaMaker: 10/10 solved (cflux=160.3944 Wb)
+	TM summary: 10/10 solved. Levels: analytic: 1, raw tx profs: 8, sign_flip: 1.
+  Loop 1 result: conv_err=0.000% | TX-TM diff=0.0004% | cflux_TX=160.3938 Wb | cflux_TM=160.3944 Wb
+
+============================================================
+  Max loop index (1) reached (err=0.000%)
+
+  Loop   cflux TX [Wb]    cflux TM [Wb]    TX-TM diff %  
+  ----------------------------------------------------
+  1      160.3938         160.3944         0.0004        
+============================================================
+  Total sim time: 36m 20.3s
+  Log file: /juice2/scr2/siddharth/OpenFUSIONToolkit/src/examples/TokaMaker/AdvancedWorkflows/Pulse_Design/ITER_TokaMaker_TORAX/run_smb_prev_action_smoke_20260530_222522/eval/iql_weights_eval_cpu_rerun_20260531_232555/tokamaker_torax_logs/TokaMaker_TORAX_log_iql_weights_eval_cpu_rerun_20260531_232555_2026-05-31_233229.log
+
+=======================================================
+  TokaMaker_TORAX Physics Summary
+=======================================================
+  Q_max                           5.099
+  Q_max_time                      269.8
+  Q_flattop_avg                   4.886
+  E_fusion_total_MJ               6.538e+04
+  beta_N_max                      1.121
+  H98_max                         0.7452
+  H98_flattop_avg                 0.7107
+  T_e_core_max_keV                12.32
+  T_i_core_max_keV                10.46
+  n_e_line_avg_max                1.115e+20
+  f_GW_max                        0.9446
+  q95_min                         2.856
+  q0_min                          0.8854
+  flux_consumed_Wb                160.4
+  P_fusion_max_MW                 167.9
+  P_ohmic_max_MW                  7.66
+  l_i_flattop_avg                 0.7228
+  vloop_tx_flattop_avg_V          0.1776
+=======================================================
+
