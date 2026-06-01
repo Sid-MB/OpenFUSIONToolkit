@@ -76,12 +76,9 @@ def _normalize_for_json(value):
 
 
 def default_reward_config():
-    try:
-        from OpenFUSIONToolkit.TokaMaker.pulse_design import RLRewardConfig
-        return asdict(RLRewardConfig())
-    except Exception:
-        source_path = Path(__file__).resolve().parents[6] / 'src/python/OpenFUSIONToolkit/TokaMaker/pulse_design.py'
-        if source_path.is_file():
+    source_path = Path(__file__).resolve().parents[6] / 'src/python/OpenFUSIONToolkit/TokaMaker/pulse_design.py'
+    if source_path.is_file():
+        try:
             tree = ast.parse(source_path.read_text())
             for node in tree.body:
                 if isinstance(node, ast.ClassDef) and node.name == 'RLRewardConfig':
@@ -93,6 +90,16 @@ def default_reward_config():
                                 values[target] = stmt.value.value
                     if values:
                         return values
+        except Exception as exc:
+            print(
+                f"WARNING: Could not parse reward defaults from {source_path}: {exc}. "
+                "Falling back to imported RLRewardConfig or literal defaults.",
+                file=sys.stderr,
+            )
+    try:
+        from OpenFUSIONToolkit.TokaMaker.pulse_design import RLRewardConfig
+        return asdict(RLRewardConfig())
+    except Exception:
         return {
             'q95_min': 3.0,
             'beta_n_max': 2.8,

@@ -41,6 +41,7 @@ END_IDX="${END_IDX:-${N_TRAJECTORIES}}"
 SEED="${SEED:-42}"
 MAX_LOOP="${MAX_LOOP:-2}"
 GRID_SIZE="${GRID_SIZE:-51}"
+OBSERVATION_MODE="${OBSERVATION_MODE:-legacy}"
 RUN_ID="${SLURM_JOB_ID:-$(date +%Y%m%d_%H%M%S)}"
 OUTPUT_BASE_DIR="${OUTPUT_BASE_DIR:-./rl_dataset_delta_sampling_maxloop=2_grid_51_cpu_array_${RUN_ID}}"
 # Shared keyed initial-relax cache. INITIAL_RELAX_CACHE (explicit path) overrides;
@@ -80,6 +81,7 @@ echo "END_IDX=${END_IDX}"
 echo "SEED=${SEED}"
 echo "MAX_LOOP=${MAX_LOOP}"
 echo "GRID_SIZE=${GRID_SIZE}"
+echo "OBSERVATION_MODE=${OBSERVATION_MODE}"
 echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
 echo "JAX_PLATFORMS=${JAX_PLATFORMS}"
 echo "OFT_SELECTED_FLAVOR=${OFT_SELECTED_FLAVOR}"
@@ -99,6 +101,7 @@ uv run python collect_trajectories_delta.py \
   --output_dir "${OUTPUT_BASE_DIR}" \
   --max_loop "${MAX_LOOP}" \
   --grid_size "${GRID_SIZE}" \
+  --observation_mode "${OBSERVATION_MODE}" \
   --initial_relax_cache "${INITIAL_RELAX_CACHE}" \
   --build_initial_relax_cache_only \
   "$@"
