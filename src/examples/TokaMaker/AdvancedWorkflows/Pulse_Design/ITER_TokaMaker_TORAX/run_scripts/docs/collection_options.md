@@ -22,7 +22,7 @@ Slurm and to `collect_trajectories_delta.py` (argparse).
 | `CPUS_PER_TASK` | `4` | CPUs per Slurm task |
 | `MEM_PER_NODE` | `128G` | RAM per Slurm task |
 | `N_WORKERS` | `1` | Trajectory workers per task (default 1; keep at 1 and scale via array concurrency) |
-| `SLURM_NICE` | unset | Lower the priority of the collection array job; useful when you want other `john` jobs to slip in between array tasks |
+| `SLURM_NICE` | `10` | Lower the priority of the collection array job itself; useful when you want other `john` jobs to slip in between array tasks |
 
 Note: the standalone CPU jobs for cache building and evaluation default to 20
 CPUs per task on `john`. The collection array worker stays at 4 CPUs per task
@@ -135,9 +135,9 @@ normal collection shape is `N_WORKERS=1` and `CPUS_PER_TASK=4`.
   `OUTPUT_BASE_DIR` already contains the manifest, action table, and replay
   shards for the requested range, then skips both the initial-relax cache job
   and the trajectory array.
-- Reuse is schema-specific. `legacy` and `prev_action` datasets are not
-  interchangeable, so the submit helper checks `observation_mode` before it
-  skips recollection.
+- Reuse is schema-specific. `legacy`, `prev_action`, and `plasma_only`
+  datasets are not interchangeable, so the submit helper checks
+  `observation_mode` before it skips recollection.
 - `MaxArraySize=1001` on this cluster means array task IDs `0..1000`; increase
   `CHUNK_SIZE` or split the range when you need more tasks.
 - Scale throughput with `ARRAY_CONCURRENCY`, not `N_WORKERS`. Each worker in a

@@ -55,7 +55,7 @@ By default, the submit helper tries to reuse an existing complete dataset in
 message explaining that recollection would rerun the full
 TORAX/TokaMaker closed-loop simulation for every requested trajectory. Set
 `REUSE_EXISTING_DATASET=0` only when you explicitly want a fresh collection.
-`legacy` and `prev_action` outputs are not interchangeable.
+`legacy`, `prev_action`, and `plasma_only` outputs are not interchangeable.
 
 ```bash
 REUSE_EXISTING_DATASET=0 \
@@ -91,7 +91,7 @@ These are the main knobs you usually change for a run.
 | `SUBMIT_IQL` | `0` | Set to `1` if you want training launched automatically. |
 | `USE_INITIAL_RELAX_CACHE` | `0` | Set to `1` when you want the shared initial-relax cache. |
 | `REUSE_EXISTING_DATASET` | `1` | Set to `0` only when you want to recollect trajectories instead of reusing a complete dataset. |
-| `SLURM_NICE` | unset | Lower priority when you want other jobs to run first. |
+| `SLURM_NICE` | `10` | Lower priority for the trajectory array job itself when you want it to run behind other jobs. |
 
 ### Evaluation
 
@@ -114,6 +114,8 @@ starts from `N_WORKERS * 4`, which means the normal collection shape is
 `N_WORKERS=1` and `CPUS_PER_TASK=4`. `SLURM_MAX_ARRAY_SIZE=1001` means the
 largest allowed array index is `1000`; it limits the size of a single array
 submission, not the number of jobs running at once.
+`SLURM_NICE` defaults to `10` for the trajectory array job. Set it to `0` if
+you want the normal priority path.
 
 ---
 

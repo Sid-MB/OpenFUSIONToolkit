@@ -89,6 +89,7 @@ if [ "${REUSE_EXISTING_DATASET}" != "0" ]; then
   ARRAY_CONCURRENCY="${ARRAY_CONCURRENCY:-1}"
   SLURM_MAX_ARRAY_SIZE="${SLURM_MAX_ARRAY_SIZE:-1}"
 fi
+SLURM_NICE="${SLURM_NICE:-10}"
 
 validate_existing_dataset() {
   echo "Validating that the requested dataset already exists..."
@@ -212,6 +213,10 @@ require_env SUBMIT_IQL
 if [[ -n "${SLURM_NICE:-}" && ! "${SLURM_NICE}" =~ ^[0-9]+$ ]]; then
   echo "ERROR: SLURM_NICE must be a non-negative integer, got ${SLURM_NICE}" >&2
   exit 2
+fi
+SBATCH_NICE_ARGS=()
+if [ -n "${SLURM_NICE}" ]; then
+  SBATCH_NICE_ARGS+=(--nice="${SLURM_NICE}")
 fi
 
 # When the shared cache is enabled, either an explicit INITIAL_RELAX_CACHE path
@@ -348,7 +353,7 @@ if [ "${REUSE_EXISTING_DATASET}" = "0" ]; then
     echo "If you already have a complete dataset in ${OUTPUT_BASE_DIR}, stop and rerun with REUSE_EXISTING_DATASET=1."
   fi
   echo "Fresh collection is explicit opt-out because the dataset schema is part of the contract."
-  echo "Use OBSERVATION_MODE=prev_action for new datasets; legacy is only for compatibility checks."
+  echo "Use OBSERVATION_MODE=prev_action for actor-conditioned datasets, OBSERVATION_MODE=plasma_only for plasma-only ablations, and legacy only for compatibility checks."
 else
   echo "Reusing an existing dataset is explicit."
   echo "The launcher will validate run_manifest.json, all_actions.npy, and replay_shards/ before skipping collection."
@@ -384,9 +389,9 @@ if [ "${REUSE_EXISTING_DATASET}" = "0" ]; then
     "${INIT_ARGS[@]}"
 
   dependency_args=()
-  if [ "${USE_INITIAL_RELAX_CACHE}" != "0" ]; then
-    echo "Submitting initial relax cache job..."
-    collection_jid="$(
+if [ "${USE_INITIAL_RELAX_CACHE}" != "0" ]; then
+  echo "Submitting initial relax cache job..."
+  collection_jid="$(
       sbatch --parsable \
         --output="${RUN_LOG_DIR}/collect_initial_relax_cache-%j.out" \
         --error="${RUN_LOG_DIR}/collect_initial_relax_cache-%j.err" \
@@ -405,7 +410,7 @@ if [ "${REUSE_EXISTING_DATASET}" = "0" ]; then
       --cpus-per-task="${CPUS_PER_TASK}" \
       --mem="${MEM_PER_NODE}" \
       --array="${ARRAY_SPEC}" \
-      ${SLURM_NICE:+--nice="${SLURM_NICE}"} \
+      "${SBATCH_NICE_ARGS[@]}" \
       --output="${RUN_LOG_DIR}/collect_trajectories-%A_%a.out" \
       --error="${RUN_LOG_DIR}/collect_trajectories-%A_%a.err" \
       "${SCRIPT_DIR}/collect_trajectories_cpu_array.sh"
