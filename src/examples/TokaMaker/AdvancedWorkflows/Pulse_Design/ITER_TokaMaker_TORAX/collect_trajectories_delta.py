@@ -356,11 +356,23 @@ def compute_reward(tmtx, t_start, t_end, is_terminal=False):
 
 # ── Trajectory builder ────────────────────────────────────────────────────────
 
+def current_heating_at_time(action_row, transition_index):
+    """
+    Heating knot already fixed at the transition start.
+
+    action_row[i] is written to the future knot DECISION_TIMES[i] + 20.
+    Therefore the state at DECISION_TIMES[i] should contain the previous action
+    row, except at t=80 where the fixed ramp-up knot is active.
+    """
+    if transition_index == 0:
+        return [20.0e6, 33.0e6]
+    return action_row[transition_index - 1].tolist()
+
 def build_trajectory(tmtx, action_row):
     """
     After fly() has completed, extract the full list of transitions.
 
-    Returns list of dicts, each with keys: s, a, r, s_next, done.
+    Returns list of dicts, each with keys: s, a, r, done.
     Length = len(DECISION_TIMES) = 21.
     """
     transitions = []
@@ -370,8 +382,9 @@ def build_trajectory(tmtx, action_row):
         t_next = RL_TIMES[i + 1]
 
         is_terminal = (i == len(DECISION_TIMES) - 1)
-        a  = action_row[i].tolist()  # [ecrh_MW, nbi_MW]
-        s = extract_state(tmtx, t, t_next, a)
+        current_heating = current_heating_at_time(action_row, i)
+        a = action_row[i].tolist()  # next heating knot at t_next
+        s = extract_state(tmtx, t, t_next, current_heating)
         r = compute_reward(tmtx, t, t_next, is_terminal=is_terminal)
 
         transitions.append({
