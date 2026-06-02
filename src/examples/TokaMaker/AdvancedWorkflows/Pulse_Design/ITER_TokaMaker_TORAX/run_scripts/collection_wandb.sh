@@ -36,6 +36,8 @@ else
   PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd -P)"
 fi
 cd "${PROJECT_DIR}"
+OFT_ROOT="$(cd "${PROJECT_DIR}/../../../../../../" && pwd -P)"
+source "${OFT_ROOT}/scripts/oft_arch/select_oft_install.sh"
 export UV_CACHE_DIR="${SLURM_TMPDIR:-/tmp/$USER/uv_cache}"
 mkdir -p "${UV_CACHE_DIR}"
 

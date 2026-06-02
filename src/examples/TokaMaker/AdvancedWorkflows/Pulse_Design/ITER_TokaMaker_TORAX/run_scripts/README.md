@@ -110,9 +110,10 @@ These are the main knobs you usually change for a run.
 | `MAX_LOOP` | `1` for baseline, `2` for actor evals | Match the collection settings you want to compare against. |
 | `GRID_SIZE` | `51` | Match the dataset or run a smaller smoke test. |
 
-Training now saves checkpoints every 1000 steps by default. That gives you
-finer recovery points without materially changing training cost. If you want
-full closed-loop plots for each checkpoint, use
+Training now saves checkpoints every 1000 steps by default, and the default
+training length is 40000 steps. That gives you finer recovery points without
+materially changing training cost. If you want full closed-loop plots for each
+checkpoint, use
 `run_scripts/fanout_checkpoint_evals.sh` after training; it submits one CPU
 eval job per `checkpoint_step_*.pt` file and writes the plots/movie into a
 separate eval tree.
