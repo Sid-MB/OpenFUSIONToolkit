@@ -39,7 +39,7 @@
 #   DATASET_DIR        dataset for normalizer reconstruction (optional if ckpt has normalizers)
 #   MAX_LOOP           MHD coupling loops per eval (default: 2)
 #   GRID_SIZE          TORAX radial grid points (default: 51)
-#   WANDB_PROJECT      wandb project name (default: iql-training)
+#   WANDB_PROJECT      wandb project name (default: iql-eval)
 #   INITIAL_RELAX_CACHE_DIR shared initial-relax cache dir
 #   JAX_COMPILATION_CACHE_DIR persistent XLA cache root (runtime namespaces by build fingerprint; default: ./.jax_cache)
 #   MP_CONTEXT         multiprocessing start method: fork (default) or spawn
@@ -85,7 +85,7 @@ exec > >(tee -a "${RUN_LOG_DIR}/eval_iql_actor_cpu_batch-${SLURM_JOB_ID:-$$}.out
   2> >(tee -a "${RUN_LOG_DIR}/eval_iql_actor_cpu_batch-${SLURM_JOB_ID:-$$}.err" >&2)
 WANDB_GROUP="${WANDB_GROUP:-${SLURM_JOB_ID:-$(date +%Y%m%d_%H%M%S)}}"
 DATASET_DIR="${DATASET_DIR:-}"
-WANDB_PROJECT="${WANDB_PROJECT:-iql-training}"
+WANDB_PROJECT="${WANDB_PROJECT:-iql-eval}"
 MAX_LOOP="${MAX_LOOP:-1}"
 GRID_SIZE="${GRID_SIZE:-51}"
 INITIAL_RELAX_CACHE_DIR="${INITIAL_RELAX_CACHE_DIR:-}"

@@ -18,7 +18,7 @@
 #   OUTPUT_DIR               where results are written (default: <DATASET_DIR>/eval/<RUN_ID>)
 #   MAX_LOOP                 MHD coupling loops (default: 1)
 #   GRID_SIZE                TORAX radial grid points (default: 51)
-#   WANDB_PROJECT            wandb project name (default: iql-training)
+#   WANDB_PROJECT            wandb project name (default: iql-eval)
 #   INITIAL_RELAX_CACHE_DIR  shared initial-relax cache dir (default: ./initial_relax_cache)
 #   REPLAY_CACHE_DIR         preprocessed replay cache dir (optional)
 #   RL_SEGMENT_TIMEOUT_SECONDS per-segment wall-clock timeout (default: 1800)
@@ -61,7 +61,7 @@ RUN_LOG_DIR="${RUN_LOG_DIR:-${OUTPUT_DIR%/}/logs}"
 mkdir -p "${RUN_LOG_DIR}"
 exec > >(tee -a "${RUN_LOG_DIR}/eval_baseline_cpu-${SLURM_JOB_ID:-$$}.out") \
   2> >(tee -a "${RUN_LOG_DIR}/eval_baseline_cpu-${SLURM_JOB_ID:-$$}.err" >&2)
-WANDB_PROJECT="${WANDB_PROJECT:-iql-training}"
+WANDB_PROJECT="${WANDB_PROJECT:-iql-eval}"
 RUN_NAME="${RUN_NAME:-${RUN_ID}}"
 WANDB_GROUP="${WANDB_GROUP:-${SLURM_JOB_ID:-${RUN_ID}}}"
 INITIAL_RELAX_STATE="${INITIAL_RELAX_STATE:-}"

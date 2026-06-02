@@ -42,7 +42,7 @@
 #   OUTPUT_DIR               where results are written (default: <DATASET_DIR>/eval/<RUN_ID>)
 #   MAX_LOOP                 MHD coupling loops (default: 2)
 #   GRID_SIZE                TORAX radial grid points (default: 51)
-#   WANDB_PROJECT            wandb project name (default: iql-training)
+#   WANDB_PROJECT            wandb project name (default: iql-eval)
 #   INITIAL_RELAX_CACHE_DIR  shared initial-relax cache dir (default: ./initial_relax_cache)
 #   REPLAY_CACHE_DIR         preprocessed replay cache dir (optional)
 #   JAX_COMPILATION_CACHE_DIR persistent XLA cache root (runtime namespaces by build fingerprint; default: ./.jax_cache)
@@ -98,7 +98,7 @@ RUN_LOG_DIR="${RUN_LOG_DIR:-${OUTPUT_DIR%/}/logs}"
 mkdir -p "${RUN_LOG_DIR}"
 exec > >(tee -a "${RUN_LOG_DIR}/eval_iql_actor_cpu-${SLURM_JOB_ID:-$$}.out") \
   2> >(tee -a "${RUN_LOG_DIR}/eval_iql_actor_cpu-${SLURM_JOB_ID:-$$}.err" >&2)
-WANDB_PROJECT="${WANDB_PROJECT:-iql-training}"
+WANDB_PROJECT="${WANDB_PROJECT:-iql-eval}"
 RUN_NAME="${RUN_NAME:-${RUN_ID}}"
 WANDB_GROUP="${WANDB_GROUP:-${SLURM_JOB_ID:-${RUN_ID}}}"
 INITIAL_RELAX_STATE="${INITIAL_RELAX_STATE:-}"

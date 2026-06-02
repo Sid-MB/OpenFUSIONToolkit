@@ -892,7 +892,7 @@ def train_from_config(
         from rl.eval import run_actor_eval_from_config
 
         eval_output_dir = config.get("actor_eval_output_dir") or str(output_dir / "actor_eval")
-        eval_project = config.get("actor_eval_project") or project
+        eval_project = config.get("actor_eval_project") or "iql-eval"
         eval_run_name = config.get("actor_eval_run_name") or f"{run.name or run.id}-actor-eval"
         run_actor_eval_from_config(
             actor_checkpoint=weights_path,
@@ -1093,7 +1093,7 @@ def parse_args(argv):
     parser.add_argument(
         "--actor_eval_project",
         default=None,
-        help="W&B project for the post-training closed-loop eval. Defaults to the training project.",
+        help="W&B project for the post-training closed-loop eval. Defaults to 'iql-eval' (kept separate from the training project).",
     )
     parser.add_argument(
         "--actor_eval_run_name",
