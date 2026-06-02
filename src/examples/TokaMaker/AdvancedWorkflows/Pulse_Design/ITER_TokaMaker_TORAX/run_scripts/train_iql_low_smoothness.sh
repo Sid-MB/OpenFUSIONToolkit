@@ -11,10 +11,9 @@
 #   - you want a fast comparative run against the default training setup
 #   - you are willing to trade some smoothness for more expressive control
 #
-# Defaults chosen here are intentionally less smooth than the main training path:
-#   ACTION_RATE_PENALTY=0
-#   OBSERVATION_MODE=plasma_only
-#   ACTION_MODE=absolute
+# Default: OBSERVATION_MODE=plasma_only (drops action history from the observation).
+# IQL auto-selects ACTION_MODE=absolute for plasma_only, and the action-rate penalty
+# only applies in residual mode, so this path is intentionally less smooth.
 #
 # Example:
 #   DATASET_DIR=./run_prev_action_smoke_20260530_222521 \
@@ -23,9 +22,7 @@
 
 set -euo pipefail
 
-export ACTION_RATE_PENALTY="${ACTION_RATE_PENALTY:-0}"
 export OBSERVATION_MODE="${OBSERVATION_MODE:-plasma_only}"
-export ACTION_MODE="${ACTION_MODE:-absolute}"
 
 if [ -n "${SLURM_SUBMIT_DIR:-}" ] && [ -f "${SLURM_SUBMIT_DIR}/IQL.py" ]; then
   PROJECT_DIR="$(cd "${SLURM_SUBMIT_DIR}" && pwd -P)"

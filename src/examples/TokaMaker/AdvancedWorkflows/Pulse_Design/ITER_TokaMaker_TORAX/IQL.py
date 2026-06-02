@@ -546,6 +546,25 @@ def latest_checkpoint(checkpoint_dir):
         return None
     return max(checkpoints, key=lambda p: int(p.stem.split('_')[-1]))
 
+def resolve_action_mode(observation_mode, action_mode):
+    """Pick the actor's action_mode, defaulting from observation_mode when unset.
+
+    residual_prev_action needs the previous action inside the observation, which
+    only exists for observation_mode=prev_action. Leaving action_mode unset lets
+    callers (and the Slurm wrappers) choose observation_mode alone and get a
+    compatible action_mode automatically: prev_action -> residual_prev_action,
+    everything else -> absolute.
+    """
+    if action_mode is None:
+        return "residual_prev_action" if observation_mode == "prev_action" else "absolute"
+    if action_mode == "residual_prev_action" and observation_mode != "prev_action":
+        raise ValueError(
+            "action_mode=residual_prev_action requires observation_mode=prev_action; "
+            f"got observation_mode={observation_mode!r}. Use action_mode=absolute, or "
+            "leave action_mode unset to auto-select."
+        )
+    return action_mode
+
 def train_from_config(
     dataset_dir,
     output_dir,
@@ -590,6 +609,7 @@ def train_from_config(
     allow_mismatched_rewards=False,
     wandb_group=None,
 ):
+    action_mode = resolve_action_mode(observation_mode, action_mode)
     base_config = {
         "dataset_dir": str(dataset_dir),
         "output_dir": str(output_dir),
@@ -1111,8 +1131,8 @@ def parse_args(argv):
     parser.add_argument(
         "--action_mode",
         choices=["absolute", "residual_prev_action"],
-        default="residual_prev_action",
-        help="How the actor parameterizes heating commands. residual_prev_action is the preferred mode for smoother control; absolute matches the legacy checkpoint format.",
+        default=None,
+        help="How the actor parameterizes heating commands. Leave unset to auto-select from observation_mode (prev_action -> residual_prev_action for smoother control; otherwise absolute). residual_prev_action is only valid with observation_mode=prev_action.",
     )
     parser.add_argument(
         "--action_rate_penalty",
@@ -1148,7 +1168,7 @@ def parse_args(argv):
         "--observation_mode",
         choices=["legacy", "prev_action", "plasma_only"],
         default="prev_action",
-        help="How trajectory observations are constructed from TORAX states and actions. prev_action is the recommended non-leaky mode; legacy preserves the old behavior; plasma_only removes action history entirely.",
+        help="How trajectory observations are constructed from TORAX states and actions. Use prev_action for normal actor-conditioned datasets; use legacy only for older compatibility datasets; plasma_only removes action history entirely.",
     )
     return parser.parse_args(argv)
 

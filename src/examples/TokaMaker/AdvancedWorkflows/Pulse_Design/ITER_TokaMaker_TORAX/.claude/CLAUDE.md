@@ -1,1 +1,1 @@
-Look at .codex/AGENTS.md.
+Look at @.codex/AGENTS.md.

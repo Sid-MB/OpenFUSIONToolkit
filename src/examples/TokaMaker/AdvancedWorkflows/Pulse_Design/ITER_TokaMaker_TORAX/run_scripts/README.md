@@ -55,7 +55,9 @@ By default, the submit helper tries to reuse an existing complete dataset in
 message explaining that recollection would rerun the full
 TORAX/TokaMaker closed-loop simulation for every requested trajectory. Set
 `REUSE_EXISTING_DATASET=0` only when you explicitly want a fresh collection.
-`legacy`, `prev_action`, and `plasma_only` outputs are not interchangeable.
+`prev_action` is the normal actor-conditioned format for new runs. `legacy`
+is kept only for compatibility datasets, and `plasma_only` is for ablations or
+cases where you intentionally want no action history.
 
 Collection telemetry is logged automatically to a separate W&B project so the
 dataset-build pipeline stays visible without mixing it into the training/eval
@@ -90,7 +92,7 @@ These are the main knobs you usually change for a run.
 | `SLURM_MAX_ARRAY_SIZE` | `1001` | Cluster cap for the total array size; valid task IDs are `0..1000` on the default setup. |
 | `MAX_LOOP` | `2` | Lower for smoke tests, raise for slower but more accurate coupling. |
 | `GRID_SIZE` | `51` | Lower for smoke tests, use `51` for production runs. |
-| `OBSERVATION_MODE` | `legacy` | Use `prev_action` for normal new datasets; use `plasma_only` only for ablations or when you intentionally want no action history. |
+| `OBSERVATION_MODE` | `prev_action` | Use `legacy` only for compatibility datasets; use `plasma_only` only for ablations or when you intentionally want no action history. |
 | `SUBMIT_GRID_SEARCH` | `0` | Set to `1` if you want the baseline leaderboard job. |
 | `SUBMIT_REPLAY_CACHE` | `0` | Set to `1` if you want the flat replay cache materialized automatically. |
 | `SUBMIT_IQL` | `0` | Set to `1` if you want training launched automatically. |
@@ -191,10 +193,9 @@ DATASET_DIR=./my_dataset \
   sbatch --account=nlp --gres=gpu:1 --constraint=48G --mem=128G --partition=jag-standard run_scripts/train_iql_low_smoothness.sh
 ```
 
-The wrapper defaults to:
-- `ACTION_RATE_PENALTY=0`
-- `OBSERVATION_MODE=plasma_only`
-- `ACTION_MODE=absolute`
+The wrapper sets `OBSERVATION_MODE=plasma_only` (drops action history). IQL then
+auto-selects `ACTION_MODE=absolute`, and the action-rate penalty is inactive in
+absolute mode — so this path is intentionally less smooth than the default.
 Artifacts are written under `./my_dataset/iql/` (final weights, checkpoints) and W&B. Logs are written under `./my_dataset/logs/`.
 
 ### Evaluate only (checkpoint already exists)

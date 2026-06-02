@@ -54,7 +54,7 @@ normal collection shape is `N_WORKERS=1` and `CPUS_PER_TASK=4`.
 | `SAVE_REPLAY_SHARD` | `1` (argparse) | Write compact `replay_shards/*.npz` (preferred) |
 | `SAVE_FULL_ZARR` | `0` | Also write full rich TORAX Zarr traces |
 | `SAVE_JSON` | `0` | Also write legacy compact JSON files |
-| `OBSERVATION_MODE` | `legacy` | Observation schema for trajectory state construction: use `prev_action` for normal new datasets; use `plasma_only` only for ablations or when you intentionally want no action history. |
+| `OBSERVATION_MODE` | `prev_action` | Observation schema for trajectory state construction: use `legacy` only for compatibility datasets; use `plasma_only` only for ablations or when you intentionally want no action history. |
 
 ### Dependent Jobs
 | Variable | Default | Description |
@@ -136,9 +136,10 @@ normal collection shape is `N_WORKERS=1` and `CPUS_PER_TASK=4`.
   `OUTPUT_BASE_DIR` already contains the manifest, action table, and replay
   shards for the requested range, then skips both the initial-relax cache job
   and the trajectory array.
-- Reuse is schema-specific. `legacy`, `prev_action`, and `plasma_only`
-  datasets are not interchangeable, so the submit helper checks
-  `observation_mode` before it skips recollection.
+- Reuse is schema-specific. `prev_action` is the normal collection format for
+  new datasets, `legacy` is reserved for compatibility datasets, and
+  `plasma_only` is for ablations or intentional no-history experiments. The
+  submit helper checks `observation_mode` before it skips recollection.
 - The exact reward config used at collection time is saved in
   `run_manifest.json` and mirrored into `replay_cache/replay_manifest.json`.
 - The seed is generated in `collect_trajectories_delta.py` when omitted by the

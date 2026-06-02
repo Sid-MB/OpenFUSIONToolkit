@@ -3,14 +3,14 @@
 #SBATCH --account=nlp
 #SBATCH --cpus-per-task=20
 #SBATCH --mem=128G
-#SBATCH --partition=john
+#SBATCH --partition=sc-loprio
 #SBATCH --mail-user=siddharth@cs.stanford.edu
 #SBATCH --mail-type=FAIL
 #SBATCH --output=/dev/null
 #SBATCH --error=/dev/null
 
 # Purpose:
-#   Run trajectories in a single non-array Slurm job on the john CPU partition.
+#   Run trajectories in a single non-array Slurm job on the sc-loprio CPU partition.
 #   This is useful for diagnostics or small slices because all requested
 #   trajectories run inside one Slurm allocation.
 #

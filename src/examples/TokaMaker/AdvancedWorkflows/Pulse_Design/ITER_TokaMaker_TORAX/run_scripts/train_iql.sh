@@ -14,9 +14,10 @@
 #
 # Example:
 #   DATASET_DIR=./rl_dataset_delta_sampling_maxloop=2_grid_51_preprocessed \
-#     ACTION_MODE=residual_prev_action OBSERVATION_MODE=prev_action \
-#     ACTION_RATE_PENALTY=0.01 CHECKPOINT_INTERVAL=1000 \
+#     OBSERVATION_MODE=prev_action CHECKPOINT_INTERVAL=1000 \
 #     sbatch run_scripts/train_iql.sh
+#   ACTION_MODE is auto-selected from OBSERVATION_MODE (prev_action ->
+#   residual_prev_action, otherwise absolute); set it only to override.
 #
 # If you want checkpoint-by-checkpoint closed-loop plots without blocking
 # training, run the fanout helper after training:

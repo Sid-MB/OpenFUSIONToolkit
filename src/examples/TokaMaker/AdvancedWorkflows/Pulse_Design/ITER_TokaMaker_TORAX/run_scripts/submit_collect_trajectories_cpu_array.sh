@@ -192,7 +192,7 @@ require_env END_IDX
 N_WORKERS="${N_WORKERS:-1}"
 if [ "${REUSE_EXISTING_DATASET}" = "0" ]; then
   require_env CHUNK_SIZE
-  ARRAY_CONCURRENCY="${ARRAY_CONCURRENCY:-64}"
+  ARRAY_CONCURRENCY="${ARRAY_CONCURRENCY:-500}"
   require_env SLURM_MAX_ARRAY_SIZE
 fi
 # CPU and memory requests have defaults that work well; override per job class
@@ -215,11 +215,11 @@ COLLECTION_WANDB_PROJECT="${COLLECTION_WANDB_PROJECT:-iql-collection}"
 COLLECTION_WANDB_GROUP="${COLLECTION_WANDB_GROUP:-$(basename "${OUTPUT_BASE_DIR%/}")}"
 COLLECTION_WANDB_MODE="${COLLECTION_WANDB_MODE:-${WANDB_MODE:-}}"
 COLLECTION_WANDB_ACCOUNT="${COLLECTION_WANDB_ACCOUNT:-nlp}"
-COLLECTION_WANDB_PARTITION="${COLLECTION_WANDB_PARTITION:-john}"
+COLLECTION_WANDB_PARTITION="${COLLECTION_WANDB_PARTITION:-john,sc-loprio}"
 COLLECTION_WANDB_CPUS_PER_TASK="${COLLECTION_WANDB_CPUS_PER_TASK:-1}"
 COLLECTION_WANDB_MEM="${COLLECTION_WANDB_MEM:-4G}"
 COLLECTION_WANDB_TIME="${COLLECTION_WANDB_TIME:-00:10:00}"
-COLLECTION_PARTITION="${COLLECTION_PARTITION:-john}"
+COLLECTION_PARTITION="${COLLECTION_PARTITION:-john,sc-loprio}"
 COLLECTION_REQUEUE="${COLLECTION_REQUEUE:-1}"
 
 # Optional Slurm priority tweak for the trajectory array itself. Leave unset to
@@ -372,7 +372,7 @@ if [ "${REUSE_EXISTING_DATASET}" = "0" ]; then
     echo "If you already have a complete dataset in ${OUTPUT_BASE_DIR}, stop and rerun with REUSE_EXISTING_DATASET=1."
   fi
   echo "Fresh collection is explicit opt-out because the dataset schema is part of the contract."
-  echo "Use OBSERVATION_MODE=prev_action for actor-conditioned datasets, OBSERVATION_MODE=plasma_only for plasma-only ablations, and legacy only for compatibility checks."
+  echo "Use OBSERVATION_MODE=prev_action for normal actor-conditioned datasets, OBSERVATION_MODE=plasma_only for plasma-only ablations, and legacy only for compatibility checks."
 else
   echo "Reusing an existing dataset is explicit."
   echo "The launcher will validate run_manifest.json, all_actions.npy, and replay_shards/ before skipping collection."

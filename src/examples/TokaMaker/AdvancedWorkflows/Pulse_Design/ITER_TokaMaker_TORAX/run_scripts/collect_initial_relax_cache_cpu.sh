@@ -45,7 +45,7 @@ START_IDX="${START_IDX:-0}"
 END_IDX="${END_IDX:-${N_TRAJECTORIES}}"
 MAX_LOOP="${MAX_LOOP:-2}"
 GRID_SIZE="${GRID_SIZE:-51}"
-OBSERVATION_MODE="${OBSERVATION_MODE:-legacy}"
+OBSERVATION_MODE="${OBSERVATION_MODE:-prev_action}"
 RUN_ID="${SLURM_JOB_ID:-$(date +%Y%m%d_%H%M%S)}"
 OUTPUT_BASE_DIR="${OUTPUT_BASE_DIR:-./rl_dataset_delta_sampling_maxloop=2_grid_51_cpu_array_${RUN_ID}}"
 # Shared keyed initial-relax cache. INITIAL_RELAX_CACHE (explicit path) overrides;

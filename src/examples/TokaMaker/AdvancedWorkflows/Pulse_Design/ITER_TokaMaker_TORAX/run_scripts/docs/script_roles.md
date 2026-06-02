@@ -38,8 +38,8 @@ optimizations that make all eval scripts fast.
 
 - `train_iql_low_smoothness.sh` _(direct use: `sbatch run_scripts/train_iql_low_smoothness.sh`)_
   - Ablation wrapper for training with less smoothing bias.
-  - Defaults to `ACTION_RATE_PENALTY=0`, `OBSERVATION_MODE=plasma_only`,
-    and `ACTION_MODE=absolute`.
+  - Sets `OBSERVATION_MODE=plasma_only`; IQL auto-selects `ACTION_MODE=absolute`
+    (the action-rate penalty is inactive in absolute mode).
   - Use this when testing whether the default actor setup is over-regularized.
 
 - `fanout_checkpoint_evals.sh` _(direct use: run after training, or from a

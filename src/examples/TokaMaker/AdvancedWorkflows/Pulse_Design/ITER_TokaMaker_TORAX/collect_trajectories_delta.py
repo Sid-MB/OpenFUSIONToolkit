@@ -1182,8 +1182,8 @@ if __name__ == '__main__':
                         help='Maximum TokaMaker/TORAX coupling loop count per trajectory.')
     parser.add_argument('--grid_size', type=int, default=51,
                         help='TORAX radial grid size passed to set_TORAX_grid.')
-    parser.add_argument('--observation_mode', choices=sorted(OBSERVATION_MODES), default='legacy',
-                        help='How to build trajectory observations: legacy includes current action, prev_action carries the prior decision explicitly, plasma_only removes action history.')
+    parser.add_argument('--observation_mode', choices=sorted(OBSERVATION_MODES), default='prev_action',
+                        help='How to build trajectory observations: prev_action carries the prior decision explicitly for normal actor-conditioned datasets, legacy includes current action for compatibility datasets, plasma_only removes action history.')
     parser.add_argument('--trajectory_timeout_seconds', type=int, default=0,
                         help='Abort a single trajectory after this many seconds; 0 disables the timeout.')
     parser.add_argument('--save_replay_shard', dest='save_replay_shard', action='store_true',

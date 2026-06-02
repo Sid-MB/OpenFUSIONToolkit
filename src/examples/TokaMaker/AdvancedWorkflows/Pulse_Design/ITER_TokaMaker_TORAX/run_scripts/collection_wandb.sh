@@ -2,7 +2,7 @@
 #SBATCH --account=nlp
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=4G
-#SBATCH --partition=john
+#SBATCH --partition=john,sc-loprio
 #SBATCH --mail-user=siddharth@cs.stanford.edu
 #SBATCH --mail-type=FAIL
 #SBATCH --output=/dev/null

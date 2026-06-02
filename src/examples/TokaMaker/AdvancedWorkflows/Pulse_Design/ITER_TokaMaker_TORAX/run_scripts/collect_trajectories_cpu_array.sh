@@ -3,7 +3,7 @@
 #SBATCH --account=nlp
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=128G
-#SBATCH --partition=john
+#SBATCH --partition=sc-loprio
 #SBATCH --mail-user=siddharth@cs.stanford.edu
 #SBATCH --mail-type=FAIL
 #SBATCH --array=0-399%32
@@ -11,7 +11,7 @@
 #SBATCH --error=/dev/null
 
 # Purpose:
-#   Slurm array worker for CPU trajectory generation on john. Each array task
+#   Slurm array worker for CPU trajectory generation on sc-loprio. Each array task
 #   maps its SLURM_ARRAY_TASK_ID to a trajectory chunk and runs
 #   collect_trajectories_delta.py for that chunk.
 #
