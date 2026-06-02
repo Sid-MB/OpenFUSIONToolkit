@@ -1,0 +1,26 @@
+Running on host: john11.stanford.edu
+OFT_SELECTED_FLAVOR=john
+OFT_SELECTED_INSTALL=/juice2/scr2/siddharth/OpenFUSIONToolkit/install_release_john
+ACTOR_CHECKPOINT=/nlp/scr/siddharth/OpenFUSIONToolkit/src/examples/TokaMaker/AdvancedWorkflows/Pulse_Design/ITER_TokaMaker_TORAX/run_smb_prev_action_smoke_20260530_222522/vwgpce31/checkpoint_step_15000.pt
+DATASET_DIR=/nlp/scr/siddharth/OpenFUSIONToolkit/src/examples/TokaMaker/AdvancedWorkflows/Pulse_Design/ITER_TokaMaker_TORAX/run_prev_action_smoke_20260530_222521
+OUTPUT_DIR=/nlp/scr/siddharth/OpenFUSIONToolkit/src/examples/TokaMaker/AdvancedWorkflows/Pulse_Design/ITER_TokaMaker_TORAX/run_smb_prev_action_smoke_20260530_222522/vwgpce31/checkpoint_evals_nocache/step_15000
+WANDB_PROJECT=iql-training
+RUN_NAME=checkpoint_step_15000
+WANDB_GROUP=vwgpce31
+INITIAL_RELAX_STATE=
+INITIAL_RELAX_CACHE_DIR=<default>
+MAX_LOOP=1
+GRID_SIZE=51
+TOTAL_CPUS=8
+THREADS_PER_WORKER=8
+PHYSICAL_CORES=16
+CUDA_VISIBLE_DEVICES=-1
+JAX_PLATFORMS=cpu
+JAX_COMPILATION_CACHE_DIR(base)=/juice2/scr2/siddharth/OpenFUSIONToolkit/src/examples/TokaMaker/AdvancedWorkflows/Pulse_Design/ITER_TokaMaker_TORAX/.jax_cache
+REPLAY_CACHE_DIR=/nlp/scr/siddharth/OpenFUSIONToolkit/src/examples/TokaMaker/AdvancedWorkflows/Pulse_Design/ITER_TokaMaker_TORAX/run_prev_action_smoke_20260530_222521/replay_cache
+USE_REPLAY_CACHE=1
+RL_SEGMENT_TIMEOUT_SECONDS=1800
+RL_MAX_ACTION_POWER_W=150000000
+CPUS_PER_TASK=8
+TOTAL_CPUS=8
+ALLOW_MISMATCHED_REWARDS=0

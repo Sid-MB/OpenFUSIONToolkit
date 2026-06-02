@@ -1,0 +1,27 @@
+{
+  "eval_reward_config": {
+    "q95_min": 3.0,
+    "beta_n_max": 2.8,
+    "fgw_max": 0.85,
+    "step_reward_weight": 1.0,
+    "q95_penalty_weight": 1.2,
+    "beta_n_penalty_weight": 1.0,
+    "fgw_penalty_weight": 2.0,
+    "q_flattop_weight": 1.0,
+    "flux_weight": 0.012
+  },
+  "train_reward_config": {
+    "beta_n_max": 2.8,
+    "beta_n_penalty_weight": 1.0,
+    "fgw_max": 0.85,
+    "fgw_penalty_weight": 2.0,
+    "flux_weight": 0.012,
+    "q95_min": 3.0,
+    "q95_penalty_weight": 1.2,
+    "q_flattop_weight": 1.0,
+    "step_reward_weight": 1.0
+  },
+  "train_reward_config_source": "checkpoint config field dataset_reward_config",
+  "reward_config_match": true,
+  "allow_mismatched_rewards": false
+}

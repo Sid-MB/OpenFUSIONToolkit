@@ -1,0 +1,14 @@
+Running on host: jagupard32.stanford.edu
+DATASET_DIR=/nlp/scr/siddharth/OpenFUSIONToolkit/src/examples/TokaMaker/AdvancedWorkflows/Pulse_Design/ITER_TokaMaker_TORAX/run_prev_action_smoke_20260530_222521
+TRAIN_OUTPUT_DIR=/nlp/scr/siddharth/OpenFUSIONToolkit/src/examples/TokaMaker/AdvancedWorkflows/Pulse_Design/ITER_TokaMaker_TORAX/run_smb_prev_action_smoke_20260530_222522/vwgpce31
+OUTPUT_ROOT=/nlp/scr/siddharth/OpenFUSIONToolkit/src/examples/TokaMaker/AdvancedWorkflows/Pulse_Design/ITER_TokaMaker_TORAX/run_smb_prev_action_smoke_20260530_222522/vwgpce31/checkpoint_evals_nocache
+MAX_LOOP=1
+GRID_SIZE=51
+EVAL_WANDB_PROJECT=iql-training
+EVAL_WANDB_GROUP=vwgpce31
+EVAL_WANDB_MODE=<unset>
+OFT_DISABLE_JAX_COMPILE_CACHE=1
+DRY_RUN=0
+Submitted eval for step 10000: 15712575
+Submitted eval for step 15000: 15712576
+Submitted eval for step 5000: 15712577

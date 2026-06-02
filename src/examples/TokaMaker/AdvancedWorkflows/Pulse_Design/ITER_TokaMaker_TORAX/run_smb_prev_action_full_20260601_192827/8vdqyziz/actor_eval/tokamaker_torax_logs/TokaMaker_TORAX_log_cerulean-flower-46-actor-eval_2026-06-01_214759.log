@@ -1,0 +1,166 @@
+Log file: /juice2/scr2/siddharth/OpenFUSIONToolkit/src/examples/TokaMaker/AdvancedWorkflows/Pulse_Design/ITER_TokaMaker_TORAX/out/iql/run_prev_action_full_20260601_192826/8vdqyziz/actor_eval/tokamaker_torax_logs/TokaMaker_TORAX_log_cerulean-flower-46-actor-eval_2026-06-01_214759.log
+Diverted window: t=[80, 500] s (6/10 timesteps)
+
+============================================================
+ TokaMaker_TORAX  
+ run_name = cerulean-flower-46-actor-eval | t=[0.0, 600.0] s | 10 timepoints | dt=5 s | max_loop=1 | RL actor (/juice2/scr2/siddharth/OpenFUSIONToolkit/src/examples/TokaMaker/AdvancedWorkflows/Pulse_Design/ITER_TokaMaker_TORAX/out/iql/run_prev_action_full_20260601_192826/8vdqyziz/iql_weights.pt)
+
+============================================================
+  Initial TORAX relax: loading cached state
+============================================================
+Initial TORAX relax state loaded from /juice2/scr2/siddharth/OpenFUSIONToolkit/src/examples/TokaMaker/AdvancedWorkflows/Pulse_Design/ITER_TokaMaker_TORAX/initial_relax_cache/initial_relax_568b58f010fd7259.json
+
+============================================================
+  Loop 1
+============================================================
+Loaded RL actor from /juice2/scr2/siddharth/OpenFUSIONToolkit/src/examples/TokaMaker/AdvancedWorkflows/Pulse_Design/ITER_TokaMaker_TORAX/out/iql/run_prev_action_full_20260601_192826/8vdqyziz/iql_weights.pt
+  TORAX RL: cold-start t=[0, 80] s (defaults)
+	TX: 5/5 initial EQDSKs valid
+  TORAX RL run: t=[0, 80] s (cold-start) ...
+TORAX RL run: t=[0, 80] s (cold-start)
+TORAX RL run [0, 80] completed.
+RL decision t=80 -> knot t=100: ECRH=33.99 MW, NBI=33.00 MW
+  TORAX RL: cold-start t=[0, 100] s (through next decision)
+	TX: 5/5 initial EQDSKs valid
+  TORAX RL run: t=[0, 100] s (cold-start) ...
+TORAX RL run: t=[0, 100] s (cold-start)
+TORAX RL run [0, 100] completed.
+RL decision t=100 -> knot t=120: ECRH=24.01 MW, NBI=31.51 MW
+  TORAX RL: cold-start t=[0, 120] s (through next decision)
+	TX: 5/5 initial EQDSKs valid
+  TORAX RL run: t=[0, 120] s (cold-start) ...
+TORAX RL run: t=[0, 120] s (cold-start)
+TORAX RL run [0, 120] completed.
+RL decision t=120 -> knot t=140: ECRH=13.91 MW, NBI=27.79 MW
+  TORAX RL: cold-start t=[0, 140] s (through next decision)
+	TX: 5/5 initial EQDSKs valid
+  TORAX RL run: t=[0, 140] s (cold-start) ...
+TORAX RL run: t=[0, 140] s (cold-start)
+TORAX RL run [0, 140] completed.
+RL decision t=140 -> knot t=160: ECRH=6.78 MW, NBI=20.66 MW
+  TORAX RL: cold-start t=[0, 160] s (through next decision)
+	TX: 5/5 initial EQDSKs valid
+  TORAX RL run: t=[0, 160] s (cold-start) ...
+TORAX RL run: t=[0, 160] s (cold-start)
+TORAX RL run [0, 160] completed.
+RL decision t=160 -> knot t=180: ECRH=0.00 MW, NBI=16.04 MW
+  TORAX RL: cold-start t=[0, 180] s (through next decision)
+	TX: 5/5 initial EQDSKs valid
+  TORAX RL run: t=[0, 180] s (cold-start) ...
+TORAX RL run: t=[0, 180] s (cold-start)
+TORAX RL run [0, 180] completed.
+RL decision t=180 -> knot t=200: ECRH=0.00 MW, NBI=13.60 MW
+  TORAX RL: cold-start t=[0, 200] s (through next decision)
+	TX: 5/5 initial EQDSKs valid
+  TORAX RL run: t=[0, 200] s (cold-start) ...
+TORAX RL run: t=[0, 200] s (cold-start)
+TORAX RL run [0, 200] completed.
+RL decision t=200 -> knot t=220: ECRH=0.00 MW, NBI=12.92 MW
+  TORAX RL: cold-start t=[0, 220] s (through next decision)
+	TX: 5/5 initial EQDSKs valid
+  TORAX RL run: t=[0, 220] s (cold-start) ...
+TORAX RL run: t=[0, 220] s (cold-start)
+TORAX RL run [0, 220] completed.
+RL decision t=220 -> knot t=240: ECRH=0.00 MW, NBI=12.83 MW
+  TORAX RL: cold-start t=[0, 240] s (through next decision)
+	TX: 5/5 initial EQDSKs valid
+  TORAX RL run: t=[0, 240] s (cold-start) ...
+TORAX RL run: t=[0, 240] s (cold-start)
+TORAX RL run [0, 240] completed.
+RL decision t=240 -> knot t=260: ECRH=0.00 MW, NBI=12.79 MW
+  TORAX RL: cold-start t=[0, 260] s (through next decision)
+	TX: 5/5 initial EQDSKs valid
+  TORAX RL run: t=[0, 260] s (cold-start) ...
+TORAX RL run: t=[0, 260] s (cold-start)
+TORAX RL run [0, 260] completed.
+RL decision t=260 -> knot t=280: ECRH=0.00 MW, NBI=12.77 MW
+  TORAX RL: cold-start t=[0, 280] s (through next decision)
+	TX: 5/5 initial EQDSKs valid
+  TORAX RL run: t=[0, 280] s (cold-start) ...
+TORAX RL run: t=[0, 280] s (cold-start)
+TORAX RL run [0, 280] completed.
+RL decision t=280 -> knot t=300: ECRH=0.00 MW, NBI=12.74 MW
+  TORAX RL: cold-start t=[0, 300] s (through next decision)
+	TX: 5/5 initial EQDSKs valid
+  TORAX RL run: t=[0, 300] s (cold-start) ...
+TORAX RL run: t=[0, 300] s (cold-start)
+TORAX RL run [0, 300] completed.
+RL decision t=300 -> knot t=320: ECRH=0.00 MW, NBI=12.71 MW
+  TORAX RL: cold-start t=[0, 320] s (through next decision)
+	TX: 5/5 initial EQDSKs valid
+  TORAX RL run: t=[0, 320] s (cold-start) ...
+TORAX RL run: t=[0, 320] s (cold-start)
+TORAX RL run [0, 320] completed.
+RL decision t=320 -> knot t=340: ECRH=0.00 MW, NBI=12.69 MW
+  TORAX RL: cold-start t=[0, 340] s (through next decision)
+	TX: 5/5 initial EQDSKs valid
+  TORAX RL run: t=[0, 340] s (cold-start) ...
+TORAX RL run: t=[0, 340] s (cold-start)
+TORAX RL run [0, 340] completed.
+RL decision t=340 -> knot t=360: ECRH=0.00 MW, NBI=12.66 MW
+  TORAX RL: cold-start t=[0, 360] s (through next decision)
+	TX: 5/5 initial EQDSKs valid
+  TORAX RL run: t=[0, 360] s (cold-start) ...
+TORAX RL run: t=[0, 360] s (cold-start)
+TORAX RL run [0, 360] completed.
+RL decision t=360 -> knot t=380: ECRH=0.00 MW, NBI=12.63 MW
+  TORAX RL: cold-start t=[0, 380] s (through next decision)
+	TX: 5/5 initial EQDSKs valid
+  TORAX RL run: t=[0, 380] s (cold-start) ...
+TORAX RL run: t=[0, 380] s (cold-start)
+TORAX RL run [0, 380] completed.
+RL decision t=380 -> knot t=400: ECRH=0.00 MW, NBI=12.61 MW
+  TORAX RL: cold-start t=[0, 400] s (through next decision)
+	TX: 5/5 initial EQDSKs valid
+  TORAX RL run: t=[0, 400] s (cold-start) ...
+TORAX RL run: t=[0, 400] s (cold-start)
+TORAX RL run [0, 400] completed.
+RL decision t=400 -> knot t=420: ECRH=0.00 MW, NBI=12.59 MW
+  TORAX RL: cold-start t=[0, 420] s (through next decision)
+	TX: 5/5 initial EQDSKs valid
+  TORAX RL run: t=[0, 420] s (cold-start) ...
+TORAX RL run: t=[0, 420] s (cold-start)
+TORAX RL run [0, 420] completed.
+RL decision t=420 -> knot t=440: ECRH=0.00 MW, NBI=12.56 MW
+  TORAX RL: cold-start t=[0, 440] s (through next decision)
+	TX: 5/5 initial EQDSKs valid
+  TORAX RL run: t=[0, 440] s (cold-start) ...
+TORAX RL run: t=[0, 440] s (cold-start)
+TORAX RL run [0, 440] completed.
+RL decision t=440 -> knot t=460: ECRH=0.00 MW, NBI=12.54 MW
+  TORAX RL: cold-start t=[0, 460] s (through next decision)
+	TX: 5/5 initial EQDSKs valid
+  TORAX RL run: t=[0, 460] s (cold-start) ...
+TORAX RL run: t=[0, 460] s (cold-start)
+TORAX RL run [0, 460] completed.
+RL decision t=460 -> knot t=480: ECRH=0.00 MW, NBI=12.71 MW
+  TORAX RL: cold-start t=[0, 480] s (through next decision)
+	TX: 5/5 initial EQDSKs valid
+  TORAX RL run: t=[0, 480] s (cold-start) ...
+TORAX RL run: t=[0, 480] s (cold-start)
+TORAX RL run [0, 480] completed.
+RL decision t=480 -> knot t=500: ECRH=0.00 MW, NBI=15.25 MW
+  TORAX RL: final cold-start t=[0, 600] s
+	TX: 5/5 initial EQDSKs valid
+  TORAX RL run: t=[0, 600] s (cold-start) ...
+TORAX RL run: t=[0, 600] s (cold-start)
+TORAX RL run [0, 600] completed.
+Loop 1 TORAX RL cold-start: cflux=165.6748 Wb
+  TORAX RL cold-start done (cflux=165.6748 Wb)
+Loop 1 TokaMaker:
+  TokaMaker: solving 10 equilibria...
+  TokaMaker: 10/10 solved (cflux=165.6731 Wb)
+	TM summary: 10/10 solved. Levels: raw tx profs: 10.
+  Loop 1 result: conv_err=0.000% | TX-TM diff=0.0010% | cflux_TX=165.6748 Wb | cflux_TM=165.6731 Wb
+TX Convergence error = 0.000 %
+Difference Convergence error = 0.0010 %
+
+============================================================
+  Max loop index (1) reached (err=0.000%)
+
+  Loop   cflux TX [Wb]    cflux TM [Wb]    TX-TM diff %  
+  ----------------------------------------------------
+  1      165.6748         165.6731         0.0010        
+============================================================
+  Total sim time: 7m 30.8s
+  Log file: /juice2/scr2/siddharth/OpenFUSIONToolkit/src/examples/TokaMaker/AdvancedWorkflows/Pulse_Design/ITER_TokaMaker_TORAX/out/iql/run_prev_action_full_20260601_192826/8vdqyziz/actor_eval/tokamaker_torax_logs/TokaMaker_TORAX_log_cerulean-flower-46-actor-eval_2026-06-01_214759.log

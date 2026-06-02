@@ -1,0 +1,60 @@
+/juice2/scr2/siddharth/OpenFUSIONToolkit/src/examples/TokaMaker/AdvancedWorkflows/Pulse_Design/ITER_TokaMaker_TORAX/rl/eval_sim.py:306: RuntimeWarning: Reward configuration mismatch detected for actor eval.
+  checkpoint: /nlp/scr/siddharth/OpenFUSIONToolkit/src/examples/TokaMaker/AdvancedWorkflows/Pulse_Design/ITER_TokaMaker_TORAX/run_smb_prev_action_smoke_20260530_222522/vwgpce31/checkpoint_step_15000.pt
+  checkpoint reward provenance: unavailable
+  allow_mismatched_rewards: False
+
+The checkpoint was trained with:
+<unavailable>
+
+The current eval runtime will use:
+{
+  "beta_n_max": 2.8,
+  "beta_n_penalty_weight": 1.0,
+  "fgw_max": 0.85,
+  "fgw_penalty_weight": 2.0,
+  "flux_weight": 0.012,
+  "q95_min": 3.0,
+  "q95_penalty_weight": 1.2,
+  "q_flattop_weight": 1.0,
+  "step_reward_weight": 1.0
+}
+
+If you intentionally want to evaluate across a reward change, rerun with `ALLOW_MISMATCHED_REWARDS=1` or pass `--allow_mismatched_rewards` to the eval CLI.
+  reward_config_match = _check_reward_config_match(
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/juice2/scr2/siddharth/OpenFUSIONToolkit/src/examples/TokaMaker/AdvancedWorkflows/Pulse_Design/ITER_TokaMaker_TORAX/rl/eval.py", line 169, in <module>
+    main()
+  File "/juice2/scr2/siddharth/OpenFUSIONToolkit/src/examples/TokaMaker/AdvancedWorkflows/Pulse_Design/ITER_TokaMaker_TORAX/rl/eval.py", line 143, in main
+    run_actor_eval_from_config(
+  File "/juice2/scr2/siddharth/OpenFUSIONToolkit/src/examples/TokaMaker/AdvancedWorkflows/Pulse_Design/ITER_TokaMaker_TORAX/rl/eval.py", line 58, in run_actor_eval_from_config
+    result = run_actor_eval_simulation(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/juice2/scr2/siddharth/OpenFUSIONToolkit/src/examples/TokaMaker/AdvancedWorkflows/Pulse_Design/ITER_TokaMaker_TORAX/rl/eval_sim.py", line 306, in run_actor_eval_simulation
+    reward_config_match = _check_reward_config_match(
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/juice2/scr2/siddharth/OpenFUSIONToolkit/src/examples/TokaMaker/AdvancedWorkflows/Pulse_Design/ITER_TokaMaker_TORAX/rl/eval_sim.py", line 120, in _check_reward_config_match
+    raise RuntimeError(message)
+RuntimeError: Reward configuration mismatch detected for actor eval.
+  checkpoint: /nlp/scr/siddharth/OpenFUSIONToolkit/src/examples/TokaMaker/AdvancedWorkflows/Pulse_Design/ITER_TokaMaker_TORAX/run_smb_prev_action_smoke_20260530_222522/vwgpce31/checkpoint_step_15000.pt
+  checkpoint reward provenance: unavailable
+  allow_mismatched_rewards: False
+
+The checkpoint was trained with:
+<unavailable>
+
+The current eval runtime will use:
+{
+  "beta_n_max": 2.8,
+  "beta_n_penalty_weight": 1.0,
+  "fgw_max": 0.85,
+  "fgw_penalty_weight": 2.0,
+  "flux_weight": 0.012,
+  "q95_min": 3.0,
+  "q95_penalty_weight": 1.2,
+  "q_flattop_weight": 1.0,
+  "step_reward_weight": 1.0
+}
+
+If you intentionally want to evaluate across a reward change, rerun with `ALLOW_MISMATCHED_REWARDS=1` or pass `--allow_mismatched_rewards` to the eval CLI.
