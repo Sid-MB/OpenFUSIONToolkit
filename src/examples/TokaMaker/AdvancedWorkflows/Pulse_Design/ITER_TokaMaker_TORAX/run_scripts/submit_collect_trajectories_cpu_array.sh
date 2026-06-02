@@ -552,7 +552,9 @@ if [ "${SUBMIT_COLLECTION_WANDB}" != "0" ]; then
     collection_wandb_export+=",WANDB_MODE=${COLLECTION_WANDB_MODE}"
   fi
   collection_wandb_args=()
-  if [ -n "${collection_jid}" ]; then
+  if [ -n "${replay_cache_jid}" ]; then
+    collection_wandb_args+=(--dependency=afterok:${replay_cache_jid})
+  elif [ -n "${collection_jid}" ]; then
     collection_wandb_args+=(--dependency=afterok:${collection_jid})
   fi
   collection_wandb_jid="$(
