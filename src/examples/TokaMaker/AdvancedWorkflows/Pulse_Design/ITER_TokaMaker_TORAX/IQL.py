@@ -456,6 +456,7 @@ def train_iql(
     checkpoint_eval_metric,
     checkpoint_eval_kwargs,
     observation_mode="prev_action",
+    state_keys=None,
 ):
     dataloader = DataLoader(buffer, batch_size=batch_size, shuffle=True)
     
@@ -509,6 +510,7 @@ def train_iql(
                 'action_mode': getattr(iql.actor, "action_mode", "absolute"),
                 'action_rate_penalty': getattr(iql, "action_rate_penalty", 0.0),
                 'observation_mode': observation_mode,
+                'state_keys': state_keys,
                 **(normalizers or {}),
             }, checkpoint_path)
             logger.info("Saved checkpoint at step %s", step)
@@ -847,6 +849,7 @@ def train_from_config(
         checkpoint_eval_interval=int(config.get("checkpoint_eval_interval", 0)),
         checkpoint_eval_metric=str(config.get("checkpoint_eval_metric", "actor_eval/reward_total")),
         observation_mode=str(config.get("observation_mode", "prev_action")),
+        state_keys=specs["state_keys"],
         checkpoint_eval_kwargs={
             "dataset_dir": str(dataset_dir),
             "project": project,

@@ -48,6 +48,7 @@ TRAIN_OUTPUT_DIR="${TRAIN_OUTPUT_DIR:?Set TRAIN_OUTPUT_DIR to the IQL run dir (c
 OUTPUT_ROOT="${OUTPUT_ROOT:-${TRAIN_OUTPUT_DIR%/}/checkpoint_evals}"
 MAX_LOOP="${MAX_LOOP:-1}"
 GRID_SIZE="${GRID_SIZE:-51}"
+EVAL_ARRAY_CONCURRENCY="${EVAL_ARRAY_CONCURRENCY:-16}"
 EVAL_WANDB_MODE="${EVAL_WANDB_MODE:-${WANDB_MODE:-}}"
 EVAL_WANDB_GROUP="${EVAL_WANDB_GROUP:-$(basename "${TRAIN_OUTPUT_DIR%/}")}"
 EVAL_WANDB_PROJECT="${EVAL_WANDB_PROJECT:-iql-training}"
@@ -90,6 +91,12 @@ if [ -d "${DATASET_DIR%/}/replay_cache" ]; then
   replay_cache_dir="${DATASET_DIR%/}/replay_cache"
 fi
 
+# Build a manifest of checkpoints that still need an eval (skip completed ones),
+# then submit ONE Slurm array — one task per checkpoint. Each array task maps
+# SLURM_ARRAY_TASK_ID to its manifest line inside eval_iql_actor_cpu.sh.
+manifest="${OUTPUT_ROOT%/}/checkpoint_manifest.txt"
+: > "${manifest}"
+n=0
 for checkpoint in "${checkpoints[@]}"; do
   step="$(basename "${checkpoint}" .pt | sed 's/^checkpoint_step_//')"
   eval_output_dir="${OUTPUT_ROOT%/}/step_${step}"
@@ -97,50 +104,56 @@ for checkpoint in "${checkpoints[@]}"; do
     echo "Skipping existing eval output: ${eval_output_dir}"
     continue
   fi
-
-  export_args=(
-    ALL
-    DATASET_DIR="${DATASET_DIR}"
-    ACTOR_CHECKPOINT="${checkpoint}"
-    OUTPUT_DIR="${eval_output_dir}"
-    RUN_ID="checkpoint_step_${step}"
-    WANDB_PROJECT="${EVAL_WANDB_PROJECT}"
-    WANDB_GROUP="${EVAL_WANDB_GROUP}"
-    MAX_LOOP="${MAX_LOOP}"
-    GRID_SIZE="${GRID_SIZE}"
-  )
-  if [ -n "${EVAL_WANDB_MODE}" ]; then
-    export_args+=(WANDB_MODE="${EVAL_WANDB_MODE}")
-  fi
-  if [ "${OFT_DISABLE_JAX_COMPILE_CACHE}" = "1" ]; then
-    export_args+=(OFT_DISABLE_JAX_COMPILE_CACHE=1)
-  fi
-  if [ -n "${replay_cache_dir}" ]; then
-    export_args+=(REPLAY_CACHE_DIR="${replay_cache_dir}")
-  fi
-
-  sbatch_args=(
-    sbatch
-    --parsable
-    --account=nlp
-    --partition=john
-    --mem=128G
-    --export="$(IFS=, ; echo "${export_args[*]}")"
-    --output="${RUN_LOG_DIR}/checkpoint_eval-step_${step}-%j.out"
-    --error="${RUN_LOG_DIR}/checkpoint_eval-step_${step}-%j.err"
-  )
-  if [ -n "${replay_cache_dir}" ]; then
-    # The replay cache is already on disk if it exists in the dataset root; no
-    # dependency is needed. Keep this comment to make the intent explicit.
-    :
-  fi
-
-  if [ "${DRY_RUN}" != "0" ]; then
-    printf '%q ' "${sbatch_args[@]}" "${PROJECT_DIR}/run_scripts/eval_iql_actor_cpu.sh"
-    printf '\n'
-    continue
-  fi
-
-  jid="$("${sbatch_args[@]}" "${PROJECT_DIR}/run_scripts/eval_iql_actor_cpu.sh")"
-  echo "Submitted eval for step ${step}: ${jid}"
+  echo "${checkpoint}" >> "${manifest}"
+  n=$((n + 1))
 done
+
+if [ "${n}" -eq 0 ]; then
+  echo "Nothing to evaluate: every checkpoint already has eval output under ${OUTPUT_ROOT}."
+  exit 0
+fi
+
+# Shared env for every array task; the per-checkpoint ACTOR_CHECKPOINT/OUTPUT_DIR
+# are derived from CHECKPOINT_MANIFEST + SLURM_ARRAY_TASK_ID inside the eval script.
+export_args=(
+  ALL
+  DATASET_DIR="${DATASET_DIR}"
+  OUTPUT_ROOT="${OUTPUT_ROOT}"
+  CHECKPOINT_MANIFEST="${manifest}"
+  WANDB_PROJECT="${EVAL_WANDB_PROJECT}"
+  WANDB_GROUP="${EVAL_WANDB_GROUP}"
+  MAX_LOOP="${MAX_LOOP}"
+  GRID_SIZE="${GRID_SIZE}"
+)
+if [ -n "${EVAL_WANDB_MODE}" ]; then
+  export_args+=(WANDB_MODE="${EVAL_WANDB_MODE}")
+fi
+if [ "${OFT_DISABLE_JAX_COMPILE_CACHE}" = "1" ]; then
+  export_args+=(OFT_DISABLE_JAX_COMPILE_CACHE=1)
+fi
+if [ -n "${replay_cache_dir}" ]; then
+  export_args+=(REPLAY_CACHE_DIR="${replay_cache_dir}")
+fi
+
+array_spec="0-$((n - 1))%${EVAL_ARRAY_CONCURRENCY}"
+# Resources (account/partition/mem/cpus) come from eval_iql_actor_cpu.sh's #SBATCH headers.
+sbatch_args=(
+  sbatch
+  --parsable
+  --array="${array_spec}"
+  --export="$(IFS=, ; echo "${export_args[*]}")"
+  --output="${RUN_LOG_DIR}/checkpoint_eval-%A_%a.out"
+  --error="${RUN_LOG_DIR}/checkpoint_eval-%A_%a.err"
+)
+
+if [ "${DRY_RUN}" != "0" ]; then
+  echo "Would submit a checkpoint-eval array over ${n} checkpoints (${array_spec}):"
+  printf '%q ' "${sbatch_args[@]}" "${PROJECT_DIR}/run_scripts/eval_iql_actor_cpu.sh"
+  printf '\n'
+  echo "Manifest ${manifest}:"
+  cat "${manifest}"
+  exit 0
+fi
+
+jid="$("${sbatch_args[@]}" "${PROJECT_DIR}/run_scripts/eval_iql_actor_cpu.sh")"
+echo "Submitted checkpoint-eval array over ${n} checkpoints: ${jid} (${array_spec})"

@@ -53,7 +53,7 @@
 #SBATCH --account=nlp
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=128G
-#SBATCH --partition=john
+#SBATCH --partition=john,sc-loprio
 #SBATCH --mail-user=siddharth@cs.stanford.edu
 #SBATCH --mail-type=FAIL
 #SBATCH --output=/dev/null
@@ -73,6 +73,22 @@ source "${OFT_ROOT}/scripts/oft_arch/select_oft_install.sh"
 source "${PROJECT_DIR}/run_scripts/lib/threading.sh"
 export UV_CACHE_DIR="${SLURM_TMPDIR:-/tmp/$USER/uv_cache}"
 mkdir -p "${UV_CACHE_DIR}"
+
+# Array mode: when launched as a Slurm array with a checkpoint manifest, each
+# task selects its checkpoint by line number (SLURM_ARRAY_TASK_ID, 0-based) and
+# derives its own RUN_ID/OUTPUT_DIR. Used by fanout_checkpoint_evals.sh.
+if [ -n "${CHECKPOINT_MANIFEST:-}" ] && [ -n "${SLURM_ARRAY_TASK_ID:-}" ]; then
+  ACTOR_CHECKPOINT="$(sed -n "$((SLURM_ARRAY_TASK_ID + 1))p" "${CHECKPOINT_MANIFEST}")"
+  if [ -z "${ACTOR_CHECKPOINT}" ]; then
+    echo "ERROR: no checkpoint at line $((SLURM_ARRAY_TASK_ID + 1)) of ${CHECKPOINT_MANIFEST}" >&2
+    exit 2
+  fi
+  _ckpt_step="$(basename "${ACTOR_CHECKPOINT%.pt}" | sed 's/^checkpoint_step_//')"
+  RUN_ID="${RUN_ID:-checkpoint_step_${_ckpt_step}}"
+  if [ -n "${OUTPUT_ROOT:-}" ]; then
+    OUTPUT_DIR="${OUTPUT_DIR:-${OUTPUT_ROOT%/}/step_${_ckpt_step}}"
+  fi
+fi
 
 ACTOR_CHECKPOINT="${ACTOR_CHECKPOINT:?Set ACTOR_CHECKPOINT to iql_weights.pt or checkpoint_step_*.pt}"
 DATASET_DIR="${DATASET_DIR:-}"

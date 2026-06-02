@@ -75,7 +75,33 @@ def _normalize_for_json(value):
     return value
 
 
-def default_reward_config():
+# Per-run reward-weight overrides. Setting any of these env vars overrides that
+# single field of the canonical RLRewardConfig for this process only, so a reward
+# recalc / training / eval run can use different weights WITHOUT editing the
+# checked-in defaults. Unset vars leave the canonical value untouched. Example:
+#   RL_Q95_PENALTY_WEIGHT=3.5 RL_FGW_PENALTY_WEIGHT=4.0
+_REWARD_ENV_OVERRIDES = {
+    'q95_min': 'RL_Q95_MIN',
+    'beta_n_max': 'RL_BETA_N_MAX',
+    'fgw_max': 'RL_FGW_MAX',
+    'step_reward_weight': 'RL_STEP_REWARD_WEIGHT',
+    'q95_penalty_weight': 'RL_Q95_PENALTY_WEIGHT',
+    'beta_n_penalty_weight': 'RL_BETA_N_PENALTY_WEIGHT',
+    'fgw_penalty_weight': 'RL_FGW_PENALTY_WEIGHT',
+    'q_flattop_weight': 'RL_Q_FLATTOP_WEIGHT',
+    'flux_weight': 'RL_FLUX_WEIGHT',
+}
+
+
+def _apply_reward_env_overrides(values):
+    for field, env_name in _REWARD_ENV_OVERRIDES.items():
+        raw = os.environ.get(env_name)
+        if raw is not None and raw != '':
+            values[field] = float(raw)
+    return values
+
+
+def _base_reward_config():
     source_path = Path(__file__).resolve().parents[6] / 'src/python/OpenFUSIONToolkit/TokaMaker/pulse_design.py'
     if source_path.is_file():
         try:
@@ -111,6 +137,10 @@ def default_reward_config():
             'q_flattop_weight': 1.0,
             'flux_weight': 0.012,
         }
+
+
+def default_reward_config():
+    return _apply_reward_env_overrides(_base_reward_config())
 
 
 def reward_config_to_dict(reward_config=None):

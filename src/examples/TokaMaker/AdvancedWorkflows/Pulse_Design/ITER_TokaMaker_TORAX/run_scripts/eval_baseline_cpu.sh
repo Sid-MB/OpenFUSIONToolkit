@@ -33,7 +33,7 @@
 #SBATCH --account=nlp
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=128G
-#SBATCH --partition=john
+#SBATCH --partition=john,sc-loprio
 #SBATCH --mail-user=siddharth@cs.stanford.edu
 #SBATCH --mail-type=FAIL
 #SBATCH --output=/dev/null
