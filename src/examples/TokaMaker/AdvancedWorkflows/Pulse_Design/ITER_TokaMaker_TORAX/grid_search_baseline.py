@@ -337,7 +337,7 @@ def main():
     best_trajectory = trajectories_by_path[best_row["path"]]
     best_payload = format_best_trajectory(best_trajectory, best_row, rank=1)
     with best_path.open("w") as f:
-        json.dump(best_payload, f, indent=2)
+        json.dump(best_payload, f, indent=2, sort_keys=True)
         f.write("\n")
 
     top_k_rows = scored[: args.top_k]
@@ -376,7 +376,7 @@ def main():
         },
     }
     with summary_path.open("w") as f:
-        json.dump(summary_payload, f, indent=2)
+        json.dump(summary_payload, f, indent=2, sort_keys=True)
         f.write("\n")
 
     print(f"Scanned {len(scored)} {input_format} trajectories from {args.dataset_dir}")

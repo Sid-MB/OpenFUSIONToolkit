@@ -2192,7 +2192,7 @@ class TokaMaker_TORAX:
         import torch.nn as nn
 
         class _RLActor(nn.Module):
-            def __init__(self, action_max, state_dim, action_dim, hidden_dim=256):
+            def __init__(self, action_max, state_dim, action_dim, hidden_dim=256, action_mode='absolute'):
                 super().__init__()
                 self.net = nn.Sequential(
                     nn.Linear(state_dim, hidden_dim),
@@ -2200,12 +2200,18 @@ class TokaMaker_TORAX:
                     nn.Linear(hidden_dim, hidden_dim),
                     nn.ReLU(),
                     nn.Linear(hidden_dim, action_dim),
-                    nn.Sigmoid(),
                 )
                 self.register_buffer("action_max", torch.as_tensor(action_max, dtype=torch.float32))
+                self.action_mode = action_mode
 
-            def act(self, state):
-                return self.net(state) * self.action_max
+            def act(self, state, prev_action=None):
+                raw = self.net(state)
+                if self.action_mode == 'residual_prev_action':
+                    delta = torch.tanh(raw) * self.action_max
+                    if prev_action is None:
+                        prev_action = torch.zeros_like(delta)
+                    return torch.clamp(prev_action + delta, min=torch.zeros_like(delta), max=self.action_max)
+                return torch.sigmoid(raw) * self.action_max
 
         ckpt = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
         if 'state_mean' not in ckpt or 'state_std' not in ckpt:
@@ -2216,20 +2222,43 @@ class TokaMaker_TORAX:
         state_mean = np.asarray(ckpt['state_mean'], dtype=np.float64).reshape(-1)
         state_std = np.asarray(ckpt['state_std'], dtype=np.float64).reshape(-1)
         state_std[state_std < 1e-8] = 1.0
-        if state_mean.shape[0] != RL_STATE_DIM:
+        action_mode = str(ckpt.get('action_mode', 'absolute'))
+        observation_mode = str(ckpt.get('observation_mode', 'prev_action'))
+        # De-hardwired observation: build the actor's input from the subset of
+        # RL_STATE_KEYS that matches how this checkpoint was trained, rather than a
+        # fixed RL_STATE_DIM. plasma_only drops the action features (ecrh/nbi);
+        # prev_action keeps the full vector (those slots carry the previous action).
+        obs_keys = list(RL_STATE_KEYS)
+        if observation_mode == 'plasma_only':
+            obs_keys = [k for k in RL_STATE_KEYS if k not in ('ecrh', 'nbi')]
+        obs_indices = [RL_STATE_KEYS.index(k) for k in obs_keys]
+        expected_state_dim = len(obs_keys)
+        if state_mean.shape[0] != expected_state_dim:
             raise ValueError(
-                f'Checkpoint state_dim {state_mean.shape[0]} != RL_STATE_DIM {RL_STATE_DIM}'
+                f'Checkpoint state_dim {state_mean.shape[0]} != expected {expected_state_dim} '
+                f'for observation_mode={observation_mode!r}'
             )
-        if state_std.shape[0] != RL_STATE_DIM:
+        if state_std.shape[0] != expected_state_dim:
             raise ValueError(
-                f'Checkpoint state_std_dim {state_std.shape[0]} != RL_STATE_DIM {RL_STATE_DIM}'
+                f'Checkpoint state_std_dim {state_std.shape[0]} != expected {expected_state_dim} '
+                f'for observation_mode={observation_mode!r}'
             )
         if action_max.shape[0] != 2:
             raise ValueError(
                 f'Checkpoint action_dim {action_max.shape[0]} != expected action_dim 2'
             )
 
-        actor = _RLActor(action_max, RL_STATE_DIM, 2)
+        ckpt_state_keys = list(ckpt.get('state_keys') or [])
+        action_context_indices = []
+        if action_mode == 'residual_prev_action':
+            for key in ('prev_ecrh', 'prev_nbi'):
+                if key not in ckpt_state_keys:
+                    raise ValueError(
+                        f'Residual actor checkpoint requires state_keys to include {key!r}: {checkpoint_path}'
+                    )
+                action_context_indices.append(ckpt_state_keys.index(key))
+
+        actor = _RLActor(action_max, expected_state_dim, 2, action_mode=action_mode)
         actor.load_state_dict(ckpt['actor'])
         actor.eval()
 
@@ -2237,8 +2266,14 @@ class TokaMaker_TORAX:
         self._rl_action_max = action_max
         self._rl_state_mean = state_mean
         self._rl_state_std = state_std
+        self._rl_obs_indices = obs_indices
+        self._rl_action_mode = action_mode
+        self._rl_action_context_indices = tuple(action_context_indices)
         self._rl_actor_checkpoint = checkpoint_path
-        self._log(f'Loaded RL actor from {checkpoint_path}')
+        self._log(
+            f'Loaded RL actor from {checkpoint_path} '
+            f'(observation_mode={observation_mode}, action_mode={action_mode}, state_dim={expected_state_dim})'
+        )
 
     def _rl_select_action_w(self, state_vector, decision_t=None):
         r'''! Actor inference; returns [ecrh_W, nbi_W].
@@ -2261,9 +2296,21 @@ class TokaMaker_TORAX:
         import torch
 
         state = np.asarray(state_vector, dtype=np.float64).reshape(-1)
+        state = state[self._rl_obs_indices]
         s_norm = (state - self._rl_state_mean) / (self._rl_state_std + 1e-8)
         with torch.no_grad():
-            action_w = self._rl_actor.act(torch.FloatTensor(s_norm).unsqueeze(0))
+            state_tensor = torch.FloatTensor(s_norm).unsqueeze(0)
+            if self._rl_action_mode == 'residual_prev_action' and self._rl_action_context_indices:
+                idx = list(self._rl_action_context_indices)
+                prev_action_norm = state_tensor[:, idx]
+                prev_action = prev_action_norm * torch.as_tensor(
+                    self._rl_state_std[idx], dtype=torch.float32
+                ) + torch.as_tensor(
+                    self._rl_state_mean[idx], dtype=torch.float32
+                )
+                action_w = self._rl_actor.act(state_tensor, prev_action=prev_action)
+            else:
+                action_w = self._rl_actor.act(state_tensor)
         return action_w.cpu().numpy()[0]
 
     def _rl_select_action_mw(self, state_vector, decision_t=None):

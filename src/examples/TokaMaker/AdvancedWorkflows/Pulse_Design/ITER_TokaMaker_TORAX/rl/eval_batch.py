@@ -271,7 +271,7 @@ def main():
     }
     summary_path = Path(output_root) / "batch_eval_summary.json"
     with summary_path.open("w") as f:
-        json.dump(summary, f, indent=2)
+        json.dump(summary, f, indent=2, sort_keys=True)
     print(f"Batch done: {n_ok} ok, {n_failed} failed in "
           f"{summary['elapsed_s']/60:.1f} min. Summary: {summary_path}")
 

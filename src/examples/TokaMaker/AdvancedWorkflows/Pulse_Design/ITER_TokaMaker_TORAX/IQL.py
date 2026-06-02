@@ -455,6 +455,7 @@ def train_iql(
     checkpoint_eval_interval,
     checkpoint_eval_metric,
     checkpoint_eval_kwargs,
+    observation_mode="prev_action",
 ):
     dataloader = DataLoader(buffer, batch_size=batch_size, shuffle=True)
     
@@ -507,6 +508,7 @@ def train_iql(
                 'action_dim': iql.action_dim,
                 'action_mode': getattr(iql.actor, "action_mode", "absolute"),
                 'action_rate_penalty': getattr(iql, "action_rate_penalty", 0.0),
+                'observation_mode': observation_mode,
                 **(normalizers or {}),
             }, checkpoint_path)
             logger.info("Saved checkpoint at step %s", step)
@@ -536,6 +538,7 @@ def train_iql(
                                 },
                                 f,
                                 indent=2,
+                                sort_keys=True,
                             )
                 except Exception as exc:
                     logger.warning("Closed-loop checkpoint eval failed at step %s: %s", step, exc)
@@ -739,7 +742,7 @@ def train_from_config(
     run.config.update(dataset_config, allow_val_change=True)
     config = dict(run.config)
     with (output_dir / "iql_config.json").open("w") as f:
-        json.dump(config, f, indent=2)
+        json.dump(config, f, indent=2, sort_keys=True)
 
     state_dim = specs["state_dim"]
     action_dim = specs["action_dim"]
@@ -817,9 +820,11 @@ def train_from_config(
     )
     iql_agent.set_normalizers(normalizers["state_mean"], normalizers["state_std"])
 
+    checkpoint_dir = output_dir / "checkpoints"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_path = None
     if config["resume_from"] == 'auto':
-        checkpoint_path = latest_checkpoint(output_dir)
+        checkpoint_path = latest_checkpoint(checkpoint_dir)
     elif config["resume_from"]:
         checkpoint_path = Path(config["resume_from"])
 
@@ -828,7 +833,7 @@ def train_from_config(
         buffer,
         batch_size=int(config["batch_size"]),
         num_steps=int(config["num_steps"]),
-        checkpoint_dir=str(output_dir),
+        checkpoint_dir=str(checkpoint_dir),
         resume_from=checkpoint_path,
         checkpoint_interval=int(config["checkpoint_interval"]),
         log_interval=int(config["log_interval"]),
@@ -841,6 +846,7 @@ def train_from_config(
         },
         checkpoint_eval_interval=int(config.get("checkpoint_eval_interval", 0)),
         checkpoint_eval_metric=str(config.get("checkpoint_eval_metric", "actor_eval/reward_total")),
+        observation_mode=str(config.get("observation_mode", "prev_action")),
         checkpoint_eval_kwargs={
             "dataset_dir": str(dataset_dir),
             "project": project,

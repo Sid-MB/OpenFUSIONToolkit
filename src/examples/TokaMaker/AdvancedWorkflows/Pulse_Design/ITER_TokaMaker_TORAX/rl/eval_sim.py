@@ -538,13 +538,13 @@ def run_actor_eval_simulation(
             "allow_mismatched_rewards": bool(allow_mismatched_rewards),
         }
         with reward_config_path.open("w") as f:
-            json.dump(reward_config_payload, f, indent=2)
+            json.dump(reward_config_payload, f, indent=2, sort_keys=True)
         wandb.save(str(reward_config_path))
         result["reward_config_path"] = str(reward_config_path)
 
         result_path = output_dir / "actor_eval_summary.json"
         with result_path.open("w") as f:
-            json.dump(result, f, indent=2)
+            json.dump(result, f, indent=2, sort_keys=True)
         wandb.save(str(result_path))
         actions_path = output_dir / "actor_eval_actions.json"
         with actions_path.open("w") as f:
@@ -557,6 +557,7 @@ def run_actor_eval_simulation(
                 },
                 f,
                 indent=2,
+                sort_keys=True,
             )
         wandb.save(str(actions_path))
         result["tmtx"] = tmtx

@@ -16,7 +16,8 @@
 #
 # Required env vars:
 #   DATASET_DIR        dataset root used for the training run
-#   TRAIN_OUTPUT_DIR    directory containing checkpoint_step_*.pt (for example, <dataset>/iql/<run>)
+#   TRAIN_OUTPUT_DIR    IQL run dir; checkpoints are read from its checkpoints/ subfolder
+#                       (for example, <dataset>/iql/<run>), with a fallback to the run dir itself
 #
 # Optional env vars:
 #   OUTPUT_ROOT        where per-checkpoint eval outputs go (default: <TRAIN_OUTPUT_DIR>/checkpoint_evals)
@@ -43,7 +44,7 @@ fi
 cd "${PROJECT_DIR}"
 
 DATASET_DIR="${DATASET_DIR:?Set DATASET_DIR to the dataset root used for training}"
-TRAIN_OUTPUT_DIR="${TRAIN_OUTPUT_DIR:?Set TRAIN_OUTPUT_DIR to the directory containing checkpoint_step_*.pt}"
+TRAIN_OUTPUT_DIR="${TRAIN_OUTPUT_DIR:?Set TRAIN_OUTPUT_DIR to the IQL run dir (checkpoints read from its checkpoints/ subfolder)}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-${TRAIN_OUTPUT_DIR%/}/checkpoint_evals}"
 MAX_LOOP="${MAX_LOOP:-1}"
 GRID_SIZE="${GRID_SIZE:-51}"
@@ -71,11 +72,16 @@ echo "OFT_DISABLE_JAX_COMPILE_CACHE=${OFT_DISABLE_JAX_COMPILE_CACHE}"
 echo "DRY_RUN=${DRY_RUN}"
 
 shopt -s nullglob
-checkpoints=("${TRAIN_OUTPUT_DIR}"/checkpoint_step_*.pt)
+# Checkpoints now live in the checkpoints/ subfolder; fall back to the run-dir
+# top level for older runs that saved them directly under TRAIN_OUTPUT_DIR.
+checkpoints=("${TRAIN_OUTPUT_DIR}"/checkpoints/checkpoint_step_*.pt)
+if [ "${#checkpoints[@]}" -eq 0 ]; then
+  checkpoints=("${TRAIN_OUTPUT_DIR}"/checkpoint_step_*.pt)
+fi
 shopt -u nullglob
 
 if [ "${#checkpoints[@]}" -eq 0 ]; then
-  echo "ERROR: no checkpoint_step_*.pt files found in ${TRAIN_OUTPUT_DIR}" >&2
+  echo "ERROR: no checkpoint_step_*.pt files found in ${TRAIN_OUTPUT_DIR}/checkpoints/ or ${TRAIN_OUTPUT_DIR}" >&2
   exit 2
 fi
 

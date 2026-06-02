@@ -104,7 +104,7 @@ def postprocess_actor_eval(
 
     artifacts_path = outputs_dir / "postprocess_artifacts.json"
     with artifacts_path.open("w") as f:
-        json.dump({"result_path": str(result_path), "generated": str(generated)}, f, indent=2, default=str)
+        json.dump({"result_path": str(result_path), "generated": str(generated)}, f, indent=2, default=str, sort_keys=True)
     return {"result_path": str(result_path), "artifacts_path": str(artifacts_path)}
 
 

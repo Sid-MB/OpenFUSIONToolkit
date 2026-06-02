@@ -474,7 +474,7 @@ def main() -> int:
     }
     save_json(output_dir / "visualization_manifest.json", manifest)
 
-    print(json.dumps(manifest, indent=2), flush=True)
+    print(json.dumps(manifest, indent=2, sort_keys=True), flush=True)
     plot_summary_distributions(summary_stores, output_dir)
     plot_summary_scatter(summary_stores, output_dir)
     plot_reward_and_actions(selected_stores, output_dir)

@@ -524,7 +524,7 @@ def save_trajectory(transitions, summary, action_row, run_id, output_dir):
     }
     path = os.path.join(output_dir, f'trajectory_{run_id:04d}.json')
     with open(path, 'w') as f:
-        json.dump(payload, f, indent=2, default=str)
+        json.dump(payload, f, indent=2, default=str, sort_keys=True)
     return path
 
 
