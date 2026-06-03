@@ -266,39 +266,64 @@ def worker_init(cwd, require_cuda_on_gpu):
 
 # ── Latin Hypercube Sampling ──────────────────────────────────────────────────
 
-def sample_actions_lhs(n_trajectories, seed):
-    """
-    LHS samples delta (change per step) rather than absolute values.
-    This enforces smoothness — large jumps between steps are impossible
-    because the delta itself is bounded.
+SAMPLER_DEFAULTS = {
+    # Per-trajectory starting heating level range (W). When *_start_min == *_start_max
+    # the start is pinned (legacy fixed-default behavior); widen the range to spread
+    # trajectories across the action space so offline RL sees the control vary.
+    'ecrh_start_min_W': 20.0e6,
+    'ecrh_start_max_W': 20.0e6,
+    'nbi_start_min_W': 33.0e6,
+    'nbi_start_max_W': 33.0e6,
+    # Max |change| per 20s decision step (W) — bounds within-trajectory smoothness.
+    'ecrh_delta_max_W_per_step': 2.0e6,
+    'nbi_delta_max_W_per_step': 2.0e6,
+}
 
-    max_delta controls the maximum change per 20s step in watts.
-    """
-    ECRH_DEFAULT = 20.0e6  # starting value at t=100 (end of fixed ramp-up)
-    NBI_DEFAULT  = 33.0e6
 
-    # Max change per step — tune these to control smoothness
-    # 2 MW per 20s step means at most 40 MW total swing over flattop
-    ECRH_DELTA_MAX = 2.0e6
-    NBI_DELTA_MAX  = 2.0e6
+def sampler_config(overrides=None):
+    cfg = dict(SAMPLER_DEFAULTS)
+    if overrides:
+        cfg.update({k: v for k, v in overrides.items() if v is not None})
+    return cfg
+
+
+def sample_actions_lhs(n_trajectories, seed, cfg=None):
+    """
+    LHS samples a per-trajectory starting heating level plus per-step deltas
+    (change per step) rather than absolute values. Bounded deltas enforce
+    smoothness (large step-to-step jumps are impossible); randomizing the start
+    spreads trajectories across the full ECRH/NBI range so offline RL sees these
+    controls actually vary. Set *_start_min == *_start_max to pin the start
+    (legacy fixed-default behavior).
+    """
+    cfg = sampler_config(cfg)
+    ecrh_delta_max = cfg['ecrh_delta_max_W_per_step']
+    nbi_delta_max = cfg['nbi_delta_max_W_per_step']
 
     n_decision = len(DECISION_TIMES)  # 21
-    n_params = n_decision * 2
+    # +2 LHS dims for the per-trajectory ECRH/NBI starting levels.
+    n_params = n_decision * 2 + 2
 
     sampler = qmc.LatinHypercube(d=n_params, rng=np.random.default_rng(seed))
     samples = sampler.random(n=n_trajectories)
 
-    # Scale to [-delta_max, +delta_max]
-    lower = np.array([-ECRH_DELTA_MAX, -NBI_DELTA_MAX] * n_decision)
-    upper = np.array([ ECRH_DELTA_MAX,  NBI_DELTA_MAX] * n_decision)
-    deltas = qmc.scale(samples, lower, upper)
+    # Linear-scale the start columns ourselves so start_min == start_max (a pinned
+    # start) is valid; qmc.scale rejects equal bounds.
+    ecrh_start = cfg['ecrh_start_min_W'] + samples[:, 0] * (cfg['ecrh_start_max_W'] - cfg['ecrh_start_min_W'])
+    nbi_start = cfg['nbi_start_min_W'] + samples[:, 1] * (cfg['nbi_start_max_W'] - cfg['nbi_start_min_W'])
+    starts = np.stack([ecrh_start, nbi_start], axis=1)
+
+    # Scale remaining dims to [-delta_max, +delta_max]
+    lower = np.array([-ecrh_delta_max, -nbi_delta_max] * n_decision)
+    upper = np.array([ ecrh_delta_max,  nbi_delta_max] * n_decision)
+    deltas = qmc.scale(samples[:, 2:], lower, upper)
     deltas = deltas.reshape(n_trajectories, n_decision, 2)
 
-    # Cumsum from the default starting point
+    # Cumsum from the per-trajectory starting point
     actions = np.zeros_like(deltas)
     for i in range(n_trajectories):
-        ecrh = ECRH_DEFAULT + np.cumsum(deltas[i, :, 0])
-        nbi  = NBI_DEFAULT  + np.cumsum(deltas[i, :, 1])
+        ecrh = starts[i, 0] + np.cumsum(deltas[i, :, 0])
+        nbi  = starts[i, 1] + np.cumsum(deltas[i, :, 1])
 
         # Clip to physical bounds
         actions[i, :, 0] = np.clip(ecrh, ECRH_MIN, ECRH_MAX)
@@ -971,13 +996,16 @@ def action_manifest_fields():
     }
 
 
-def sampler_manifest_fields():
+def sampler_manifest_fields(cfg=None):
+    cfg = sampler_config(cfg)
     return {
         'name': 'latin_hypercube_delta',
-        'ecrh_default_W': 20.0e6,
-        'nbi_default_W': 33.0e6,
-        'ecrh_delta_max_W_per_step': 2.0e6,
-        'nbi_delta_max_W_per_step': 2.0e6,
+        'ecrh_start_min_W': cfg['ecrh_start_min_W'],
+        'ecrh_start_max_W': cfg['ecrh_start_max_W'],
+        'nbi_start_min_W': cfg['nbi_start_min_W'],
+        'nbi_start_max_W': cfg['nbi_start_max_W'],
+        'ecrh_delta_max_W_per_step': cfg['ecrh_delta_max_W_per_step'],
+        'nbi_delta_max_W_per_step': cfg['nbi_delta_max_W_per_step'],
         'n_decision': len(DECISION_TIMES),
     }
 
@@ -1145,6 +1173,18 @@ def worker_fn(run_id, all_actions, eqdsk_list, eqtimes, coil_bounds,
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Collect offline TORAX trajectories for IQL training.")
     parser.add_argument('--n_trajectories', type=int, default=500, help='Number of trajectories to generate in the dataset.')
+    parser.add_argument('--ecrh_start_min_W', type=float, default=float(os.environ.get('ECRH_START_MIN_W', 20.0e6)),
+                        help='Min per-trajectory starting ECRH power (W) for LHS sampling. Set below --ecrh_start_max_W to randomize the starting ECRH level across trajectories so offline RL sees ECRH actually vary (the policy otherwise never learns to use ECRH); set equal to pin it at the legacy 20e6.')
+    parser.add_argument('--ecrh_start_max_W', type=float, default=float(os.environ.get('ECRH_START_MAX_W', 20.0e6)),
+                        help='Max per-trajectory starting ECRH power (W). See --ecrh_start_min_W. Suggested wide-exploration value: 35e6.')
+    parser.add_argument('--nbi_start_min_W', type=float, default=float(os.environ.get('NBI_START_MIN_W', 33.0e6)),
+                        help='Min per-trajectory starting NBI power (W). Default 33e6 == the NBI cap (legacy pinned-high behavior); lower it (e.g. 15e6) to explore reduced NBI.')
+    parser.add_argument('--nbi_start_max_W', type=float, default=float(os.environ.get('NBI_START_MAX_W', 33.0e6)),
+                        help='Max per-trajectory starting NBI power (W). See --nbi_start_min_W.')
+    parser.add_argument('--ecrh_delta_max_W_per_step', type=float, default=float(os.environ.get('ECRH_DELTA_MAX_W_PER_STEP', 2.0e6)),
+                        help='Max |ECRH change| per 20s decision step (W). Larger allows faster within-trajectory ECRH ramps.')
+    parser.add_argument('--nbi_delta_max_W_per_step', type=float, default=float(os.environ.get('NBI_DELTA_MAX_W_PER_STEP', 2.0e6)),
+                        help='Max |NBI change| per 20s decision step (W).')
     parser.add_argument('--output_dir',     type=str, default='./rl_dataset', help='Root output directory for the dataset artifacts.')
     parser.add_argument(
         '--seed',
@@ -1274,7 +1314,16 @@ if __name__ == '__main__':
         args.seed = secrets.randbelow(2**32)
         print(f'Generated random seed={args.seed}')
     print(f'Sampling {args.n_trajectories} trajectories with LHS (seed={args.seed})')
-    expected_actions = sample_actions_lhs(args.n_trajectories, seed=args.seed)
+    sampler_cfg = sampler_config({
+        'ecrh_start_min_W': args.ecrh_start_min_W,
+        'ecrh_start_max_W': args.ecrh_start_max_W,
+        'nbi_start_min_W': args.nbi_start_min_W,
+        'nbi_start_max_W': args.nbi_start_max_W,
+        'ecrh_delta_max_W_per_step': args.ecrh_delta_max_W_per_step,
+        'nbi_delta_max_W_per_step': args.nbi_delta_max_W_per_step,
+    })
+    print(f'Sampler config: {sampler_cfg}')
+    expected_actions = sample_actions_lhs(args.n_trajectories, seed=args.seed, cfg=sampler_cfg)
     expected_manifest = create_run_manifest(
         n_trajectories=args.n_trajectories,
         seed=args.seed,
@@ -1283,7 +1332,7 @@ if __name__ == '__main__':
         decision_times=DECISION_TIMES,
         rl_times=RL_TIMES,
         action_bounds=action_manifest_fields(),
-        sampler=sampler_manifest_fields(),
+        sampler=sampler_manifest_fields(sampler_cfg),
         observation_mode=args.observation_mode,
         reward_config=default_reward_config(),
         start_idx=args.start_idx,

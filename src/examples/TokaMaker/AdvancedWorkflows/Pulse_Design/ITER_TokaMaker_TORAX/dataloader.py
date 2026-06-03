@@ -481,11 +481,16 @@ def load_reward_recalc_stats(stats_path):
         return {key: data[key] for key in data.files}
 
 
-def recompute_reward_series_from_stats(stats, rl_times, reward_config=None):
+def recompute_reward_series_from_stats(stats, rl_times, reward_config=None, actions_per_decision=None):
     """Recompute the per-decision reward series from saved scalar traces.
 
     The saved stats bundle is intentionally compact: it stores the TORAX scalar
     traces needed to re-score each RL interval without rerunning the physics.
+
+    actions_per_decision: optional array shape (n_decisions, 2) of [ecrh_W, nbi_W]
+      per decision step. When provided and RL_REWARD_MODE=pfusion, the step reward
+      uses log(mean_Q * P_aux_MW + 1) (P_fusion proxy) instead of log(mean_Q + 1),
+      removing the 1/P_aux blow-up exploit.
     """
     if isinstance(stats, (str, Path)):
         stats = load_reward_recalc_stats(stats)
@@ -503,13 +508,38 @@ def recompute_reward_series_from_stats(stats, rl_times, reward_config=None):
     q_flattop_avg = float(np.asarray(stats['terminal_Q_flattop_avg'], dtype=float).reshape(-1)[0])
     flux_consumed_wb = float(np.asarray(stats['terminal_flux_consumed_Wb'], dtype=float).reshape(-1)[0])
 
+    # Anti-reward-hacking: clamp Q so starving aux power (Q=Pfus/Paux -> inf) can't yield
+    # unbounded reward. Env-gated, default OFF (RL_Q_CLAMP unset => no clamp). Must match
+    # the clamp used by pulse_design.compute_rewards at eval time.
+    try:
+        q_clamp = float(os.environ.get('RL_Q_CLAMP', '') or 0.0)
+    except ValueError:
+        q_clamp = 0.0
+    if q_clamp > 0:
+        q_fusion = np.minimum(q_fusion, q_clamp)
+        q_flattop_avg = min(q_flattop_avg, q_clamp)
+
+    # RL_REWARD_MODE=pfusion: use log(Q*P_aux_MW + 1) proxy for P_fusion.
+    # P_aux is the sum of ECRH+NBI actions for that decision (provided via actions_per_decision).
+    # This removes the 1/P_aux blow-up: zeroing aux gives log(0+1)=0 rather than infinity.
+    try:
+        reward_mode = os.environ.get('RL_REWARD_MODE', '').lower().strip()
+    except Exception:
+        reward_mode = ''
+    use_pfusion = (reward_mode == 'pfusion') and (actions_per_decision is not None)
+
     rewards = np.empty(boundaries.size - 1, dtype=np.float32)
     safety_start_time = float(boundaries[0])
 
     for idx, (t_start, t_end) in enumerate(zip(boundaries[:-1], boundaries[1:])):
         mask = (torax_time >= t_start) & (torax_time <= t_end)
         if np.any(mask):
-            step_reward = np.log(float(np.nanmean(q_fusion[mask])) + 1.0)
+            q_mean = float(np.nanmean(q_fusion[mask]))
+            if use_pfusion and idx < len(actions_per_decision):
+                p_aux_mw = float(actions_per_decision[idx, 0] + actions_per_decision[idx, 1]) / 1e6
+                step_reward = np.log(q_mean * p_aux_mw + 1.0)
+            else:
+                step_reward = np.log(q_mean + 1.0)
         else:
             step_reward = 0.0
 

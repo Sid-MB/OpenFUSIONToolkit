@@ -37,6 +37,10 @@ image = modal.Image.debian_slim().pip_install(
     "modal", "torch", "numpy", "wandb"
 )
 
+# Algorithm selection (env-gated, default "iql" == original behaviour)
+# Set ALGORITHM=td3bc / cql / bc to swap in a different offline RL algorithm.
+_ALGORITHM = os.environ.get("ALGORITHM", "iql").lower().strip()
+
 class ReplayBuffer(Dataset):
     def __init__(self, state_dim: int, action_dim: int, max_size: int):
         self.states = np.zeros((max_size, state_dim))
@@ -64,16 +68,35 @@ class ReplayBuffer(Dataset):
         return (self.states[idx], self.actions[idx], self.next_states[idx], 
                 self.rewards[idx], self.dones[idx])
 
+# --- Experimental feature flags (env-driven; default OFF == baseline behavior) ---
+# These let new runs change architecture/regularization WITHOUT editing call sites,
+# and without confounding already-submitted jobs (which don't set the env vars).
+# The active values are recorded into the run config (see train_from_config).
+IQL_CRITIC_LAYERNORM = _env_flag("IQL_CRITIC_LAYERNORM", False)
+try:
+    IQL_WEIGHT_DECAY = float(os.environ.get("IQL_WEIGHT_DECAY", "") or 0.0)
+except ValueError:
+    IQL_WEIGHT_DECAY = 0.0
+
+
+def _build_mlp(in_dim: int, hidden_dim: int, out_dim: int, layernorm: bool = False):
+    """MLP builder. layernorm=False reproduces the original Linear->ReLU stack exactly.
+    layernorm=True inserts LayerNorm after each hidden Linear (a standard offline-RL
+    critic stabilizer)."""
+    layers = [nn.Linear(in_dim, hidden_dim)]
+    if layernorm:
+        layers.append(nn.LayerNorm(hidden_dim))
+    layers += [nn.ReLU(), nn.Linear(hidden_dim, hidden_dim)]
+    if layernorm:
+        layers.append(nn.LayerNorm(hidden_dim))
+    layers += [nn.ReLU(), nn.Linear(hidden_dim, out_dim)]
+    return nn.Sequential(*layers)
+
+
 class QNetwork(nn.Module):
     def __init__(self, state_dim: int, action_dim: int, hidden_dim: int = 256):
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(state_dim + action_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, 1)
-        )
+        self.net = _build_mlp(state_dim + action_dim, hidden_dim, 1, IQL_CRITIC_LAYERNORM)
 
     def forward(self, state, action):
         return self.net(torch.cat([state, action], dim=-1))
@@ -81,13 +104,7 @@ class QNetwork(nn.Module):
 class ValueNetwork(nn.Module):
     def __init__(self, state_dim: int, hidden_dim: int = 256):
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(state_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, 1)
-        )
+        self.net = _build_mlp(state_dim, hidden_dim, 1, IQL_CRITIC_LAYERNORM)
 
     def forward(self, state):
         return self.net(state)
@@ -159,10 +176,10 @@ class IQL:
             action_context_indices=action_context_indices,
         ).to(self.device)
         
-        self.q1_opt = torch.optim.Adam(self.q1.parameters(), lr=lr)
-        self.q2_opt = torch.optim.Adam(self.q2.parameters(), lr=lr)
-        self.v_opt = torch.optim.Adam(self.v.parameters(), lr=lr)
-        self.actor_opt = torch.optim.Adam(self.actor.parameters(), lr=lr)
+        self.q1_opt = torch.optim.Adam(self.q1.parameters(), lr=lr, weight_decay=IQL_WEIGHT_DECAY)
+        self.q2_opt = torch.optim.Adam(self.q2.parameters(), lr=lr, weight_decay=IQL_WEIGHT_DECAY)
+        self.v_opt = torch.optim.Adam(self.v.parameters(), lr=lr, weight_decay=IQL_WEIGHT_DECAY)
+        self.actor_opt = torch.optim.Adam(self.actor.parameters(), lr=lr, weight_decay=IQL_WEIGHT_DECAY)
         
         self.tau = tau
         self.beta = beta
@@ -389,6 +406,9 @@ def tensor_stats(prefix, value):
 def evaluate_iql(iql, batch, include_histograms):
     if batch is None:
         return {}
+    # Only IQL has the full Q/V critics; other algorithms skip the offline eval metrics.
+    if not (hasattr(iql, 'q1') and hasattr(iql, 'v')):
+        return {}
     states, actions, next_states, rewards, dones = (
         tensor.to(iql.device, non_blocking=True) for tensor in batch
     )
@@ -465,11 +485,14 @@ def train_iql(
         checkpoint = torch.load(resume_from, weights_only=False)
         try:
             iql.actor.load_state_dict(checkpoint['actor'])
-            iql.q1.load_state_dict(checkpoint['q1'])
-            iql.q2.load_state_dict(checkpoint['q2'])
-            iql.v.load_state_dict(checkpoint['v'])
-            iql.q1_target.load_state_dict(checkpoint['q1_target'])
-            iql.q2_target.load_state_dict(checkpoint['q2_target'])
+            if hasattr(iql, 'q1') and 'q1' in checkpoint:
+                iql.q1.load_state_dict(checkpoint['q1'])
+                iql.q2.load_state_dict(checkpoint['q2'])
+            if hasattr(iql, 'v') and 'v' in checkpoint:
+                iql.v.load_state_dict(checkpoint['v'])
+            if hasattr(iql, 'q1_target') and 'q1_target' in checkpoint:
+                iql.q1_target.load_state_dict(checkpoint['q1_target'])
+                iql.q2_target.load_state_dict(checkpoint['q2_target'])
             start_step = checkpoint['step']
             logger.info("Resumed from step %s", start_step)
         except RuntimeError as exc:
@@ -494,15 +517,10 @@ def train_iql(
             if eval_metrics:
                 wandb.log(eval_metrics, step=step)
         
-        if checkpoint_interval > 0 and step % checkpoint_interval == 0 and step > 0:
+        if checkpoint_interval > 0 and step % checkpoint_interval == 0 and step > start_step:
             checkpoint_path = Path(checkpoint_dir) / f"checkpoint_step_{step}.pt"
-            torch.save({
+            ckpt_dict = {
                 'actor': iql.actor.state_dict(),
-                'q1': iql.q1.state_dict(),
-                'q2': iql.q2.state_dict(),
-                'v': iql.v.state_dict(),
-                'q1_target': iql.q1_target.state_dict(),
-                'q2_target': iql.q2_target.state_dict(),
                 'step': step,
                 'action_max': iql.actor.action_max.cpu(),
                 'state_dim': iql.state_dim,
@@ -511,6 +529,14 @@ def train_iql(
                 'action_rate_penalty': getattr(iql, "action_rate_penalty", 0.0),
                 'observation_mode': observation_mode,
                 'state_keys': state_keys,
+            }
+            if hasattr(iql, 'q1'):
+                ckpt_dict.update({'q1': iql.q1.state_dict(), 'q2': iql.q2.state_dict()})
+            if hasattr(iql, 'v'):
+                ckpt_dict['v'] = iql.v.state_dict()
+            if hasattr(iql, 'q1_target'):
+                ckpt_dict.update({'q1_target': iql.q1_target.state_dict(), 'q2_target': iql.q2_target.state_dict()})
+            torch.save({**ckpt_dict,
                 **(normalizers or {}),
             }, checkpoint_path)
             logger.info("Saved checkpoint at step %s", step)
@@ -651,6 +677,9 @@ def train_from_config(
         "observation_mode": observation_mode,
         "action_mode": action_mode,
         "action_rate_penalty": action_rate_penalty,
+        "critic_layernorm": IQL_CRITIC_LAYERNORM,
+        "weight_decay": IQL_WEIGHT_DECAY,
+        "algorithm": _ALGORITHM,
         "checkpoint_eval_interval": checkpoint_eval_interval,
         "checkpoint_eval_metric": checkpoint_eval_metric,
         "allow_mismatched_rewards": allow_mismatched_rewards,
@@ -806,10 +835,10 @@ def train_from_config(
             action_context_indices.append(state_keys.index(key))
     elif config.get("observation_mode") == "legacy":
         action_context_indices = []
-    iql_agent = IQL(
-        action_max,
-        state_dim,
-        action_dim,
+    algo_kwargs = dict(
+        action_max=action_max,
+        state_dim=state_dim,
+        action_dim=action_dim,
         tau=float(config["tau"]),
         beta=float(config["beta"]),
         gamma=float(config["gamma"]),
@@ -819,7 +848,15 @@ def train_from_config(
         action_mode=str(config.get("action_mode", "absolute")),
         action_context_indices=action_context_indices,
         action_rate_penalty=float(config.get("action_rate_penalty", 0.0)),
+        weight_decay=IQL_WEIGHT_DECAY,
     )
+    if _ALGORITHM == "iql":
+        iql_kwargs = {k: v for k, v in algo_kwargs.items() if k != "weight_decay"}
+        iql_agent = IQL(**iql_kwargs)
+    else:
+        from algorithms import make_algorithm
+        iql_agent = make_algorithm(_ALGORITHM, **algo_kwargs)
+        logger.info("Using algorithm: %s", _ALGORITHM)
     iql_agent.set_normalizers(normalizers["state_mean"], normalizers["state_std"])
 
     checkpoint_dir = output_dir / "checkpoints"
@@ -866,13 +903,11 @@ def train_from_config(
     )
 
     weights_path = output_dir / 'iql_weights.pt'
-    torch.save({
-        'actor': iql_agent.actor.state_dict(),
-        'q1': iql_agent.q1.state_dict(),
-        'q2': iql_agent.q2.state_dict(),
-        'v': iql_agent.v.state_dict(),
-        'q1_target': iql_agent.q1_target.state_dict(),
-        'q2_target': iql_agent.q2_target.state_dict(),
+    _wt = {'actor': iql_agent.actor.state_dict()}
+    if hasattr(iql_agent, 'q1'): _wt.update({'q1': iql_agent.q1.state_dict(), 'q2': iql_agent.q2.state_dict()})
+    if hasattr(iql_agent, 'v'): _wt['v'] = iql_agent.v.state_dict()
+    if hasattr(iql_agent, 'q1_target'): _wt.update({'q1_target': iql_agent.q1_target.state_dict(), 'q2_target': iql_agent.q2_target.state_dict()})
+    torch.save({**_wt,
         'action_max': torch.as_tensor(action_max),
         'state_mean': torch.as_tensor(normalizers["state_mean"]),
         'state_std': torch.as_tensor(normalizers["state_std"]),

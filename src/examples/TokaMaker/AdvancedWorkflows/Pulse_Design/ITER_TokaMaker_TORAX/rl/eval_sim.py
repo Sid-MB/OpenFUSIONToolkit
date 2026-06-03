@@ -380,8 +380,15 @@ def run_actor_eval_simulation(
         wandb_kwargs["mode"] = wandb_mode
     if wandb_group:
         wandb_kwargs["group"] = wandb_group
-    run = wandb.init(**wandb_kwargs)
-    wandb.define_metric("actor_eval_live/*", step_metric="actor_eval_live/decision_index")
+    # When mode is "disabled", skip wandb.init entirely so we don't hijack an
+    # already-active training wandb session (wandb.init replaces wandb.run globally
+    # even for disabled runs, breaking the caller's wandb.log calls).
+    _skip_wandb = (str(wandb_kwargs.get("mode", "")).lower() == "disabled")
+    if _skip_wandb:
+        run = None
+    else:
+        run = wandb.init(**wandb_kwargs)
+        wandb.define_metric("actor_eval_live/*", step_metric="actor_eval_live/decision_index")
     log_dir = output_dir / "tokamaker_torax_logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     _fly_t0 = [0.0]
@@ -393,17 +400,18 @@ def run_actor_eval_simulation(
             idx = int(event["decision_index"])
             ecrh_mw = float(event["ecrh_MW"])
             nbi_mw = float(event["nbi_MW"])
-            wandb.log(
-                {
-                    "actor_eval_live/decision_index": idx,
-                    "actor_eval_live/decision_t_s": float(event["decision_t"]),
-                    "actor_eval_live/ecrh_MW": ecrh_mw,
-                    "actor_eval_live/nbi_MW": nbi_mw,
-                    "actor_eval_live/total_heating_MW": ecrh_mw + nbi_mw,
-                    "actor_eval_live/elapsed_s": time.time() - _fly_t0[0],
-                    "actor_eval_live/progress": (idx + 1) / len(RL_DECISION_TIMES),
-                }
-            )
+            if not _skip_wandb:
+                wandb.log(
+                    {
+                        "actor_eval_live/decision_index": idx,
+                        "actor_eval_live/decision_t_s": float(event["decision_t"]),
+                        "actor_eval_live/ecrh_MW": ecrh_mw,
+                        "actor_eval_live/nbi_MW": nbi_mw,
+                        "actor_eval_live/total_heating_MW": ecrh_mw + nbi_mw,
+                        "actor_eval_live/elapsed_s": time.time() - _fly_t0[0],
+                        "actor_eval_live/progress": (idx + 1) / len(RL_DECISION_TIMES),
+                    }
+                )
         except Exception as exc:
             logger.warning("Could not stream RL event to wandb: %s", exc)
 
@@ -490,7 +498,7 @@ def run_actor_eval_simulation(
         for key, val in summary.items():
             if val is not None:
                 metrics[f"actor_eval/{key}"] = float(val)
-        wandb.log({**metrics})
+        if not _skip_wandb: wandb.log({**metrics})
         run.summary.update(metrics)
         result = {
             "status": "success",
@@ -539,13 +547,13 @@ def run_actor_eval_simulation(
         }
         with reward_config_path.open("w") as f:
             json.dump(reward_config_payload, f, indent=2, sort_keys=True)
-        wandb.save(str(reward_config_path))
+        if not _skip_wandb: wandb.save(str(reward_config_path))
         result["reward_config_path"] = str(reward_config_path)
 
         result_path = output_dir / "actor_eval_summary.json"
         with result_path.open("w") as f:
             json.dump(result, f, indent=2, sort_keys=True)
-        wandb.save(str(result_path))
+        if not _skip_wandb: wandb.save(str(result_path))
         actions_path = output_dir / "actor_eval_actions.json"
         with actions_path.open("w") as f:
             json.dump(
@@ -559,11 +567,12 @@ def run_actor_eval_simulation(
                 indent=2,
                 sort_keys=True,
             )
-        wandb.save(str(actions_path))
+        if not _skip_wandb: wandb.save(str(actions_path))
         result["tmtx"] = tmtx
         return result
     finally:
-        wandb.finish()
+        if not _skip_wandb:
+            wandb.finish()
 
 
 def _default_action_row():

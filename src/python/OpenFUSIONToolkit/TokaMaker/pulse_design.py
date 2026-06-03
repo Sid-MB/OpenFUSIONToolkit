@@ -1037,6 +1037,14 @@ class TokaMaker_TORAX:
         if cfg is None:
             cfg = RLRewardConfig()
 
+        # Anti-reward-hacking: clamp Q_fusion so a policy can't gain unbounded reward by
+        # starving auxiliary power (Q = Pfus/Paux -> inf as Paux -> 0). Env-gated and
+        # default OFF (RL_Q_CLAMP unset => 0 => no clamp => unchanged behavior).
+        try:
+            q_clamp = float(os.environ.get('RL_Q_CLAMP', '') or 0.0)
+        except ValueError:
+            q_clamp = 0.0
+
         torax_times = self._data_tree['scalars'].coords['time'].values
         rewards = []
 
@@ -1050,6 +1058,8 @@ class TokaMaker_TORAX:
                 step_reward = 0.0
             else:
                 Q_vals      = self._data_tree['scalars']['Q_fusion'].values[mask]
+                if q_clamp > 0:
+                    Q_vals = np.minimum(Q_vals, q_clamp)
                 step_reward = np.log(float(np.nanmean(Q_vals)) + 1)
 
             # Safety penalties
@@ -1072,7 +1082,10 @@ class TokaMaker_TORAX:
             if is_terminal:
                 with redirect_stdout(io.StringIO()):
                     summary = self.summary()
-                r += cfg.q_flattop_weight * summary.get('Q_flattop_avg', 0.0) - cfg.flux_weight * summary.get('flux_consumed_Wb', 0.0)
+                q_flat = summary.get('Q_flattop_avg', 0.0)
+                if q_clamp > 0:
+                    q_flat = min(q_flat, q_clamp)
+                r += cfg.q_flattop_weight * q_flat - cfg.flux_weight * summary.get('flux_consumed_Wb', 0.0)
 
             rewards.append(r)
 

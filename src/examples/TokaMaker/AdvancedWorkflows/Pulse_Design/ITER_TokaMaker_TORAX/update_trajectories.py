@@ -262,10 +262,19 @@ def main():
             raise FileNotFoundError(f'Missing reward-recalc stats bundle: {source_stats}')
 
         stats = load_reward_recalc_stats(source_stats)
+        # Pass per-decision actions if available (used by RL_REWARD_MODE=pfusion)
+        _acts = None
+        _all_actions_path = source_paths['actions']
+        if _all_actions_path.is_file():
+            import numpy as _np
+            _all = _np.load(str(_all_actions_path))
+            if run_id < len(_all):
+                _acts = _all[run_id]  # shape (n_decisions, 2)
         new_rewards = recompute_reward_series_from_stats(
             stats,
             rl_times=rl_times,
             reward_config=current_reward_config,
+            actions_per_decision=_acts,
         )
         rewrite_replay_shard(
             source_shard,
