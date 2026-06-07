@@ -398,40 +398,46 @@ tmtx.set_TokaMaker_coil_reg(coil_bounds=coil_bounds, updownsym=False)
 
 
 # RL closed-loop TORAX heating (see markdown above)
-USE_RL_ACTOR = True
-ACTOR_CHECKPOINT = './checkpoints/final_weights.pt'  # set to 'path/to/iql_weights.pt' to use a trained IQL actor
+import argparse
 
-
-# In[ ]:
-
-
-
-
-
-# In[ ]:
-
-
-tmtx.fly(
-    output_mode=False,
-    max_loop=2,
-    run_name='tmp',
-    t_ave_toggle='flattop',
-    t_ave_window=25,
-    relax=True,
-    relax_duration=5,
-    use_rl_actor=USE_RL_ACTOR,
-    actor_checkpoint=ACTOR_CHECKPOINT,
+_eval_parser = argparse.ArgumentParser(description="Evaluate IQL actor on TokaMaker_TORAX pulse")
+_eval_parser.add_argument(
+    "--actor-checkpoint",
+    default=None,
+    help="Path to trained IQL weights (e.g. checkpoints/<run>/iql_weights.pt). Omit for baseline agent.",
 )
+_eval_parser.add_argument(
+    "--output",
+    default="reward.txt",
+    help="Path to write total and per-step rewards.",
+)
+_eval_parser.add_argument(
+    "--num-runs",
+    type=int,
+    default=1,
+    help="Number of evaluation runs; writes mean and individual total rewards when > 1.",
+)
+_eval_parser.add_argument(
+    "--skip-plots",
+    action="store_true",
+    help="Skip plotting at the end (for headless/Docker runs).",
+)
+_eval_args = _eval_parser.parse_args()
 
-# Quick check that the RL closed loop ran (baseline agent when ACTOR_CHECKPOINT is None)
-if USE_RL_ACTOR:
-    history = getattr(tmtx, '_rl_actions_history', [])
-    print(f'RL heating decisions: {len(history)}')
-    for row in history:
-        print(row)
+if _eval_args.num_runs < 1:
+    _eval_parser.error("--num-runs must be at least 1")
+
+USE_RL_ACTOR = True
+ACTOR_CHECKPOINT = _eval_args.actor_checkpoint
 
 
-# In[18]:
+# In[ ]:
+
+
+
+
+
+# In[ ]:
 
 
 cfg = RLRewardConfig(
@@ -453,13 +459,55 @@ cfg = RLRewardConfig(
     flux_weight = 0.012,  # weight on flux_consumed_Wb (from summary)
 )
 
-rewards = tmtx.compute_rewards(cfg)
+run_totals = []
+run_details = []
 
-import os
+for run_idx in range(_eval_args.num_runs):
+    run_name = f'eval_{run_idx}' if _eval_args.num_runs > 1 else 'tmp'
+    print(f'Evaluation run {run_idx + 1}/{_eval_args.num_runs}')
 
-with open("reward.txt", "w") as f:
-    f.write(f"Total reward: {sum(rewards):.4f}\n")
-    f.write(f"Per-step rewards: {rewards}\n")
+    tmtx.fly(
+        output_mode=False,
+        max_loop=2,
+        run_name=run_name,
+        t_ave_toggle='flattop',
+        t_ave_window=25,
+        relax=True,
+        relax_duration=5,
+        use_rl_actor=USE_RL_ACTOR,
+        actor_checkpoint=ACTOR_CHECKPOINT,
+    )
+
+    rewards = tmtx.compute_rewards(cfg)
+    total_reward = sum(rewards)
+    run_totals.append(total_reward)
+    run_details.append(rewards)
+    print(f'  Total reward: {total_reward:.4f}')
+
+    if USE_RL_ACTOR and run_idx == 0:
+        history = getattr(tmtx, '_rl_actions_history', [])
+        print(f'RL heating decisions: {len(history)}')
+        for row in history:
+            print(row)
+
+if _eval_args.num_runs > 1:
+    mean_reward = sum(run_totals) / len(run_totals)
+    print(f'Mean total reward over {_eval_args.num_runs} runs: {mean_reward:.4f}')
+else:
+    mean_reward = run_totals[0]
+    print(f'Total reward: {mean_reward:.4f}')
+
+with open(_eval_args.output, "w") as f:
+    if _eval_args.num_runs > 1:
+        f.write(f"Mean total reward: {mean_reward:.4f}\n")
+        f.write(f"Individual total rewards: {run_totals}\n\n")
+        for run_idx, (total_reward, rewards) in enumerate(zip(run_totals, run_details), start=1):
+            f.write(f"--- Run {run_idx} ---\n")
+            f.write(f"Total reward: {total_reward:.4f}\n")
+            f.write(f"Per-step rewards: {rewards}\n\n")
+    else:
+        f.write(f"Total reward: {run_totals[0]:.4f}\n")
+        f.write(f"Per-step rewards: {run_details[0]}\n")
 
 
 # ## Plot results
@@ -471,7 +519,8 @@ with open("reward.txt", "w") as f:
 # In[19]:
 
 
-tmtx.plot_scalars()
+if not _eval_args.skip_plots:
+    tmtx.plot_scalars()
 
 
 # The `make_movie` method produces a `.mp4` with one frame per TokaMaker solve time. The `speed_factor` input (default `1`) changes the playback speed relative to realtime, higher `speed_factor` will make the movie shorter, smaller will make the movie longer, `speed_factor=1` will make the movie take realtime, or 1 frame/equilibria per second, whichever is faster.
@@ -479,13 +528,15 @@ tmtx.plot_scalars()
 # In[ ]:
 
 
-tmtx.make_movie(notebook_mode=True, speed_factor=10)
+if not _eval_args.skip_plots:
+    tmtx.make_movie(notebook_mode=True, speed_factor=10)
 
 
 # In[ ]:
 
 
-_ = tmtx.summary()
+if not _eval_args.skip_plots:
+    _ = tmtx.summary()
 
 
 # The evolution plots, `plot_lcfs_evolution` and `plot_profile_evolution`, show traces at different times throughout the pulse where color encodes time. Both have a `one_plot` argument (default `False`) that combines all phases into one figure. When `one_plot=False` a separate plot is produced for each phase of the pulse (ramp-up, flattop, ramp-down), or whichever subset occurs in the simulation.
@@ -493,11 +544,13 @@ _ = tmtx.summary()
 # In[ ]:
 
 
-tmtx.plot_lcfs_evolution(one_plot=True)
+if not _eval_args.skip_plots:
+    tmtx.plot_lcfs_evolution(one_plot=True)
 
 
 # In[ ]:
 
 
-tmtx.plot_profile_evolution()
+if not _eval_args.skip_plots:
+    tmtx.plot_profile_evolution()
 
