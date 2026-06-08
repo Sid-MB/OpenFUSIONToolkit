@@ -90,14 +90,16 @@ _REWARD_ENV_OVERRIDES = {
     'fgw_penalty_weight': 'RL_FGW_PENALTY_WEIGHT',
     'q_flattop_weight': 'RL_Q_FLATTOP_WEIGHT',
     'flux_weight': 'RL_FLUX_WEIGHT',
+    'reward_mode': 'RL_REWARD_MODE',
 }
+_REWARD_STRING_FIELDS = {'reward_mode'}
 
 
 def _apply_reward_env_overrides(values):
     for field, env_name in _REWARD_ENV_OVERRIDES.items():
         raw = os.environ.get(env_name)
         if raw is not None and raw != '':
-            values[field] = float(raw)
+            values[field] = raw if field in _REWARD_STRING_FIELDS else float(raw)
     return values
 
 
@@ -136,6 +138,7 @@ def _base_reward_config():
             'fgw_penalty_weight': 2.0,
             'q_flattop_weight': 1.0,
             'flux_weight': 0.012,
+            'reward_mode': 'standard',
         }
 
 
@@ -519,13 +522,11 @@ def recompute_reward_series_from_stats(stats, rl_times, reward_config=None, acti
         q_fusion = np.minimum(q_fusion, q_clamp)
         q_flattop_avg = min(q_flattop_avg, q_clamp)
 
-    # RL_REWARD_MODE=pfusion: use log(Q*P_aux_MW + 1) proxy for P_fusion.
+    # reward_mode='pfusion': use log(Q*P_aux_MW + 1) proxy for P_fusion.
     # P_aux is the sum of ECRH+NBI actions for that decision (provided via actions_per_decision).
     # This removes the 1/P_aux blow-up: zeroing aux gives log(0+1)=0 rather than infinity.
-    try:
-        reward_mode = os.environ.get('RL_REWARD_MODE', '').lower().strip()
-    except Exception:
-        reward_mode = ''
+    # Read from config dict first (set by RL_REWARD_MODE env override), fall back to env var.
+    reward_mode = str(cfg.get('reward_mode', '') or os.environ.get('RL_REWARD_MODE', '')).lower().strip()
     use_pfusion = (reward_mode == 'pfusion') and (actions_per_decision is not None)
 
     rewards = np.empty(boundaries.size - 1, dtype=np.float32)

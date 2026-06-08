@@ -6,7 +6,7 @@ with varied ECRH and NBI heating schedules sampled via Latin Hypercube Sampling.
 
 Dataset structure (per trajectory, 21 transitions):
     s       : state vector at rl_time[i]
-    a       : [ecrh_W, nbi_W] applied from rl_time[i] to rl_time[i+1]
+    a       : [ecrh_W, nbi_W, pellet_S_total] applied from rl_time[i] to rl_time[i+1]
     r       : mean Q_fusion from rl_time[i] to rl_time[i+1]
               (plus terminal reward at last step)
     s_next  : state vector at rl_time[i+1]
@@ -78,8 +78,9 @@ N_TM_POINTS = 10
 TM_TIMES = np.linspace(0, 600, N_TM_POINTS)
 
 # Action bounds
-ECRH_MIN, ECRH_MAX = 0.0, 40.0E6
-NBI_MIN,  NBI_MAX  = 0.0, 33.0E6
+ECRH_MIN,   ECRH_MAX   = 0.0, 40.0E6
+NBI_MIN,    NBI_MAX    = 0.0, 33.0E6
+PELLET_MIN, PELLET_MAX = 0.0, 1.0E22
 
 # NBI is physically off before L-H transition
 NBI_ZERO_BEFORE = 80  # seconds
@@ -267,16 +268,19 @@ def worker_init(cwd, require_cuda_on_gpu):
 # ── Latin Hypercube Sampling ──────────────────────────────────────────────────
 
 SAMPLER_DEFAULTS = {
-    # Per-trajectory starting heating level range (W). When *_start_min == *_start_max
-    # the start is pinned (legacy fixed-default behavior); widen the range to spread
-    # trajectories across the action space so offline RL sees the control vary.
+    # Per-trajectory starting level range. When *_start_min == *_start_max the start is
+    # pinned (legacy fixed-default behavior); widen to spread trajectories across the
+    # action space so offline RL sees the control vary.
     'ecrh_start_min_W': 20.0e6,
     'ecrh_start_max_W': 20.0e6,
     'nbi_start_min_W': 33.0e6,
     'nbi_start_max_W': 33.0e6,
-    # Max |change| per 20s decision step (W) — bounds within-trajectory smoothness.
+    'pellet_start_min': 5.0e21,
+    'pellet_start_max': 5.0e21,
+    # Max |change| per 20s decision step — bounds within-trajectory smoothness.
     'ecrh_delta_max_W_per_step': 2.0e6,
     'nbi_delta_max_W_per_step': 2.0e6,
+    'pellet_delta_max_per_step': 2.0e21,
 }
 
 
@@ -289,45 +293,49 @@ def sampler_config(overrides=None):
 
 def sample_actions_lhs(n_trajectories, seed, cfg=None):
     """
-    LHS samples a per-trajectory starting heating level plus per-step deltas
-    (change per step) rather than absolute values. Bounded deltas enforce
-    smoothness (large step-to-step jumps are impossible); randomizing the start
-    spreads trajectories across the full ECRH/NBI range so offline RL sees these
-    controls actually vary. Set *_start_min == *_start_max to pin the start
-    (legacy fixed-default behavior).
+    LHS samples per-trajectory starting levels plus per-step deltas for ECRH, NBI,
+    and pellet fueling. Bounded deltas enforce smoothness; randomizing starts spreads
+    trajectories across the full action space so offline RL sees all controls vary.
+    Set *_start_min == *_start_max to pin a start (legacy fixed-default behavior).
+
+    Returns array of shape (n_trajectories, n_decision, 3):
+        [:, :, 0] = ecrh_W, [:, :, 1] = nbi_W, [:, :, 2] = pellet_S_total.
     """
     cfg = sampler_config(cfg)
-    ecrh_delta_max = cfg['ecrh_delta_max_W_per_step']
-    nbi_delta_max = cfg['nbi_delta_max_W_per_step']
+    ecrh_delta_max   = cfg['ecrh_delta_max_W_per_step']
+    nbi_delta_max    = cfg['nbi_delta_max_W_per_step']
+    pellet_delta_max = cfg['pellet_delta_max_per_step']
 
     n_decision = len(DECISION_TIMES)  # 21
-    # +2 LHS dims for the per-trajectory ECRH/NBI starting levels.
-    n_params = n_decision * 2 + 2
+    # +3 LHS dims for the per-trajectory starting levels (ECRH, NBI, pellet).
+    n_params = n_decision * 3 + 3
 
     sampler = qmc.LatinHypercube(d=n_params, rng=np.random.default_rng(seed))
     samples = sampler.random(n=n_trajectories)
 
-    # Linear-scale the start columns ourselves so start_min == start_max (a pinned
-    # start) is valid; qmc.scale rejects equal bounds.
-    ecrh_start = cfg['ecrh_start_min_W'] + samples[:, 0] * (cfg['ecrh_start_max_W'] - cfg['ecrh_start_min_W'])
-    nbi_start = cfg['nbi_start_min_W'] + samples[:, 1] * (cfg['nbi_start_max_W'] - cfg['nbi_start_min_W'])
-    starts = np.stack([ecrh_start, nbi_start], axis=1)
+    # Linear-scale start columns ourselves so start_min == start_max (pinned start)
+    # is valid; qmc.scale rejects equal bounds.
+    ecrh_start   = cfg['ecrh_start_min_W']   + samples[:, 0] * (cfg['ecrh_start_max_W']   - cfg['ecrh_start_min_W'])
+    nbi_start    = cfg['nbi_start_min_W']    + samples[:, 1] * (cfg['nbi_start_max_W']    - cfg['nbi_start_min_W'])
+    pellet_start = cfg['pellet_start_min']   + samples[:, 2] * (cfg['pellet_start_max']   - cfg['pellet_start_min'])
+    starts = np.stack([ecrh_start, nbi_start, pellet_start], axis=1)
 
-    # Scale remaining dims to [-delta_max, +delta_max]
-    lower = np.array([-ecrh_delta_max, -nbi_delta_max] * n_decision)
-    upper = np.array([ ecrh_delta_max,  nbi_delta_max] * n_decision)
-    deltas = qmc.scale(samples[:, 2:], lower, upper)
-    deltas = deltas.reshape(n_trajectories, n_decision, 2)
+    # Scale remaining dims to [-delta_max, +delta_max] for each actuator
+    lower = np.array([-ecrh_delta_max, -nbi_delta_max, -pellet_delta_max] * n_decision)
+    upper = np.array([ ecrh_delta_max,  nbi_delta_max,  pellet_delta_max] * n_decision)
+    deltas = qmc.scale(samples[:, 3:], lower, upper)
+    deltas = deltas.reshape(n_trajectories, n_decision, 3)
 
-    # Cumsum from the per-trajectory starting point
+    # Cumsum from the per-trajectory starting point, clip to physical bounds
     actions = np.zeros_like(deltas)
     for i in range(n_trajectories):
-        ecrh = starts[i, 0] + np.cumsum(deltas[i, :, 0])
-        nbi  = starts[i, 1] + np.cumsum(deltas[i, :, 1])
+        ecrh   = starts[i, 0] + np.cumsum(deltas[i, :, 0])
+        nbi    = starts[i, 1] + np.cumsum(deltas[i, :, 1])
+        pellet = starts[i, 2] + np.cumsum(deltas[i, :, 2])
 
-        # Clip to physical bounds
-        actions[i, :, 0] = np.clip(ecrh, ECRH_MIN, ECRH_MAX)
-        actions[i, :, 1] = np.clip(nbi,  NBI_MIN,  NBI_MAX)
+        actions[i, :, 0] = np.clip(ecrh,   ECRH_MIN,   ECRH_MAX)
+        actions[i, :, 1] = np.clip(nbi,    NBI_MIN,    NBI_MAX)
+        actions[i, :, 2] = np.clip(pellet, PELLET_MIN, PELLET_MAX)
 
     return actions
 
@@ -383,6 +391,30 @@ def build_nbi_schedule(action_row):
     schedule[560] = 4.0E6
     schedule[580] = 2.0E6
     schedule[600] = 0.0
+
+    return schedule
+
+
+def build_pellet_schedule(action_row):
+    """Build pellet_S_total time dict from action_row (n_decision_times, 3).
+    Fixed off before t=90; baseline turn-on at t=90 (5e21 particles/s);
+    agent-controlled from t=100 to t=500 (decision at t applies at t+20);
+    fixed off at t=520. action_row[:, 2] = pellet_S_total (particles/s).
+    """
+    schedule = {}
+
+    # Fixed turn-on (pellets off before L-H transition, ramp to baseline)
+    schedule[0]  = 0.0
+    schedule[89] = 0.0
+    schedule[90] = 5.0e21  # baseline turn-on; agent takes over from t=100 onward
+
+    # Agent-controlled: decision at t applies at t+20
+    for i, t in enumerate(DECISION_TIMES):
+        t_apply = t + 20  # 100, 120, ..., 500
+        schedule[t_apply] = float(action_row[i, 2])
+
+    # Fixed turn-off
+    schedule[520] = 0.0
 
     return schedule
 
@@ -615,9 +647,9 @@ def validate_trajectory(transitions, summary, action_row):
         raise ValueError(
             f'Expected {len(DECISION_TIMES)} transitions, got {len(transitions)}.'
         )
-    if action_row.shape != (len(DECISION_TIMES), 2):
+    if action_row.shape != (len(DECISION_TIMES), 3):
         raise ValueError(
-            f'Expected action shape {(len(DECISION_TIMES), 2)}, got {action_row.shape}.'
+            f'Expected action shape {(len(DECISION_TIMES), 3)}, got {action_row.shape}.'
         )
 
     for idx, transition in enumerate(transitions):
@@ -646,13 +678,13 @@ def build_trajectory(tmtx, action_row, observation_mode="legacy"):
     """
     transitions = []
 
-    prev_action = (0.0, 0.0)
+    prev_action = (0.0, 0.0, 0.0)
     for i, t in enumerate(DECISION_TIMES):
 
         t_next = RL_TIMES[i + 1]
 
         is_terminal = (i == len(DECISION_TIMES) - 1)
-        a  = action_row[i].tolist()  # [ecrh_W, nbi_W]
+        a  = action_row[i].tolist()  # [ecrh_W, nbi_W, pellet_S_total]
         s = extract_state(
             tmtx,
             t,
@@ -665,7 +697,7 @@ def build_trajectory(tmtx, action_row, observation_mode="legacy"):
 
         transitions.append({
             's':      s,
-            'a':      a,          # [ecrh_W, nbi_W]
+            'a':      a,          # [ecrh_W, nbi_W, pellet_S_total]
             'r':      r,
             'done':   is_terminal,
             't':      t,
@@ -715,8 +747,11 @@ def configure_tmtx(mygs, action_row, eqdsk_list, eqtimes, coil_bounds, x_points,
     from OpenFUSIONToolkit.TokaMaker.pulse_design import TokaMaker_TORAX
     import numpy as np
 
-    ecrh_schedule = build_ecrh_schedule(action_row)
-    nbi_schedule  = build_nbi_schedule(action_row)
+    ecrh_schedule   = build_ecrh_schedule(action_row)
+    nbi_schedule    = build_nbi_schedule(action_row)
+    # Use agent-controlled pellet schedule when action_row has 3 columns; otherwise
+    # fall back to the fixed baseline so 2-column action_rows (e.g. from eval) still work.
+    pellet_schedule = build_pellet_schedule(action_row) if action_row.shape[1] >= 3 else PELLET_S_TOTAL
 
     tmtx = TokaMaker_TORAX(
         t_init=0,
@@ -744,7 +779,7 @@ def configure_tmtx(mygs, action_row, eqdsk_list, eqtimes, coil_bounds, x_points,
         gas_puff_decay_length=0.05,
         pellet_deposition_location=0.8,
         pellet_width=0.1,
-        pellet_S_total=PELLET_S_TOTAL,
+        pellet_S_total=pellet_schedule,
     )
 
     def array_to_profile_dict(arr, grid):
@@ -992,6 +1027,7 @@ def action_manifest_fields():
     return {
         'ecrh_W': [ECRH_MIN, ECRH_MAX],
         'nbi_W': [NBI_MIN, NBI_MAX],
+        'pellet_S_total': [PELLET_MIN, PELLET_MAX],
         'nbi_zero_before_s': NBI_ZERO_BEFORE,
     }
 
@@ -1004,8 +1040,11 @@ def sampler_manifest_fields(cfg=None):
         'ecrh_start_max_W': cfg['ecrh_start_max_W'],
         'nbi_start_min_W': cfg['nbi_start_min_W'],
         'nbi_start_max_W': cfg['nbi_start_max_W'],
+        'pellet_start_min': cfg['pellet_start_min'],
+        'pellet_start_max': cfg['pellet_start_max'],
         'ecrh_delta_max_W_per_step': cfg['ecrh_delta_max_W_per_step'],
         'nbi_delta_max_W_per_step': cfg['nbi_delta_max_W_per_step'],
+        'pellet_delta_max_per_step': cfg['pellet_delta_max_per_step'],
         'n_decision': len(DECISION_TIMES),
     }
 
@@ -1016,7 +1055,7 @@ def trajectory_payload(transitions, summary, action_row, run_id,
     payload = {
         'run_id':      run_id,
         'timestamp':   datetime.now().isoformat(),
-        'actions_raw': action_row.tolist(),   # (21, 2) array in W
+        'actions_raw': action_row.tolist(),   # (21, 3) array: [ecrh_W, nbi_W, pellet_S_total]
         'transitions': transitions,            # list of 21 dicts
         'summary':     summary,
         'reward_total': reward_total,

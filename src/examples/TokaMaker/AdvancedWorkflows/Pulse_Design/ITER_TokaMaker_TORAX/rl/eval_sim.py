@@ -66,17 +66,21 @@ def _load_checkpoint_reward_config(actor_checkpoint, ckpt):
             if checkpoint_config.get(key) is not None:
                 return reward_config_to_dict(checkpoint_config.get(key)), f"checkpoint config field {key}"
 
-    config_path = Path(actor_checkpoint).resolve().parent / "iql_config.json"
-    if config_path.is_file():
-        try:
-            with config_path.open() as handle:
-                saved_config = json.load(handle)
-            if isinstance(saved_config, dict):
-                for key in ("dataset_reward_config", "reward_config"):
-                    if saved_config.get(key) is not None:
-                        return reward_config_to_dict(saved_config.get(key)), f"{config_path} field {key}"
-        except Exception as exc:
-            logger.warning("Could not read %s for reward provenance: %s", config_path, exc)
+    # Search for iql_config.json in the checkpoint's directory and one level up
+    # (intermediate checkpoints live in a checkpoints/ subdirectory).
+    ckpt_dir = Path(actor_checkpoint).resolve().parent
+    for search_dir in (ckpt_dir, ckpt_dir.parent):
+        config_path = search_dir / "iql_config.json"
+        if config_path.is_file():
+            try:
+                with config_path.open() as handle:
+                    saved_config = json.load(handle)
+                if isinstance(saved_config, dict):
+                    for key in ("dataset_reward_config", "reward_config"):
+                        if saved_config.get(key) is not None:
+                            return reward_config_to_dict(saved_config.get(key)), f"{config_path} field {key}"
+            except Exception as exc:
+                logger.warning("Could not read %s for reward provenance: %s", config_path, exc)
     return None, None
 
 
@@ -177,7 +181,12 @@ def _bundle_safe(value):
 
 
 def _action_history_to_array(actions_history):
-    """Normalize RL action history into a numeric array and structured records."""
+    """Normalize RL action history into a numeric array and structured records.
+
+    Returns a (n_decisions, action_dim) array where action_dim is 2 for ECRH+NBI
+    actors and 3 for ECRH+NBI+pellet actors. All rows have the same width; rows
+    from 2-D records get pellet=NaN when the rest of the batch is 3-D.
+    """
     records = []
     numeric = []
     saw_legacy_shape = False
@@ -186,20 +195,27 @@ def _action_history_to_array(actions_history):
             record = _plain(item)
             records.append(record)
             if "ecrh_W" in record and "nbi_W" in record:
-                numeric.append([float(record["ecrh_W"]), float(record["nbi_W"])])
+                row = [float(record["ecrh_W"]), float(record["nbi_W"])]
+                if "pellet_S" in record:
+                    row.append(float(record["pellet_S"]))
+                numeric.append(row)
             elif "ecrh_MW" in record and "nbi_MW" in record:
-                numeric.append([float(record["ecrh_MW"]) * 1e6, float(record["nbi_MW"]) * 1e6])
+                row = [float(record["ecrh_MW"]) * 1e6, float(record["nbi_MW"]) * 1e6]
+                if "pellet_S" in record:
+                    row.append(float(record["pellet_S"]))
+                numeric.append(row)
         else:
             saw_legacy_shape = True
             arr = np.asarray(item, dtype=np.float64).reshape(-1)
             if arr.size >= 2:
-                numeric.append([float(arr[0]), float(arr[1])])
+                numeric.append(arr[:arr.size].tolist())
                 records.append({"ecrh_W": float(arr[0]), "nbi_W": float(arr[1])})
-    numeric_arr = np.asarray(numeric, dtype=np.float64)
-    if numeric_arr.size == 0:
-        numeric_arr = np.zeros((0, 2), dtype=np.float64)
-    elif numeric_arr.ndim == 1:
-        numeric_arr = numeric_arr.reshape(-1, 2)
+    if not numeric:
+        return np.zeros((0, 2), dtype=np.float64), records
+    # Pad shorter rows so all rows have the same width
+    max_width = max(len(r) for r in numeric)
+    padded = [r + [float('nan')] * (max_width - len(r)) for r in numeric]
+    numeric_arr = np.asarray(padded, dtype=np.float64)
     if saw_legacy_shape:
         warnings.warn(
             "Legacy numeric RL action history detected. The current TORAX eval path "
@@ -302,6 +318,12 @@ def run_actor_eval_simulation(
         prefer_replay_cache=prefer_replay_cache,
     )
     train_reward_config, train_reward_source = _load_checkpoint_reward_config(actor_checkpoint, ckpt)
+    # Propagate reward_mode from the checkpoint config into the environment so that
+    # default_reward_config() (and downstream compute_rewards calls) automatically
+    # use the same mode the checkpoint was trained with, without requiring the caller
+    # to set RL_REWARD_MODE explicitly.
+    if train_reward_config and 'reward_mode' in train_reward_config:
+        os.environ.setdefault('RL_REWARD_MODE', str(train_reward_config['reward_mode']))
     eval_reward_config = reward_config_to_dict(None)
     reward_config_match = _check_reward_config_match(
         actor_checkpoint=actor_checkpoint,
@@ -401,16 +423,19 @@ def run_actor_eval_simulation(
             ecrh_mw = float(event["ecrh_MW"])
             nbi_mw = float(event["nbi_MW"])
             if not _skip_wandb:
+                live_metrics = {
+                    "actor_eval_live/decision_index": idx,
+                    "actor_eval_live/decision_t_s": float(event["decision_t"]),
+                    "actor_eval_live/ecrh_MW": ecrh_mw,
+                    "actor_eval_live/nbi_MW": nbi_mw,
+                    "actor_eval_live/total_heating_MW": ecrh_mw + nbi_mw,
+                    "actor_eval_live/elapsed_s": time.time() - _fly_t0[0],
+                    "actor_eval_live/progress": (idx + 1) / len(RL_DECISION_TIMES),
+                }
+                if "pellet_S" in event:
+                    live_metrics["actor_eval_live/pellet_S21"] = float(event["pellet_S"]) / 1e21
                 wandb.log(
-                    {
-                        "actor_eval_live/decision_index": idx,
-                        "actor_eval_live/decision_t_s": float(event["decision_t"]),
-                        "actor_eval_live/ecrh_MW": ecrh_mw,
-                        "actor_eval_live/nbi_MW": nbi_mw,
-                        "actor_eval_live/total_heating_MW": ecrh_mw + nbi_mw,
-                        "actor_eval_live/elapsed_s": time.time() - _fly_t0[0],
-                        "actor_eval_live/progress": (idx + 1) / len(RL_DECISION_TIMES),
-                    }
+                    live_metrics
                 )
         except Exception as exc:
             logger.warning("Could not stream RL event to wandb: %s", exc)
@@ -476,12 +501,18 @@ def run_actor_eval_simulation(
             summary = tmtx.summary()
         rewards = tmtx.compute_rewards()
         actions, action_records = _action_history_to_array(getattr(tmtx, "_rl_actions_history", []))
-        action_max = np.asarray(_plain(ckpt.get("action_max", np.ones(2))), dtype=np.float64)
+        action_dim_eval = actions.shape[1] if actions.size else 2
+        default_action_max = np.ones(action_dim_eval)
+        action_max = np.asarray(_plain(ckpt.get("action_max", default_action_max)), dtype=np.float64)
         if action_max.ndim == 0:
-            action_max = np.asarray([float(action_max), float(action_max)], dtype=np.float64)
-        action_abs = np.abs(actions) if actions.size else np.zeros((0, 2), dtype=np.float64)
-        action_sat = action_abs >= (0.95 * action_max.reshape(1, -1)) if actions.size else np.zeros((0, 2), dtype=bool)
-        action_delta = np.diff(actions, axis=0) if len(actions) > 1 else np.zeros((0, 2), dtype=np.float64)
+            action_max = np.full(action_dim_eval, float(action_max), dtype=np.float64)
+        # Pad action_max to match actual action_dim if checkpoint predates pellet dim
+        if action_max.shape[0] < action_dim_eval:
+            action_max = np.concatenate([action_max, np.ones(action_dim_eval - action_max.shape[0])])
+        empty_shape = (0, action_dim_eval)
+        action_abs = np.abs(actions) if actions.size else np.zeros(empty_shape, dtype=np.float64)
+        action_sat = action_abs >= (0.95 * action_max.reshape(1, -1)) if actions.size else np.zeros(empty_shape, dtype=bool)
+        action_delta = np.diff(actions, axis=0) if len(actions) > 1 else np.zeros(empty_shape, dtype=np.float64)
         action_delta_abs = np.abs(action_delta) if action_delta.size else action_delta
         metrics = {
             "actor_eval/reward_total": float(np.sum(rewards)),
@@ -495,6 +526,10 @@ def run_actor_eval_simulation(
             "actor_eval/nbi_saturation_rate": float(np.mean(action_sat[:, 1])) if action_sat.size else 0.0,
             "actor_eval/ecrh_saturation_rate": float(np.mean(action_sat[:, 0])) if action_sat.size else 0.0,
         }
+        if action_dim_eval >= 3 and actions.size:
+            pellet_finite = actions[:, 2][np.isfinite(actions[:, 2])]
+            metrics["actor_eval/pellet_S21_mean"] = float(np.mean(pellet_finite) / 1e21) if pellet_finite.size else 0.0
+            metrics["actor_eval/pellet_saturation_rate"] = float(np.mean(action_sat[:, 2])) if action_sat.size else 0.0
         for key, val in summary.items():
             if val is not None:
                 metrics[f"actor_eval/{key}"] = float(val)

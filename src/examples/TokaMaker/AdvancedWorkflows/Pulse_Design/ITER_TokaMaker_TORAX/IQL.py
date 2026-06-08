@@ -529,6 +529,7 @@ def train_iql(
                 'action_rate_penalty': getattr(iql, "action_rate_penalty", 0.0),
                 'observation_mode': observation_mode,
                 'state_keys': state_keys,
+                'config': base_config,
             }
             if hasattr(iql, 'q1'):
                 ckpt_dict.update({'q1': iql.q1.state_dict(), 'q2': iql.q2.state_dict()})

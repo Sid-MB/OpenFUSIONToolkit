@@ -923,6 +923,23 @@ class TokaMaker_TORAX:
             nbi[t_k] = float(p_nbi)
         return ecrh, nbi
 
+    @staticmethod
+    def _merge_rl_pellet_schedule(agent_pellet_knots):
+        r'''! Combine fixed pellet endpoints with agent-controlled rates.
+
+                Fixed: off before t=90; baseline turn-on at t=90 (5e21 particles/s);
+                hard off at t=520. Agent knots in between override the schedule.
+
+                @param agent_pellet_knots Mapping knot time (s) -> pellet_S_total
+                       (particles/s). May be empty (returns baseline only).
+                @return pellet_S_total dict ready for set_fueling.
+
+        '''
+        schedule = {0.0: 0.0, 89.0: 0.0, 90.0: 5.0e21, 520.0: 0.0}
+        for t_knot, pellet_s in agent_pellet_knots.items():
+            schedule[float(t_knot)] = float(pellet_s)
+        return schedule
+
     def _rl_interpolate_scalar(self, data_tree, var_name, rl_time):
         r'''! Interpolate a TORAX scalar to rl_time (no fly() time-averaging).'''
         try:
@@ -1053,14 +1070,19 @@ class TokaMaker_TORAX:
             is_terminal = (t_start == RL_DECISION_TIMES[-1])
             mask        = (torax_times >= t_start) & (torax_times <= t_end)
 
-            # Step reward: log(mean Q_fusion + 1)
+            # Step reward: log(mean Q_fusion + 1), or log(Q*P_aux_MW + 1) in pfusion mode.
+            # pfusion mode removes the 1/P_aux blow-up exploit (zeroing aux gives reward=0).
             if not np.any(mask):
                 step_reward = 0.0
             else:
-                Q_vals      = self._data_tree['scalars']['Q_fusion'].values[mask]
+                Q_vals = self._data_tree['scalars']['Q_fusion'].values[mask]
                 if q_clamp > 0:
                     Q_vals = np.minimum(Q_vals, q_clamp)
-                step_reward = np.log(float(np.nanmean(Q_vals)) + 1)
+                if cfg.reward_mode == 'pfusion':
+                    p_aux_vals = self._data_tree['scalars']['P_aux_total'].values[mask]
+                    step_reward = np.log(float(np.nanmean(Q_vals * p_aux_vals / 1e6)) + 1.0)
+                else:
+                    step_reward = np.log(float(np.nanmean(Q_vals)) + 1)
 
             # Safety penalties
             penalty = 0.0
@@ -1082,10 +1104,26 @@ class TokaMaker_TORAX:
             if is_terminal:
                 with redirect_stdout(io.StringIO()):
                     summary = self.summary()
-                q_flat = summary.get('Q_flattop_avg', 0.0)
-                if q_clamp > 0:
-                    q_flat = min(q_flat, q_clamp)
-                r += cfg.q_flattop_weight * q_flat - cfg.flux_weight * summary.get('flux_consumed_Wb', 0.0)
+                flux_wb = summary.get('flux_consumed_Wb', 0.0)
+                if cfg.reward_mode == 'pfusion':
+                    # Use mean(Q * P_aux_MW) over flattop instead of Q_flattop_avg,
+                    # so the terminal bonus is also zero when P_aux=0 (no free Q from coasting).
+                    torax_t = self._data_tree['scalars'].coords['time'].values
+                    ft = getattr(self, '_flattop', None)
+                    if ft is not None and np.any(ft):
+                        ft_times = np.array(self._tm_times)[np.asarray(ft, dtype=bool)]
+                        ft_start, ft_end = float(ft_times[0]), float(ft_times[-1])
+                        ft_mask = (torax_t >= ft_start) & (torax_t <= ft_end)
+                    else:
+                        ft_mask = np.ones(len(torax_t), dtype=bool)
+                    Q_ft = self._data_tree['scalars']['Q_fusion'].values[ft_mask]
+                    P_aux_ft = self._data_tree['scalars']['P_aux_total'].values[ft_mask] / 1e6
+                    q_flat = float(np.nanmean(Q_ft * P_aux_ft)) if np.any(ft_mask) else 0.0
+                else:
+                    q_flat = summary.get('Q_flattop_avg', 0.0)
+                    if q_clamp > 0:
+                        q_flat = min(q_flat, q_clamp)
+                r += cfg.q_flattop_weight * q_flat - cfg.flux_weight * flux_wb
 
             rewards.append(r)
 
@@ -2256,9 +2294,15 @@ class TokaMaker_TORAX:
                 f'Checkpoint state_std_dim {state_std.shape[0]} != expected {expected_state_dim} '
                 f'for observation_mode={observation_mode!r}'
             )
-        if action_max.shape[0] != 2:
+        action_dim = int(action_max.shape[0])
+        if action_dim not in (2, 3):
             raise ValueError(
-                f'Checkpoint action_dim {action_max.shape[0]} != expected action_dim 2'
+                f'Checkpoint action_dim {action_dim} must be 2 (ECRH+NBI) or 3 (ECRH+NBI+pellet)'
+            )
+        if action_dim == 3 and action_mode == 'residual_prev_action':
+            raise NotImplementedError(
+                'residual_prev_action mode is not supported for 3-D (pellet) actions; '
+                'use action_mode=absolute instead.'
             )
 
         ckpt_state_keys = list(ckpt.get('state_keys') or [])
@@ -2271,7 +2315,7 @@ class TokaMaker_TORAX:
                     )
                 action_context_indices.append(ckpt_state_keys.index(key))
 
-        actor = _RLActor(action_max, expected_state_dim, 2, action_mode=action_mode)
+        actor = _RLActor(action_max, expected_state_dim, action_dim, action_mode=action_mode)
         actor.load_state_dict(ckpt['actor'])
         actor.eval()
 
@@ -2376,10 +2420,12 @@ class TokaMaker_TORAX:
 
     @staticmethod
     def _rl_action_record(decision_t, knot_t, action_w):
-        r'''! RL action log row with watts internally and MW for presentation.'''
+        r'''! RL action log row with watts internally and MW for presentation.
+             If action_w has a 3rd element it is pellet_S_total (particles/s).
+        '''
         ecrh_w = float(action_w[0])
-        nbi_w = float(action_w[1])
-        return {
+        nbi_w  = float(action_w[1])
+        record = {
             'decision_t': float(decision_t),
             'knot_t': float(knot_t),
             'ecrh_W': ecrh_w,
@@ -2387,19 +2433,24 @@ class TokaMaker_TORAX:
             'ecrh_MW': ecrh_w / 1e6,
             'nbi_MW': nbi_w / 1e6,
         }
+        if len(action_w) >= 3:
+            record['pellet_S'] = float(action_w[2])
+        return record
 
     def _validate_rl_action_w(self, action_w, decision_t):
-        r'''! Validate an RL action before launching another TORAX segment.'''
+        r'''! Validate an RL action before launching another TORAX segment.
+             action_w may be 2-D [ecrh, nbi] or 3-D [ecrh, nbi, pellet_S].
+        '''
         action_w = np.asarray(action_w, dtype=np.float64).reshape(-1)
-        if action_w.shape[0] != 2:
-            raise ValueError(f'RL action_dim {action_w.shape[0]} != expected action_dim 2')
+        if action_w.shape[0] not in (2, 3):
+            raise ValueError(f'RL action_dim {action_w.shape[0]} must be 2 or 3')
         if not np.all(np.isfinite(action_w)):
             raise ValueError(f'RL action at t={float(decision_t):g} contains non-finite values: {action_w}')
 
         max_power_w = getattr(self, '_rl_max_action_power_w', None)
         if max_power_w is not None and float(max_power_w) > 0:
             max_power_w = float(max_power_w)
-            if np.any(action_w > max_power_w):
+            if np.any(action_w[:2] > max_power_w):
                 raise ValueError(
                     f'RL action at t={float(decision_t):g} exceeds RL max action power '
                     f'{max_power_w:g} W: ecrh={action_w[0]:g} W, nbi={action_w[1]:g} W'
@@ -2442,6 +2493,7 @@ class TokaMaker_TORAX:
         # lie beyond each segment's t_end and so do not affect its result; they are
         # overwritten as the actor makes decisions. See _full_agent_knots_defaults.
         agent_knots = self._full_agent_knots_defaults()
+        agent_pellet_knots = {}  # knot_t -> pellet_S_total; populated only for 3-D actors
         t_final = float(self._t_final)
 
         ecrh, nbi = self._merge_rl_heating_schedules(agent_knots)
@@ -2463,16 +2515,24 @@ class TokaMaker_TORAX:
             knot_t = t_seg_end
             action_record = self._rl_action_record(t_dec, knot_t, action_w)
             agent_knots[knot_t] = (action_record['ecrh_W'], action_record['nbi_W'])
+
+            # 3-D actor: update agent-controlled pellet schedule and propagate to TORAX
+            if len(action_w) >= 3:
+                agent_pellet_knots[knot_t] = action_record['pellet_S']
+                self._pellet_s_total = self._merge_rl_pellet_schedule(agent_pellet_knots)
+
             self._rl_actions_history.append(action_record)
             self._emit_rl_event({
                 'event': 'decision',
                 'decision_index': int(decision_index),
                 **action_record,
             })
+            pellet_s21 = action_record.get('pellet_S', float('nan')) / 1e21
             self._log(
                 f'RL decision t={t_dec:g} -> knot t={knot_t:g}: '
                 f'ECRH={action_record["ecrh_MW"]:.2f} MW, '
                 f'NBI={action_record["nbi_MW"]:.2f} MW'
+                + (f', pellet={pellet_s21:.2f}e21 /s' if 'pellet_S' in action_record else '')
             )
             last_action_w = [action_record['ecrh_W'], action_record['nbi_W']]
 
@@ -4320,6 +4380,9 @@ class RLRewardConfig:
     # Terminal bonus weights: keep in sync with preprocess_run.ipynb.
     q_flattop_weight:      float = 1.0
     flux_weight:           float = 0.012
+    # Step reward mode: 'standard' uses log(Q+1); 'pfusion' uses log(Q*P_aux_MW+1)
+    # which removes the 1/P_aux blow-up exploit (zeroing aux gives reward=0).
+    reward_mode:           str   = 'standard'
 
 # =============================================================================
 #  Visualization
