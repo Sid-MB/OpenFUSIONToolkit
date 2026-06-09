@@ -899,10 +899,10 @@
 \pgfsetstrokecolor{currentstroke}%
 \pgfsetdash{}{0pt}%
 \pgfpathmoveto{\pgfqpoint{2.498262in}{5.252028in}}%
-\pgfpathlineto{\pgfqpoint{2.924291in}{2.231842in}}%
-\pgfpathlineto{\pgfqpoint{3.350319in}{1.533865in}}%
-\pgfpathlineto{\pgfqpoint{3.776347in}{0.990314in}}%
-\pgfpathlineto{\pgfqpoint{4.202376in}{5.232413in}}%
+\pgfpathlineto{\pgfqpoint{2.924291in}{5.252028in}}%
+\pgfpathlineto{\pgfqpoint{3.350319in}{5.252028in}}%
+\pgfpathlineto{\pgfqpoint{3.776347in}{5.252028in}}%
+\pgfpathlineto{\pgfqpoint{4.202376in}{5.252028in}}%
 \pgfpathlineto{\pgfqpoint{4.628404in}{5.252028in}}%
 \pgfpathlineto{\pgfqpoint{5.054433in}{5.252028in}}%
 \pgfpathlineto{\pgfqpoint{5.480461in}{5.252028in}}%
@@ -953,19 +953,19 @@
 \pgfsys@useobject{currentmarker}{}%
 \end{pgfscope}%
 \begin{pgfscope}%
-\pgfsys@transformshift{2.924291in}{2.231842in}%
+\pgfsys@transformshift{2.924291in}{5.252028in}%
 \pgfsys@useobject{currentmarker}{}%
 \end{pgfscope}%
 \begin{pgfscope}%
-\pgfsys@transformshift{3.350319in}{1.533865in}%
+\pgfsys@transformshift{3.350319in}{5.252028in}%
 \pgfsys@useobject{currentmarker}{}%
 \end{pgfscope}%
 \begin{pgfscope}%
-\pgfsys@transformshift{3.776347in}{0.990314in}%
+\pgfsys@transformshift{3.776347in}{5.252028in}%
 \pgfsys@useobject{currentmarker}{}%
 \end{pgfscope}%
 \begin{pgfscope}%
-\pgfsys@transformshift{4.202376in}{5.232413in}%
+\pgfsys@transformshift{4.202376in}{5.252028in}%
 \pgfsys@useobject{currentmarker}{}%
 \end{pgfscope}%
 \begin{pgfscope}%
@@ -1089,7 +1089,7 @@
 \definecolor{textcolor}{rgb}{0.000000,0.000000,0.000000}%
 \pgfsetstrokecolor{textcolor}%
 \pgfsetfillcolor{textcolor}%
-\pgftext[x=7.184574in,y=5.548447in,,base]{\color{textcolor}{\rmfamily\fontsize{16.000000}{19.200000}\selectfont\catcode`\^=\active\def^{\ifmmode\sp\else\^{}\fi}\catcode`\%=\active\def%{\%}CQL Agent vs.\ Baseline (reward=26.20)}}%
+\pgftext[x=7.184574in,y=5.548447in,,base]{\color{textcolor}{\rmfamily\fontsize{16.000000}{19.200000}\selectfont\catcode`\^=\active\def^{\ifmmode\sp\else\^{}\fi}\catcode`\%=\active\def%{\%}CQL Agent vs.\ Baseline (reward=12.91)}}%
 \end{pgfscope}%
 \begin{pgfscope}%
 \pgfsetbuttcap%

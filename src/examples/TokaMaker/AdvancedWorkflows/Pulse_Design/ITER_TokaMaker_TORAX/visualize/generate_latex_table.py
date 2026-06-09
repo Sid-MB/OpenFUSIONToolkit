@@ -2,7 +2,7 @@
 """Generate a LaTeX results table from actor_eval_summary.json files.
 
 Writes a booktabs-style tabular environment to <output_dir>/table.tex.
-Import in your LaTeX document with \input{table.tex} (requires \usepackage{booktabs}).
+Import in your LaTeX document with \\input{table.tex} (requires \\usepackage{booktabs}).
 
 Usage:
     uv run python generate_latex_table.py <output_dir> [--project-dir DIR] [--pfusion-eval-dir DIR]
