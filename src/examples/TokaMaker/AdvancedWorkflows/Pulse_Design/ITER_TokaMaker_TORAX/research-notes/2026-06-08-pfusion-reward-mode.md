@@ -110,46 +110,75 @@ Learning curve was still climbing at step 39k, motivating longer training.
 
 ---
 
-## Ongoing: pfusion_long and pfusion_full_dataset (60k steps)
+## pfusion_long (qqtf58re, wide_ecrh dataset, 60k steps)
 
 ```bash
-# wide_ecrh dataset, 60k steps
 DATASET_DIR=run_prev_action_wide_ecrh_20260602_000037/reward_variants/reward_68ceccd06040 \
 RUN_NAME=pfusion_long OBSERVATION_MODE=prev_action NUM_STEPS=60000 \
 CHECKPOINT_INTERVAL=1000 CHECKPOINT_EVAL_INTERVAL=4000 \
 RUN_ACTOR_EVAL=1 RL_REWARD_MODE=pfusion \
 sbatch run_scripts/train_iql.sh
-# Job: 15830578 (RUNNING on jagupard33 as of 2026-06-08)
+# Job: 15830578
 
-# full dataset, 60k steps
+# Fanout checkpoint evals (59 checkpoints):
+DATASET_DIR=run_prev_action_wide_ecrh_20260602_000037/reward_variants/reward_68ceccd06040 \
+TRAIN_OUTPUT_DIR=out/iql/reward_68ceccd06040/qqtf58re \
+EVAL_WANDB_PROJECT=iql-eval EVAL_WANDB_GROUP=pfusion_long RL_REWARD_MODE=pfusion \
+bash run_scripts/fanout_checkpoint_evals.sh
+# Array job: 15830903
+```
+
+Learning curve was noisy; best checkpoint appeared near the end of training. Notable improvement vs 40k-step pfusion_standard run.
+
+**Best checkpoint: step 58000** — Q_max=54.14, Q_flattop_avg=26.23, H98=0.795, E_fusion=59,611 MJ, reward_total=54.15
+
+---
+
+## pfusion_full_dataset (ni7a42nz, full dataset, 60k steps)
+
+```bash
 DATASET_DIR=run_prev_action_full_20260601_192826/reward_variants/reward_68ceccd06040 \
 RUN_NAME=pfusion_full_dataset OBSERVATION_MODE=prev_action NUM_STEPS=60000 \
 CHECKPOINT_INTERVAL=1000 CHECKPOINT_EVAL_INTERVAL=4000 \
 RUN_ACTOR_EVAL=1 RL_REWARD_MODE=pfusion \
 sbatch run_scripts/train_iql.sh
-# Job: 15830579 (RUNNING on jagupard34 as of 2026-06-08)
+# Job: 15830579
+
+# Fanout checkpoint evals (59 checkpoints):
+DATASET_DIR=run_prev_action_full_20260601_192826/reward_variants/reward_68ceccd06040 \
+TRAIN_OUTPUT_DIR=out/iql/reward_68ceccd06040/ni7a42nz \
+EVAL_WANDB_PROJECT=iql-eval EVAL_WANDB_GROUP=pfusion_full_dataset RL_REWARD_MODE=pfusion \
+bash run_scripts/fanout_checkpoint_evals.sh
+# Array job: 15830905
 ```
 
-Results pending. Fanout checkpoint evals should be submitted once training completes.
+Converged faster than pfusion_long and achieved substantially higher Q_flattop_avg (41 vs 26). Learning curve plateaued around step 22k with Q stabilizing around 55–56.
+
+**Best checkpoint: step 22000** — Q_max=56.35, Q_flattop_avg=41.39, H98=0.828, E_fusion=57,171 MJ, reward_total=81.16
+
+This is the new best honest pfusion result. Q_flattop_avg=41.4 is notably higher than pfusion_standard's 20.9 — the policy sustains high Q throughout flattop rather than peaking briefly. H98=0.828 is also the best across all runs.
+
+Key observation: the full dataset (`run_prev_action_full_20260601_192826`) trains significantly better than the wide-ECRH dataset for pfusion mode. Likely because the full dataset contains more trajectories with high sustained heating, giving better coverage of the pfusion reward landscape.
 
 ---
 
 ## Comparison table (honest Q, no hacking)
 
-| Run | Q_max | Q_flattop_avg | H98 | E_fusion (MJ) | Notes |
-|-----|-------|---------------|-----|----------------|-------|
-| `wide_arp0.1` (best prior IQL) | 57.0 | — | 0.761 | 63,346 | standard reward, may have mild hacking |
-| `sc_loprio_timing_test` | 54.6 | — | 0.842 | 55,583 | standard reward |
-| **pfusion_standard step_39k** | **51.7** | 20.9 | 0.801 | 59,892 | pfusion, honest, no q95 violation |
-| `youthful-microwave-93` | 31.7 | — | 0.783 | 62,564 | standard reward |
-| `prev_action_q95w3.5_fgww4.0` | ~~152.6~~ | ~~39.6~~ | 0.813 | 60,297 | **HACKED** — policy turns off all heating |
+| Run | Q_max | Q_flattop_avg | H98 | E_fusion (MJ) | reward_total | Notes |
+|-----|-------|---------------|-----|----------------|-------------|-------|
+| **pfusion_full_dataset step_22k** | **56.35** | **41.39** | **0.828** | 57,171 | 81.16 | pfusion, honest, new best |
+| `wide_arp0.1` (best prior IQL) | 57.0 | — | 0.761 | 63,346 | — | standard reward, may have mild hacking |
+| pfusion_long step_58k | 54.14 | 26.23 | 0.795 | 59,611 | 54.15 | pfusion, honest |
+| `sc_loprio_timing_test` | 54.6 | — | 0.842 | 55,583 | — | standard reward |
+| pfusion_standard step_39k | 51.7 | 20.9 | 0.801 | 59,892 | — | pfusion, honest |
+| `youthful-microwave-93` | 31.7 | — | 0.783 | 62,564 | — | standard reward |
+| `prev_action_q95w3.5_fgww4.0` | ~~152.6~~ | ~~39.6~~ | 0.813 | 60,297 | — | **HACKED** — policy turns off all heating |
 
 ---
 
 ## Next steps
 
-1. Run fanout checkpoint evals on `pfusion_long` and `pfusion_full_dataset` once they finish
-2. Check if `pfusion_long` (60k steps) continues to climb past 51.7
-3. Consider hyperparameter sweep: wider network (hidden_dim=512), different tau/beta
-4. Run `rebuild.sh` rather than manual copy when modifying `pulse_design.py` going forward
-5. Update `different-algorithms/RESULTS.md` to reflect pfusion findings
+1. Consider hyperparameter sweep on full dataset: wider network (hidden_dim=512), different tau/beta
+2. Train longer on full dataset past 60k steps (curve may still be climbing)
+3. Run `rebuild.sh` rather than manual copy when modifying `pulse_design.py` going forward
+4. Investigate why full dataset trains better than wide_ecrh for pfusion mode

@@ -8,11 +8,11 @@ Offline RL pipeline for learning plasma control policies on the ITER scenario us
 
 ## Current best honest result (pfusion mode, 2D heating-only)
 
-**pfusion_standard step_39k**: Q_max=51.7, Q_flattop_avg=20.9, H98=0.801, E_fusion=59,892 MJ
-W&B: `iql-eval` group `pfusion_standard`
-Artifacts: `out/iql/reward_68ceccd06040/2tjm9kx1/checkpoints/checkpoint_step_39000.pt`
+**pfusion_full_dataset step_22k**: Q_max=56.35, Q_flattop_avg=41.39, H98=0.828, E_fusion=57,171 MJ, reward_total=81.16
+W&B: `iql-eval` group `pfusion_full_dataset`
+Artifacts: `out/iql/reward_68ceccd06040/ni7a42nz/checkpoint_evals/step_22000/`
 
-Two additional 60k-step 2D runs (jobs 15830578, 15830579) training on `reward_68ceccd06040` variant of `run_prev_action_full_20260601_192826` and `run_prev_action_wide_ecrh_20260602_000037` — expected to push Q_max above 51.7.
+Second best: **pfusion_long step_58k**: Q_max=54.14, Q_flattop_avg=26.23, H98=0.795 (wide_ecrh dataset, run `qqtf58re`)
 
 ---
 
@@ -47,7 +47,7 @@ Action space extended from 2D `[ecrh_W, nbi_W]` to 3D `[ecrh_W, nbi_W, pellet_S_
 | 2026-05-30–31 | IQL training on prev_action datasets; first reward_config sweeps |
 | 2026-06-01–02 | Algorithm comparison (IQL vs BC vs CQL vs TD3+BC); BC competitive with IQL median |
 | 2026-06-02 | Best Q_max=57 (`wide_arp0.1`); discovered reward hacking in `prev_action_q95w3.5_fgww4.0` run (Q_max=152, fake) |
-| 2026-06-08 | Implemented pfusion reward mode to fix Q hacking; pfusion_standard achieves honest Q_max=51.7 |
+| 2026-06-08 | Implemented pfusion reward mode to fix Q hacking; pfusion_standard achieves honest Q_max=51.7; pfusion_full_dataset (60k steps) achieves new best Q_max=56.35, Q_flat=41.4 |
 | 2026-06-08 | Extended action space to 3D (ECRH + NBI + pellet fueling); collected two pellet datasets; two IQL pellet runs in progress |
 
 ---
