@@ -216,49 +216,24 @@ def extract_state(tmtx, t_start, t_end, current_action):
     """
     Extract state vector for interval [t_start, t_end].
 
-    Returns dict with all state quantities. Scalars are taken at t_start.
+    Returns dict with all state quantities. All TORAX scalars are taken at t_start.
     Q_fusion is the mean over the interval [t_start, t_end].
     """
     rho_points = [0.2, 0.5, 0.8]
     state = {}
 
-    # ── Scalars from TORAX DataTree at t_start ────────────────────────────────
-    torax_scalars = [
-        'H98',
-        'tau_E',
-        'W_thermal_total',
-        'P_SOL_total',
-        'P_radiation_e',
-        'P_aux_total',
-        'f_non_inductive',
-        'n_e_line_avg',
-        'fgw_n_e_line_avg',
-        'T_e_volume_avg',
-        'T_i_volume_avg',
-        'n_e_volume_avg',
-        'beta_N',
-        'li3',
-        'dW_thermal_dt_smoothed',
-        'P_ohmic_e',
-        'q_min',
-        'rho_q_min',
-        'f_bootstrap',
-        'P_alpha_total',
-        'q95',
-        'v_loop_lcfs',
-        'Ip',
-        'Q_fusion'
-    ]
-    for var in torax_scalars:
+    # ── All scalars from TORAX DataTree at t_start ────────────────────────────
+    scalars_ds = tmtx._data_tree['scalars']
+    for var in sorted(scalars_ds.data_vars):
         state[f'tx_{var}'] = interpolate_torax_scalar(tmtx, var, t_start)
 
     state['ecrh'] = float(current_action[0])
     state['nbi']  = float(current_action[1])
 
     # ── P_LH margin ───────────────────────────────────────────────────────────
-    P_heat_total = interpolate_torax_scalar(tmtx, 'P_heat_total', t_start)
-    P_LH         = interpolate_torax_scalar(tmtx, 'P_LH', t_start)
-    state['P_LH_margin'] = P_heat_total / P_LH
+    p_heat = state.get('tx_P_heat_total', float('nan'))
+    p_lh = state.get('tx_P_LH', float('nan'))
+    state['P_LH_margin'] = p_heat / p_lh if p_lh > 0 else float('nan')
 
     # ── Peaking factors ───────────────────────────────────────────────────────
     T_e_core = get_torax_profile_at_rho(tmtx, 'T_e', [0.0], t_start)[0]
