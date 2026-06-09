@@ -52,7 +52,7 @@ for chart_name in "${!RUNS[@]}"; do
   out_dir="${CHARTS_DIR}/${chart_name}"
   mkdir -p "$out_dir"
   echo "Generating $chart_name ..."
-  uv run python plot_heating_schedule.py "$out_dir" "$summary" && echo "  OK" || echo "  FAILED"
+  uv run python visualize/plot_heating_schedule.py "$out_dir" "$summary" && echo "  OK" || echo "  FAILED"
 done
 
 echo ""
@@ -68,14 +68,14 @@ s="${PROJECT_DIR}/out/iql/reward_68ceccd06040/2tjm9kx1/actor_eval/actor_eval_sum
 [ -f "$s" ] && GRID_SUMMARIES+=("$s")
 
 if [ ${#GRID_SUMMARIES[@]} -gt 0 ]; then
-  uv run python plot_heating_schedule.py --grid "${CHARTS_DIR}/grid" "${GRID_SUMMARIES[@]}" && echo "Grid OK" || echo "Grid FAILED"
+  uv run python visualize/plot_heating_schedule.py --grid "${CHARTS_DIR}/grid" "${GRID_SUMMARIES[@]}" && echo "Grid OK" || echo "Grid FAILED"
 else
   echo "No summaries available for grid"
 fi
 
 echo ""
 echo "=== Generating LaTeX table ==="
-uv run python generate_latex_table.py "${CHARTS_DIR}/grid" \
+uv run python visualize/generate_latex_table.py "${CHARTS_DIR}/grid" \
   --project-dir "${PROJECT_DIR}" \
   --pfusion-eval-dir "${PFUSION_EVAL_BASE}"
 

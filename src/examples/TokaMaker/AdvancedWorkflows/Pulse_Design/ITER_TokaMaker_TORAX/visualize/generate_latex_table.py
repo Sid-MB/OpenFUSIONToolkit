@@ -10,8 +10,8 @@ Usage:
 Arguments:
     output_dir          Directory to write table.tex into (created if needed). Typically
                         different-algorithms/charts/grid/.
-    --project-dir DIR   Root of the ITER_TokaMaker_TORAX project. Defaults to the directory
-                        containing this script.
+    --project-dir DIR   Root of the ITER_TokaMaker_TORAX project. Defaults to the parent of
+                        the visualize/ directory (i.e. the project root).
     --pfusion-eval-dir DIR
                         Directory containing pfusion re-eval subdirs (one per run ID).
                         Defaults to <project-dir>/out/iql/pfusion_eval.
@@ -79,7 +79,7 @@ def main() -> None:
     parser.add_argument("--pfusion-eval-dir", type=Path, default=None, help="Directory containing pfusion re-eval subdirs. Defaults to <project-dir>/out/iql/pfusion_eval.")
     args = parser.parse_args()
 
-    project = args.project_dir or Path(__file__).resolve().parent
+    project = args.project_dir or Path(__file__).resolve().parent.parent
     pfusion_base = args.pfusion_eval_dir or (project / "out/iql/pfusion_eval")
 
     out_path = generate(args.output_dir, project, pfusion_base)

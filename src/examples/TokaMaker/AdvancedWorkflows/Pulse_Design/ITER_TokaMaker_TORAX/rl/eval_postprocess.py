@@ -105,7 +105,7 @@ def postprocess_actor_eval(
     if result_path.exists():
         try:
             import subprocess, sys
-            plot_script = Path(__file__).resolve().parent.parent / "plot_heating_schedule.py"
+            plot_script = Path(__file__).resolve().parent.parent / "visualize" / "plot_heating_schedule.py"
             subprocess.run(
                 [sys.executable, str(plot_script), str(outputs_dir), str(result_path)],
                 check=True,

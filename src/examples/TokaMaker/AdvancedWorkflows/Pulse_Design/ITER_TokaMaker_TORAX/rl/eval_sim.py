@@ -533,8 +533,9 @@ def run_actor_eval_simulation(
         for key, val in summary.items():
             if val is not None:
                 metrics[f"actor_eval/{key}"] = float(val)
-        if not _skip_wandb: wandb.log({**metrics})
-        run.summary.update(metrics)
+        if not _skip_wandb and run is not None:
+            wandb.log({**metrics})
+            run.summary.update(metrics)
         result = {
             "status": "success",
             "started_at": started,
