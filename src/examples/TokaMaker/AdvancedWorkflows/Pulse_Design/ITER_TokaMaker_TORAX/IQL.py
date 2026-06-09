@@ -477,6 +477,7 @@ def train_iql(
     checkpoint_eval_kwargs,
     observation_mode="prev_action",
     state_keys=None,
+    run_config=None,
 ):
     dataloader = DataLoader(buffer, batch_size=batch_size, shuffle=True)
     
@@ -529,7 +530,7 @@ def train_iql(
                 'action_rate_penalty': getattr(iql, "action_rate_penalty", 0.0),
                 'observation_mode': observation_mode,
                 'state_keys': state_keys,
-                'config': base_config,
+                'config': run_config,
             }
             if hasattr(iql, 'q1'):
                 ckpt_dict.update({'q1': iql.q1.state_dict(), 'q2': iql.q2.state_dict()})
@@ -554,7 +555,11 @@ def train_iql(
                         **(checkpoint_eval_kwargs or {}),
                     )
                     score = float(eval_result.get("metrics", {}).get(checkpoint_eval_metric, float("-inf")))
-                    if best_eval_score is None or score > best_eval_score:
+                    is_new_best = best_eval_score is None or score > best_eval_score
+                    ckpt_log = {f"checkpoint_eval/{k.split('/')[-1]}": v for k, v in eval_result.get("metrics", {}).items() if isinstance(v, (int, float))}
+                    ckpt_log["checkpoint_eval/is_best"] = float(is_new_best)
+                    wandb.log(ckpt_log, step=step)
+                    if is_new_best:
                         best_eval_score = score
                         best_eval_checkpoint = str(checkpoint_path)
                         with (Path(checkpoint_dir) / "best_closed_loop_checkpoint.json").open("w") as f:
@@ -888,6 +893,7 @@ def train_from_config(
         checkpoint_eval_metric=str(config.get("checkpoint_eval_metric", "actor_eval/reward_total")),
         observation_mode=str(config.get("observation_mode", "prev_action")),
         state_keys=specs["state_keys"],
+        run_config=base_config,
         checkpoint_eval_kwargs={
             "dataset_dir": str(dataset_dir),
             "project": project,
