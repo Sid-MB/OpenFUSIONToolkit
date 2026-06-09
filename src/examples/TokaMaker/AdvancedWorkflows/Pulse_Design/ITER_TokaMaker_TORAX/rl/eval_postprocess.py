@@ -102,6 +102,18 @@ def postprocess_actor_eval(
             except Exception as exc:
                 logger.warning("make_movie failed during postprocess: %s", exc)
 
+    if result_path.exists():
+        try:
+            import subprocess, sys
+            plot_script = Path(__file__).resolve().parent.parent / "plot_heating_schedule.py"
+            subprocess.run(
+                [sys.executable, str(plot_script), str(outputs_dir), str(result_path)],
+                check=True,
+            )
+            generated["heating_schedule"] = str(outputs_dir / "heating_schedule.pdf")
+        except Exception as exc:
+            logger.warning("plot_heating_schedule failed during postprocess: %s", exc)
+
     artifacts_path = outputs_dir / "postprocess_artifacts.json"
     with artifacts_path.open("w") as f:
         json.dump({"result_path": str(result_path), "generated": str(generated)}, f, indent=2, default=str, sort_keys=True)

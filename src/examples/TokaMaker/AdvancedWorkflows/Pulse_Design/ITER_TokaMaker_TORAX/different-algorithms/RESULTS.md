@@ -68,3 +68,23 @@ Note: d52e9z6h (best, 43.95) and ms6z7gz8 (worst, 22.45) have identical hyperpar
 2. **CQL and TD3+BC both exhibit ECRH collapse**: the reward-hacking via auxiliary starvation (ECRH→0) persists despite CQL's conservatism. CQL's penalty may be suppressing OOD Q values but the in-distribution low-ECRH actions still get high Q.
 3. **IQL's upside beats BC**: the best IQL seed (43.95) is well above BC (37.18), suggesting IQL can find genuinely better policies but is high-variance across seeds.
 4. **BC action quality is qualitatively superior**: smooth ramp-down of both ECRH and NBI is physically meaningful; CQL/TD3+BC produce discontinuous or zero-ECRH trajectories.
+
+---
+
+## Subsequent Work (post algorithm comparison)
+
+### Reward hacking fix — pfusion mode (2026-06-08)
+
+All runs above used the standard reward including `log(Q+1)`. The best IQL run achieving Q_max=57 (`wide_arp0.1`) was discovered to be reward-hacked: policy cuts all heating → P_aux→0 → Q→∞ in the simulation. Q_max=57 is fake.
+
+Fix: `reward_mode='pfusion'` replaces `log(Q+1)` with `log(Q * P_aux_MW + 1)`, which goes to zero when heating is off. Honest pfusion result:
+
+**pfusion_standard (W&B: `2tjm9kx1`)**: Q_max=51.7, Q_flattop_avg=20.9, H98=0.801
+Dataset: `run_prev_action_full_20260601_192826` → `reward_variants/reward_68ceccd06040` (pfusion reweight)
+Config: IQL, beta=3, tau=0.7, action_rate_penalty=0.01, num_steps=60k
+
+Best prior honest 2D run with strong penalty (`w0gqz7fd`, reward_eeaff1f2291a): fgw_penalty=4.0, q95_penalty=3.5, residual_prev_action.
+
+### Pellet fueling as 3rd action dimension (2026-06-08)
+
+Action space extended to 3D: `[ecrh_W, nbi_W, pellet_S_total]`. Agent controls pellet fueling rate at each of the 21 decision times. Two IQL pellet runs in progress (see `PROGRESS.md` for details). Results pending.
